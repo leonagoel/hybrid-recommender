@@ -188,21 +188,117 @@ Open **http://localhost:8000**, upload any CSV/JSON from `datasets/`, click **Bu
 
 ## 06 — API Reference
 
-```
-GET    /api/config                   →  Supabase public config
-GET    /api/status                   →  System status + product count
-GET    /api/search?q=...&limit=20    →  Full-text search (PostgreSQL FTS)
-POST   /api/upload                   →  Upload CSV/JSON dataset
-POST   /api/build                    →  Train TF-IDF, SVD, VADER models
-GET    /api/recommend/{title}        →  Hybrid recommendations for an item
-GET    /api/items?page=1&per_page=50 →  Paginated product listing
-GET    /api/categories               →  All available categories
-GET    /api/weights                  →  Current α, β, γ blend weights
-PUT    /api/weights                  →  Update blend weights live
-GET    /api/purchases/{user_id}      →  User purchase history
-POST   /api/purchases                →  Record a purchase event
+## 06 — API Reference
+
+### Config
+
+```http
+GET /api/config
 ```
 
+Supabase public config
+
+---
+
+### Status
+
+```http
+GET /api/status
+```
+
+System status + product count
+
+---
+
+### Search
+
+```http
+GET /api/search?q=...&limit=20
+```
+
+Full-text search (PostgreSQL FTS)
+
+---
+
+### Upload Dataset
+
+```http
+POST /api/upload
+```
+
+Upload CSV/JSON dataset
+
+---
+
+### Build Models
+
+```http
+POST /api/build
+```
+
+Train TF-IDF, SVD, VADER models
+
+---
+
+### Recommendations
+
+```http
+GET /api/recommend/{title}
+```
+
+Hybrid recommendations for an item
+
+---
+
+### Items
+
+```http
+GET /api/items?page=1&per_page=50
+```
+
+Paginated product listing
+
+---
+
+### Categories
+
+```http
+GET /api/categories
+```
+
+All available categories
+
+---
+
+### Weights
+
+```http
+GET /api/weights
+```
+
+Current α, β, γ blend weights
+
+```http
+PUT /api/weights
+```
+
+Update blend weights live
+
+---
+
+### Purchases
+
+```http
+GET /api/purchases/{user_id}
+```
+
+User purchase history
+
+```http
+POST /api/purchases
+```
+
+Record a purchase event
 ---
 
 ## 07 — Evaluation
