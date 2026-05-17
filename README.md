@@ -188,20 +188,65 @@ Open **http://localhost:8000**, upload any CSV/JSON from `datasets/`, click **Bu
 
 ## 06 — API Reference
 
+```http
+GET /api/config
 ```
-GET    /api/config                   →  Supabase public config
-GET    /api/status                   →  System status + product count
-GET    /api/search?q=...&limit=20    →  Full-text search (PostgreSQL FTS)
-POST   /api/upload                   →  Upload CSV/JSON dataset
-POST   /api/build                    →  Train TF-IDF, SVD, VADER models
-GET    /api/recommend/{title}        →  Hybrid recommendations for an item
-GET    /api/items?page=1&per_page=50 →  Paginated product listing
-GET    /api/categories               →  All available categories
-GET    /api/weights                  →  Current α, β, γ blend weights
-PUT    /api/weights                  →  Update blend weights live
-GET    /api/purchases/{user_id}      →  User purchase history
-POST   /api/purchases                →  Record a purchase event
+Returns Supabase public config.
+
+```http
+GET /api/status
 ```
+Returns system status and current product count.
+
+```http
+GET /api/search?q=...&limit=20
+```
+Full-text search powered by PostgreSQL FTS.
+
+```http
+POST /api/upload
+```
+Upload a CSV or JSON dataset for ingestion.
+
+```http
+POST /api/build
+```
+Train TF-IDF, SVD, and VADER models against the loaded dataset.
+
+```http
+GET /api/recommend/{title}
+```
+Return hybrid recommendations for a given item title.
+
+```http
+GET /api/items?page=1&per_page=50
+```
+Paginated product listing.
+
+```http
+GET /api/categories
+```
+List all available product categories.
+
+```http
+GET /api/weights
+```
+Retrieve the current α, β, γ blend weights.
+
+```http
+PUT /api/weights
+```
+Update blend weights live without restarting the server.
+
+```http
+GET /api/purchases/{user_id}
+```
+Fetch the purchase history for a specific user.
+
+```http
+POST /api/purchases
+```
+Record a new purchase event.
 
 ---
 
