@@ -141,6 +141,13 @@ function renderStars(rating) {
     return html;
 }
 
+function getStars(rating) {
+    if (!rating && rating !== 0) return '☆☆☆☆☆';
+    const full = Math.round(rating);
+    const empty = 5 - full;
+    return '★'.repeat(full) + '☆'.repeat(empty);
+}
+
 function sentimentBadge(score) {
     if (score > 0.05) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
     if (score < -0.05) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
@@ -642,9 +649,9 @@ function renderProducts(products, append) {
                 <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
                 <p class="product-card__desc">${p.description || 'No description available.'}</p>
                 <div class="product-card__footer">
-                    <div class="product-card__rating">
-                        <div class="star-rating">${renderStars(p.rating || 0)}</div>
-                        <span class="rating-value">${(p.rating || 0).toFixed(1)}</span>
+                    <div class="card-rating">
+                        ${getStars(p.rating || 0)}
+                        <span class="review-count">(${p.review_count || 0} reviews)</span>
                     </div>
                     ${sentimentBadge(p.avg_sentiment || 0)}
                 </div>
@@ -825,15 +832,7 @@ async function loadRecommendations(title) {
 
     try {
         const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
-        const recs = data.recommendations || [];
-
-        els.recsLoader.hidden = true;
-        els.recsStrip.hidden = false;
-
-        if (!recs.length) {
-            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
-            return;
-        }
+        renderRecommendations(data);
     } catch {
         try {
             await loadRecommendationsOverHttp(title);
