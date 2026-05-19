@@ -83,6 +83,8 @@ const state = {
     isLoading: false,
     hasMore: true,
     searchTimer: null,
+    searchRequestId: 0,
+    isSearchLoading: false,
     autocompleteResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
@@ -102,7 +104,9 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
     searchInput: $('search-input'),
+    searchContainer: $('search-container'),
     searchDropdown: $('search-dropdown'),
+    searchSpinner: $('search-spinner'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
@@ -227,6 +231,13 @@ function showSkeletons(container, count = 8) {
         .fill("")
         .map(() => createSkeletonCard())
         .join("");
+}
+
+function setSearchLoading(isLoading) {
+    state.isSearchLoading = isLoading;
+    els.searchContainer.classList.toggle('is-loading', isLoading);
+    els.searchSpinner.hidden = !isLoading;
+    els.searchInput.setAttribute('aria-busy', String(isLoading));
 }
 
 function renderStars(rating) {
@@ -575,6 +586,8 @@ function handleSearchKeydown(e) {
 
 function handleSearch(query) {
     if (!query || query.trim().length < 1) {
+        state.searchRequestId++;
+        setSearchLoading(false);
         closeSearchDropdown();
         return;
     }
@@ -583,18 +596,25 @@ function handleSearch(query) {
 
     // 300ms debounce
     state.searchTimer = setTimeout(async () => {
+        const requestId = ++state.searchRequestId;
+        setSearchLoading(true);
         try {
             const data = await API.get(
                 `/api/autocomplete?q=${encodeURIComponent(query)}&limit=${CONFIG.SEARCH_LIMIT}`
             );
 
+            if (requestId !== state.searchRequestId) return;
             state.autocompleteResults = data.suggestions || [];
             state.selectedSearchIdx = -1;
 
             renderSearchDropdown(state.autocompleteResults, query);
         } catch (err) {
-            console.error('Autocomplete failed:', err);
-            closeSearchDropdown();
+            if (requestId === state.searchRequestId) {
+                console.error('Autocomplete failed:', err);
+                closeSearchDropdown();
+            }
+        } finally {
+            if (requestId === state.searchRequestId) setSearchLoading(false);
         }
     }, CONFIG.SEARCH_DEBOUNCE_MS);
 }
@@ -730,6 +750,8 @@ async function loadSearchResults(query) {
     // Pause infinite scroll during search
     destroyScrollObserver();
 
+    const requestId = ++state.searchRequestId;
+    setSearchLoading(true);
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
@@ -738,6 +760,7 @@ async function loadSearchResults(query) {
 
     try {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
+        if (requestId !== state.searchRequestId) return;
         const products = data.results || data.items || [];
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${products.length} results`;
@@ -748,6 +771,8 @@ async function loadSearchResults(query) {
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
+    } finally {
+        if (requestId === state.searchRequestId) setSearchLoading(false);
     }
 }
 
