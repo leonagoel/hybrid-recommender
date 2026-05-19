@@ -1,32 +1,16 @@
 /**
  * HybridRec — Frontend Application v3
- * Supabase Auth + PostgreSQL FTS Search + Modern UI
+ * JWT Authentication + PostgreSQL FTS Search + Modern UI
  */
-
-// ── Supabase Client ─────────────────────────────────────────────────
-// Loaded dynamically from backend — no hardcoded credentials
-let sbClient = null;
-
-async function initSupabase() {
-    try {
-        const resp = await fetch('/api/config');
-        if (!resp.ok) return null;
-        const config = await resp.json();
-        const { createClient } = window.supabase || {};
-        if (createClient && config.supabase_url && config.supabase_anon_key) {
-            sbClient = createClient(config.supabase_url, config.supabase_anon_key);
-        }
-    } catch (e) {
-        console.warn('Supabase init skipped:', e.message);
-    }
-    return sbClient;
-}
 
 // ── State ───────────────────────────────────────────────────────────
 const state = {
     user: null,
     isGuest: true,
     products: [],    trending: [],    page: 1,
+    token: null,
+    products: [],
+    page: 1,
     perPage: 20,
     totalProducts: 0,
     isLoading: false,
@@ -41,6 +25,33 @@ const state = {
     compareList: [],
 };
 
+// ── Storage ──────────────────────────────────────────────────────────
+const Storage = {
+    setToken(token) {
+        localStorage.setItem('auth_token', token);
+    },
+    getToken() {
+        return localStorage.getItem('auth_token');
+    },
+    clearToken() {
+        localStorage.removeItem('auth_token');
+    },
+    setUser(user) {
+        localStorage.setItem('auth_user', JSON.stringify(user));
+    },
+    getUser() {
+        const user = localStorage.getItem('auth_user');
+        return user ? JSON.parse(user) : null;
+    },
+    clearUser() {
+        localStorage.removeItem('auth_user');
+    },
+    clear() {
+        this.clearToken();
+        this.clearUser();
+    },
+};
+
 // ── DOM Elements ────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 
@@ -51,6 +62,8 @@ const els = {
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
     authModal: $('auth-modal'),
+    authFormSection: $('auth-form-section'),
+    userProfileSection: $('user-profile-section'),
     authForm: $('auth-form'),
     authEmail: $('auth-email'),
     authPassword: $('auth-password'),
@@ -58,6 +71,9 @@ const els = {
     authError: $('auth-error'),
     authToggleBtn: $('auth-toggle-btn'),
     authToggleText: $('auth-toggle-text'),
+    profileEmail: $('profile-email'),
+    profileName: $('profile-name'),
+    logoutBtn: $('logout-btn'),
     modalTitle: $('modal-title'),
     modalClose: $('modal-close'),
     statusDot: $('status-dot'),
@@ -248,24 +264,46 @@ function toggleWishlist(product) {
 
 // ── API Helpers ─────────────────────────────────────────────────────
 const API = {
+    getHeaders() {
+        const headers = { 'Content-Type': 'application/json' };
+        const token = Storage.getToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+        return headers;
+    },
     async get(url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        const res = await fetch(url, {
+            method: 'GET',
+            headers: this.getHeaders(),
+        });
+        if (!res.ok) {
+            if (res.status === 401) {
+                Storage.clear();
+                state.user = null;
+                state.token = null;
+                setAuthUI();
+            }
+            throw new Error(`API error: ${res.status}`);
+        }
         return res.json();
     },
     async post(url, data) {
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.getHeaders(),
             body: JSON.stringify(data),
         });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        if (!res.ok) {
+            const error = await res.json().catch(() => ({}));
+            throw new Error(error.detail || `API error: ${res.status}`);
+        }
         return res.json();
     },
     async put(url, data) {
         const res = await fetch(url, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.getHeaders(),
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -274,41 +312,38 @@ const API = {
 };
 
 // ── Auth ────────────────────────────────────────────────────────────
-async function initAuth() {
-    if (!sbClient) {
-        console.warn('Supabase client unavailable — auth disabled');
+function setAuthUI() {
+    const isAuthenticated = !!state.token && !!state.user;
+    
+    if (isAuthenticated) {
+        els.authLabel.textContent = state.user.display_name || state.user.email?.split('@')[0] || 'User';
+        state.isGuest = false;
+        els.authFormSection.hidden = true;
+        els.userProfileSection.hidden = false;
+        els.profileEmail.textContent = state.user.email || '';
+        els.profileName.textContent = state.user.display_name || state.user.email?.split('@')[0] || '';
+        els.modalTitle.textContent = 'Your Profile';
+    } else {
         els.authLabel.textContent = 'Sign In';
-        return;
-    }
-    try {
-        const { data: { session } } = await sbClient.auth.getSession();
-
-        if (session) {
-            setUser(session.user);
-        } else {
-            // Auto guest sign-in
-            const { data, error } = await sbClient.auth.signInAnonymously();
-            if (error) {
-                console.warn('Guest login failed:', error.message);
-                els.authLabel.textContent = 'Sign In';
-            } else {
-                setUser(data.user);
-            }
-        }
-    } catch (err) {
-        console.warn('Auth init failed:', err.message);
-        els.authLabel.textContent = 'Sign In';
+        state.isGuest = true;
+        els.authFormSection.hidden = false;
+        els.userProfileSection.hidden = true;
+        els.modalTitle.textContent = state.isAuthSignUp ? 'Create Account' : 'Sign In';
     }
 }
 
-function setUser(user) {
-    state.user = user;
-    state.isGuest = user?.is_anonymous || !user?.email;
-
-    if (state.isGuest) {
-        els.authLabel.textContent = 'Guest';
+async function initAuth() {
+    // Check if token exists in localStorage
+    const token = Storage.getToken();
+    const user = Storage.getUser();
+    
+    if (token && user) {
+        state.token = token;
+        state.user = user;
+        setAuthUI();
+        await loadPersonalizedRecommendations();
     } else {
-        els.authLabel.textContent = user.email?.split('@')[0] || 'User';
+        setAuthUI();
     }
 }
 
@@ -323,28 +358,52 @@ async function handleAuth(e) {
 
     try {
         let result;
+        const endpoint = state.isAuthSignUp ? '/api/register' : '/api/login';
+        const payload = { email, password };
+        
         if (state.isAuthSignUp) {
-            result = await sbClient.auth.signUp({
-                email,
-                password,
-                options: { data: { display_name: email.split('@')[0] } },
-            });
-        } else {
-            result = await sbClient.auth.signInWithPassword({ email, password });
+            payload.display_name = email.split('@')[0];
         }
 
-        if (result.error) throw result.error;
+        result = await API.post(endpoint, payload);
 
-        setUser(result.data.user);
+        if (result.error) throw new Error(result.error);
+
+        // Store token and user in state and localStorage
+        state.token = result.access_token;
+        state.user = {
+            user_id: result.user_id,
+            email: result.email,
+            display_name: result.display_name,
+        };
+        
+        Storage.setToken(result.access_token);
+        Storage.setUser(state.user);
+        
+        setAuthUI();
         els.authModal.hidden = true;
+        els.authEmail.value = '';
+        els.authPassword.value = '';
         toast(state.isAuthSignUp ? 'Account created!' : 'Signed in!', 'success');
+        loadPersonalizedRecommendations().catch(() => {});
     } catch (err) {
-        els.authError.textContent = err.message;
+        els.authError.textContent = err.message || 'Authentication failed';
         els.authError.hidden = false;
     } finally {
         els.authSubmit.disabled = false;
         els.authSubmit.textContent = state.isAuthSignUp ? 'Sign Up' : 'Sign In';
     }
+}
+
+function handleLogout() {
+    Storage.clear();
+    state.token = null;
+    state.user = null;
+    state.isAuthSignUp = false;
+    setAuthUI();
+    els.recsSection.hidden = true;
+    els.recsStrip.innerHTML = '';
+    toast('Logged out successfully', 'success');
 }
 
 function toggleAuthMode() {
@@ -836,6 +895,8 @@ function renderProducts(products, append) {
 }
 
 // ── Recommendations ─────────────────────────────────────────────────
+// ── Recommendations ─────────────────────────────────────────────────
+
 function getRealtimeUrl() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}/ws/recommendations`;
@@ -854,6 +915,7 @@ function initRecommendationSocket() {
     socket.addEventListener('message', (event) => {
         try {
             const data = JSON.parse(event.data);
+
             if (data.type === 'recommendations') {
                 renderRecommendations(data);
             } else if (data.type === 'error') {
@@ -879,10 +941,12 @@ function requestRealtimeRecommendations(title) {
     if (!state.realtimeReady || !state.recommendationSocket) return false;
 
     state.pendingRecommendationTitle = title;
+
     state.recommendationSocket.send(JSON.stringify({
         item_title: title,
         top_n: 12,
     }));
+
     return true;
 }
 
@@ -890,12 +954,14 @@ async function fallbackRecommendationRequest(title) {
     if (!title) return;
 
     clearTimeout(state.realtimeFallbackTimer);
+
     state.realtimeFallbackTimer = setTimeout(async () => {
         try {
             const data = await API.post('/api/realtime/behavior', {
                 item_title: title,
                 top_n: 12,
             });
+
             renderRecommendations(data);
         } catch {
             await loadRecommendationsOverHttp(title);
@@ -910,21 +976,26 @@ function renderRecommendations(data) {
     els.recsStrip.hidden = false;
 
     if (!recs.length) {
-        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
+        els.recsStrip.innerHTML =
+            '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
         return;
     }
 
     els.recsStrip.innerHTML = recs.map((r) => `
         <div class="rec-card" data-title="${r.title}">
             <div class="rec-card__title">${r.title}</div>
+
             <div class="rec-card__rating">
                 <div class="star-rating">${renderStars(r.rating || 0)}</div>
                 <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
             </div>
+
             <div class="rec-card__score">
-                Score: ${(r.hybrid_score || 0).toFixed(3)}
-                · Content: ${(r.content_score || 0).toFixed(2)}
-                · Collab: ${(r.collab_score || 0).toFixed(2)}
+                Score: ${(
+                    r.hybrid_score ??
+                    r.predicted_score ??
+                    0
+                ).toFixed(3)}
             </div>
         </div>
     `).join('');
@@ -935,12 +1006,39 @@ function renderRecommendations(data) {
         });
     });
 
-    els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    els.recsSection.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+    });
 }
 
 async function loadRecommendationsOverHttp(title) {
-    const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+    const data = await API.get(
+        `/api/recommend/${encodeURIComponent(title)}?top_n=12`
+    );
+
     renderRecommendations(data);
+}
+
+async function loadPersonalizedRecommendations(top_n = 12) {
+    if (!state.token) return;
+
+    els.recsSection.hidden = false;
+    els.recsLoader.hidden = false;
+    els.recsStrip.hidden = true;
+    els.recsStrip.innerHTML = '';
+
+    try {
+        const data = await API.get(`/api/recommendations?top_n=${top_n}`);
+
+        renderRecommendations(data);
+    } catch {
+        els.recsLoader.hidden = true;
+        els.recsStrip.hidden = false;
+
+        els.recsStrip.innerHTML =
+            '<div style="padding:16px;color:var(--text-muted);">Could not load personalized recommendations.</div>';
+    }
 }
 
 async function loadRecommendations(title) {
@@ -1101,22 +1199,16 @@ function bindEvents() {
 
     // Auth
     els.authBtn.addEventListener('click', () => {
-        if (state.isGuest) {
-            els.authModal.hidden = false;
-        } else {
-            // Logged in → sign out
-            sbClient.auth.signOut().then(() => {
-                state.user = null;
-                state.isGuest = true;
-                els.authLabel.textContent = 'Sign In';
-                toast('Signed out', 'info');
-                initAuth(); // Re-login as guest
-            });
-        }
+        els.authModal.hidden = false;
+        setAuthUI();
     });
 
     els.authForm.addEventListener('submit', handleAuth);
     els.authToggleBtn.addEventListener('click', toggleAuthMode);
+    els.logoutBtn.addEventListener('click', () => {
+        handleLogout();
+        els.authModal.hidden = true;
+    });
     els.modalClose.addEventListener('click', () => { els.authModal.hidden = true; });
     els.authModal.addEventListener('click', (e) => {
         if (e.target === els.authModal) els.authModal.hidden = true;
@@ -1297,9 +1389,6 @@ async function init() {
     bindEvents();
     initTypeToSearch();
     initBackToTop();
-
-    // Initialize Supabase client from backend config (no hardcoded keys)
-    await initSupabase();
 
     // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));

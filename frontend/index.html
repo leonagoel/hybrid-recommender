@@ -14,7 +14,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
     <!-- Scroll Bar -->
@@ -57,23 +56,44 @@
         <div class="modal" role="dialog" aria-modal="true">
             <button class="modal__close" id="modal-close">&times;</button>
             <h2 class="modal__title" id="modal-title">Sign In</h2>
-            <p class="modal__subtitle">Access your personalized recommendations</p>
-            <form id="auth-form" class="auth-form">
-                <div class="form-group">
-                    <label for="auth-email">Email</label>
-                    <input type="email" id="auth-email" placeholder="you@example.com" required>
+            <p class="modal__subtitle" id="modal-subtitle">Access your personalized recommendations</p>
+            
+            <!-- Auth Form (shown when not logged in) -->
+            <div id="auth-form-section">
+                <form id="auth-form" class="auth-form">
+                    <div class="form-group">
+                        <label for="auth-email">Email</label>
+                        <input type="email" id="auth-email" placeholder="you@example.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="auth-password">Password</label>
+                        <input type="password" id="auth-password" placeholder="Min 6 characters" required minlength="6">
+                    </div>
+                    <button type="submit" class="btn btn--primary btn--full" id="auth-submit">Sign In</button>
+                </form>
+                <div class="auth-toggle">
+                    <span id="auth-toggle-text">Don't have an account?</span>
+                    <button class="btn btn--link" id="auth-toggle-btn">Sign Up</button>
                 </div>
-                <div class="form-group">
-                    <label for="auth-password">Password</label>
-                    <input type="password" id="auth-password" placeholder="Min 6 characters" required minlength="6">
-                </div>
-                <button type="submit" class="btn btn--primary btn--full" id="auth-submit">Sign In</button>
-            </form>
-            <div class="auth-toggle">
-                <span id="auth-toggle-text">Don't have an account?</span>
-                <button class="btn btn--link" id="auth-toggle-btn">Sign Up</button>
+                <div class="auth-error" id="auth-error" hidden></div>
             </div>
-            <div class="auth-error" id="auth-error" hidden></div>
+            
+            <!-- User Profile (shown when logged in) -->
+            <div id="user-profile-section" hidden>
+                <div class="user-profile">
+                    <div class="profile-avatar">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                            <circle cx="12" cy="7" r="4"/>
+                        </svg>
+                    </div>
+                    <div class="profile-info">
+                        <div class="profile-email" id="profile-email"></div>
+                        <div class="profile-name" id="profile-name"></div>
+                    </div>
+                </div>
+                <button class="btn btn--outline btn--full" id="logout-btn">Logout</button>
+            </div>
         </div>
     </div>
 

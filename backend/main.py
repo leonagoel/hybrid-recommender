@@ -29,7 +29,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Any, Optional
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 from dotenv import load_dotenv
+import uuid
 
 load_dotenv()
 
@@ -53,11 +60,41 @@ from datetime import datetime, timedelta
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
+from auth import create_token, decode_token, hash_password, verify_password, extract_token_from_header
+
+# ── App ──────────────────────────────────────────────────────────────
+app = FastAPI(title="Hybrid Recommender API", version="3.0")
+logger = logging.getLogger("hybrid_recommender.api")
+# ── Response Time Middleware ────────────────────────────────────────
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
 CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 _response_cache: dict[str, tuple[float, Any]] = {}
+
+
+# ── JWT Dependency ────────────────────────────────────────────────────
+async def get_current_user(authorization: Optional[str] = Header(None)) -> "CurrentUser":
+    """
+    Dependency to extract and validate JWT token from Authorization header.
+    Raises HTTPException 401 if token is missing or invalid.
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+    
+    token = extract_token_from_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid authorization header format")
+    
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Token invalid or expired")
+    
+    return CurrentUser(
+        user_id=payload.get('user_id'),
+        email=payload.get('email'),
+        display_name=payload.get('display_name')
+    )
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -227,6 +264,32 @@ class WeightsUpdate(BaseModel):
     gamma: float = 0.25
 
 
+# ── Authentication Models ─────────────────────────────────────────
+class UserRegister(BaseModel):
+    email: EmailStr
+    password: str
+    display_name: Optional[str] = None
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: str
+    email: str
+    display_name: Optional[str] = None
+
+
+class CurrentUser(BaseModel):
+    user_id: str
+    email: str
+    display_name: Optional[str] = None
+
+
 class PurchaseCreate(BaseModel):
     user_id: str
     product_id: int
@@ -278,6 +341,122 @@ realtime_hub = RealtimeRecommendationHub()
 @app.get("/api/metrics")
 def get_api_metrics():
     return get_response_metrics_snapshot()
+
+
+# ── Authentication Endpoints ──────────────────────────────────────────
+
+@app.post("/api/register", response_model=AuthResponse)
+async def register(data: UserRegister):
+    """
+    Register a new user account.
+    Creates a user record in Supabase and returns JWT token.
+    """
+    from datetime import datetime
+    sb = get_supabase_admin()
+    
+    # Validate email and password
+    if not data.email or '@' not in data.email:
+        raise HTTPException(status_code=400, detail="Invalid email format")
+    if not data.password or len(data.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    # Check if user already exists
+    try:
+        existing = sb.table('users').select('*').eq('email', data.email).execute()
+        if existing.data and len(existing.data) > 0:
+            raise HTTPException(status_code=409, detail="User with this email already exists")
+    except Exception as e:
+        logger.warning("Error checking existing user: %s", e)
+        # If table doesn't exist, create it - this should be done in Supabase setup
+    
+    # Hash password
+    password_hash = hash_password(data.password)
+    user_id = str(uuid.uuid4())
+    display_name = data.display_name or data.email.split('@')[0]
+    
+    # Store user in Supabase
+    try:
+        insert_result = sb.table('users').insert({
+            'id': user_id,
+            'email': data.email,
+            'password_hash': password_hash,
+            'display_name': display_name,
+            'created_at': datetime.utcnow().isoformat(),
+        }).execute()
+
+        if getattr(insert_result, 'error', None):
+            error_text = str(insert_result.error)
+            if 'duplicate' in error_text.lower() or 'unique' in error_text.lower() or 'already exists' in error_text.lower():
+                raise HTTPException(status_code=409, detail="User with this email already exists")
+            logger.error("Error creating user: %s", insert_result.error)
+            raise HTTPException(status_code=400, detail="Failed to create user account")
+    except HTTPException:
+        raise
+    except Exception as e:
+        message = str(e)
+        if 'duplicate' in message.lower() or 'unique' in message.lower() or 'already exists' in message.lower():
+            raise HTTPException(status_code=409, detail="User with this email already exists")
+        logger.error("Error creating user: %s", e)
+        raise HTTPException(status_code=400, detail="Failed to create user account")
+    
+    # Create JWT token
+    token = create_token(user_id, data.email, display_name=display_name)
+    
+    logger.info("User registered: %s", data.email)
+    
+    return AuthResponse(
+        access_token=token,
+        user_id=user_id,
+        email=data.email,
+        display_name=display_name
+    )
+
+
+@app.post("/api/login", response_model=AuthResponse)
+async def login(data: UserLogin):
+    """
+    Authenticate user and return JWT token.
+    """
+    sb = get_supabase_admin()
+    
+    if not data.email or not data.password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+    
+    # Fetch user from Supabase
+    try:
+        result = sb.table('users').select('*').eq('email', data.email).execute()
+        if not result.data or len(result.data) == 0:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        user = result.data[0]
+    except Exception as e:
+        logger.error("Error fetching user: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    # Verify password
+    if not verify_password(data.password, user.get('password_hash', '')):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    # Create JWT token
+    token = create_token(user['id'], user['email'], display_name=user.get('display_name'))
+    
+    logger.info("User logged in: %s", data.email)
+    
+    return AuthResponse(
+        access_token=token,
+        user_id=user['id'],
+        email=user['email'],
+        display_name=user.get('display_name')
+    )
+
+
+@app.get("/api/me", response_model=CurrentUser)
+async def get_me(current_user: CurrentUser = Depends(get_current_user)):
+    """
+    Get current authenticated user information.
+    Requires valid JWT token in Authorization header.
+    """
+    return current_user
 
 
 # ── Config (for frontend — serves only public keys) ─────────────────
@@ -857,6 +1036,45 @@ async def realtime_behavior_update(event: RealtimeRecommendationRequest):
     return message
 
 
+@app.get("/api/recommendations")
+async def get_personalized_recommendations(
+    top_n: int = 12,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Get personalized recommendations for the authenticated user.
+    Requires valid JWT token in the Authorization header.
+    """
+    if not models["ready"]:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
+    if not models["collab"]:
+        raise HTTPException(400, "Personalized recommendations are not available until purchase history exists.")
+
+    user_recs = models["collab"].predict_for_user(current_user.user_id, top_n=top_n * 2)
+    if not user_recs:
+        raise HTTPException(404, "No personalized recommendations available. Add purchases or try again later.")
+
+    item_df = models["item_df"]
+    results = []
+    for rec in user_recs[:top_n]:
+        title = rec["title"]
+        row = item_df[item_df["title"] == title]
+        row_data = row.iloc[0] if len(row) > 0 else None
+        results.append({
+            "title": title,
+            "predicted_score": round(rec.get("predicted_score", 0.0), 4),
+            "rating": round(float(row_data["rating"]), 2) if row_data is not None and "rating" in row_data else 0.0,
+            "category": row_data["category"] if row_data is not None and "category" in row_data else "",
+            "description": str(row_data["description"])[:200] if row_data is not None and "description" in row_data else "",
+        })
+
+    return {
+        "user_id": current_user.user_id,
+        "recommendations": results,
+        "personalized": True,
+    }
+
+
 # ── Weights ─────────────────────────────────────────────────────────
 
 @app.get("/api/weights")
@@ -997,30 +1215,45 @@ def get_categories():
 
 # ── Purchases ───────────────────────────────────────────────────────
 
-@app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = 50):
-    """Get purchase history for a user (via anon client — RLS enforced)."""
+@app.get("/api/purchases")
+async def get_user_purchases(limit: int = 50, current_user: CurrentUser = Depends(get_current_user)):
+    """
+    Get purchase history for the authenticated user.
+    Requires valid JWT token in Authorization header.
+    """
     sb = get_supabase()
     result = sb.table('purchases') \
         .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)') \
-        .eq('user_id', user_id) \
+        .eq('user_id', current_user.user_id) \
         .order('purchased_at', desc=True) \
         .limit(limit) \
         .execute()
-    return {"purchases": result.data or []}
+    return {"purchases": result.data or [], "user_id": current_user.user_id}
 
 
 @app.post("/api/purchases")
-def create_purchase(data: PurchaseCreate):
-    """Record a purchase (validated input)."""
+async def create_purchase(data: PurchaseCreate, current_user: CurrentUser = Depends(get_current_user)):
+    """
+    Record a purchase for the authenticated user.
+    Requires valid JWT token in Authorization header.
+    """
+    from datetime import datetime
     sb = get_supabase()
+    
+    # Ensure the purchase is for the current user
+    if data.user_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Cannot create purchase for another user")
+    
     result = sb.table('purchases').insert({
-        'user_id': data.user_id,
+        'user_id': current_user.user_id,
         'product_id': data.product_id,
         'rating': max(0, min(5, data.rating)),
         'review_text': data.review_text[:1000],
+        'purchased_at': datetime.utcnow().isoformat(),
     }).execute()
     _clear_response_cache()
+    
+    logger.info("Purchase recorded for user %s: product %d", current_user.user_id, data.product_id)
     return {"purchase": result.data}
 # ── Dashboard ───────────────────────────────────────────────────────
 

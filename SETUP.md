@@ -24,10 +24,25 @@ Fill in:
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_KEY=your-service-role-key
+JWT_SECRET=your-jwt-secret
+JWT_EXPIRATION_HOURS=24
 ```
 
 > **Where to find the Service Key:**
 > Go to [Supabase Dashboard](https://supabase.com/dashboard) → Your Project → Settings → API → `service_role` key.
+>
+> **Database setup:** create a `users` table with at least `id`, `email`, `password_hash`, `display_name`, and `created_at` columns so backend registration and login can store user records.
+> You can add this SQL in the Supabase SQL editor:
+>
+> ```sql
+> create table if not exists users (
+>   id text primary key,
+>   email text not null unique,
+>   password_hash text not null,
+>   display_name text,
+>   created_at timestamptz default now()
+> );
+> ```
 
 ### 3. Import Data
 Place your CSV or JSON dataset files in the `datasets/` folder, then run:
