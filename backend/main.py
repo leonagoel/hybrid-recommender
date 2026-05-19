@@ -32,6 +32,9 @@ from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
+from celery.result import AsyncResult
+from celery_app import celery_app
+from tasks import compute_recommendations
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
@@ -385,11 +388,108 @@ def build_models():
     }
 
 
-# ── Recommendations ────────────────────────────────────────────────
+# ── Recommendations (Async via Celery) ────────────────────────────
+
+@app.post("/api/recommend")
+def post_recommendations(
+    item_title: str = Query(..., description="Item title to get recommendations for"),
+    top_n: int = Query(10, ge=1, le=50),
+    explain: bool = Query(False),
+):
+    """
+    Dispatch recommendation computation to a Celery worker.
+    Returns task_id immediately (202 Accepted).
+    Poll GET /api/task/{task_id} for results.
+    """
+    if not models["ready"]:
+        raise HTTPException(400, "Models not built. Build first via POST /api/build.")
+
+    # Dispatch to background worker — non-blocking
+    task = compute_recommendations.delay(item_title, top_n=top_n, explain=explain)
+
+    logger.info(
+        "Dispatched recommendation task: task_id=%s item=%s",
+        task.id,
+        item_title,
+    )
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=202,
+        content={
+            "task_id": task.id,
+            "status": "PENDING",
+            "message": f"Recommendation task queued. Poll GET /api/task/{task.id} for results.",
+        },
+    )
+
+
+@app.get("/api/task/{task_id}")
+def get_task_status(task_id: str):
+    """
+    Poll the status of an async recommendation task.
+
+    States:
+      PENDING  — task queued, not yet started
+      STARTED  — worker has picked it up
+      SUCCESS  — results ready in 'result' field
+      FAILURE  — task failed; see 'error' field
+    """
+    try:
+        result = AsyncResult(task_id, app=celery_app)
+        state = result.state
+
+        if state == "PENDING":
+            return {
+                "task_id": task_id,
+                "status": "PENDING",
+                "message": "Task is queued and waiting for a worker.",
+            }
+
+        if state == "STARTED":
+            return {
+                "task_id": task_id,
+                "status": "STARTED",
+                "message": "Worker is processing the recommendation.",
+            }
+
+        if state == "SUCCESS":
+            return {
+                "task_id": task_id,
+                "status": "SUCCESS",
+                "result": result.get(),
+            }
+
+        if state == "FAILURE":
+            # Isolate error string — never leak full traceback to client
+            try:
+                error_msg = str(result.result)
+            except Exception:
+                error_msg = "An unexpected error occurred."
+
+            return {
+                "task_id": task_id,
+                "status": "FAILURE",
+                "error": error_msg,
+            }
+
+        # Catch-all for RETRY, REVOKED, etc.
+        return {
+            "task_id": task_id,
+            "status": state,
+            "message": "Task is in an intermediate state.",
+        }
+
+    except Exception as exc:
+        logger.error("Task status check failed for task_id=%s: %s", task_id, exc)
+        raise HTTPException(500, "Could not retrieve task status.")
+
+
+# ── Legacy sync recommend (kept for backward compatibility) ─────────
 
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False)):
-    """Get hybrid recommendations for an item."""
+    """Synchronous recommend — kept for backward compatibility. Use POST /api/recommend for async."""
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     recs = models["hybrid"].recommend(item_title, top_n=top_n, explain=explain)
