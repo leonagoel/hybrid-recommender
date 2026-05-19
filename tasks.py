@@ -3,13 +3,13 @@ Celery tasks for the Hybrid Recommender System.
 Heavy recommendation computation is moved here so the API
 thread returns immediately with a task_id.
 """
+import logging
 import os
 import sys
-import logging
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from celery_app import celery_app
+from celery_app import celery_app  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,6 @@ def compute_recommendations(self, item_title: str, top_n: int = 10, explain: boo
         Retries up to 3 times on transient failures.
     """
     try:
-        # Lazy import — models live in the API process state,
-        # workers rebuild them from the module-level singleton.
         from backend.main import models
 
         if not models["ready"]:
@@ -61,7 +59,6 @@ def compute_recommendations(self, item_title: str, top_n: int = 10, explain: boo
         }
 
     except ValueError:
-        # Don't retry on logical errors (item not found, models not ready)
         raise
 
     except Exception as exc:
@@ -71,5 +68,4 @@ def compute_recommendations(self, item_title: str, top_n: int = 10, explain: boo
             exc,
             exc_info=True,
         )
-        # Retry on transient errors (network blips, memory spikes)
         raise self.retry(exc=exc)
