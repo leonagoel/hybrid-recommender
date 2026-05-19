@@ -6,10 +6,11 @@ import os
 import sys
 import io
 import time
+import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -18,6 +19,12 @@ from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(levelname)s] %(asctime)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 from db import get_supabase, get_supabase_admin
 from data_adapter import adapt_data, read_file
@@ -31,6 +38,16 @@ from datetime import datetime, timedelta
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+logger = logging.getLogger("hybrid_recommender.api")
+RESPONSE_TIME_HEADER = "X-Response-Time-ms"
+DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
+
+
+def _get_slow_response_threshold_ms() -> float:
+    try:
+        return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
+    except ValueError:
+        return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
 # CORS — restrict in production; allow localhost for development
 allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
@@ -40,6 +57,34 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def response_time_middleware(request: Request, call_next):
+    """Attach response duration headers and log every API request."""
+    started_at = time.perf_counter()
+    response = None
+
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        status_code = response.status_code if response is not None else 500
+
+        if response is not None:
+            response.headers[RESPONSE_TIME_HEADER] = f"{duration_ms:.2f}"
+
+        log_fn = logger.warning if duration_ms >= _get_slow_response_threshold_ms() else logger.info
+        log_fn(
+            "request_completed",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": status_code,
+                "duration_ms": round(duration_ms, 2),
+            },
+        )
 
 # ── State ────────────────────────────────────────────────────────────
 models = {
@@ -117,7 +162,8 @@ def search_items(
                 'offset_val': offset,
             }).execute()
             products = result.data or []
-        except Exception:
+        except Exception as e:
+            logger.warning("Full-text search failed for query '%s': %s", q.strip(), e)
             # Fallback: do a LIKE search if FTS parsing fails
             result = sb.table('products') \
                 .select('id, title, description, category, rating, avg_sentiment, review_count') \
@@ -239,12 +285,14 @@ async def upload_dataset(file: UploadFile = File(...)):
         }
         if errors:
             result["warnings"] = errors[:5]  # Return first 5 errors
+            logger.warning("Imported dataset with %d batch warnings", len(errors))
+
+        logger.info("Imported %d products from %s", imported, filename)
         return result
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.error("Upload failed for %s: %s", filename, e, exc_info=True)
         # Don't leak internal details — log server-side, return generic message
         raise HTTPException(400, "Upload failed. Check file format and try again.")
 
@@ -272,6 +320,7 @@ def build_models():
         offset += page_size
 
     if not all_products:
+        logger.warning("Model build requested with no products in database")
         raise HTTPException(400, "No products in database. Upload data first.")
 
     import pandas as pd
@@ -314,8 +363,8 @@ def build_models():
                 interaction_df = pd.DataFrame(interaction_rows)
                 if interaction_df['user_id'].nunique() > 1:
                     collab_model = CollaborativeRecommender(interaction_df)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Collaborative model data load failed: %s", e)
 
     # Hybrid model
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
@@ -329,6 +378,12 @@ def build_models():
     models["ready"] = True
     models["build_time"] = build_time
 
+    logger.info(
+        "Built recommendation models for %d items in %.2f seconds",
+        len(item_df),
+        build_time,
+    )
+
     return {
         "message": "Models built successfully!",
         "items": len(item_df),
@@ -340,17 +395,18 @@ def build_models():
 # ── Recommendations ────────────────────────────────────────────────
 
 @app.get("/api/recommend/{item_title}")
-def get_recommendations(item_title: str, top_n: int = 10):
+def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False)):
     """Get hybrid recommendations for an item."""
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-    recs = models["hybrid"].recommend(item_title, top_n=top_n)
+    recs = models["hybrid"].recommend(item_title, top_n=top_n, explain=explain)
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
     return {
         "query_item": item_title,
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),
+        "explain": explain,
     }
 
 

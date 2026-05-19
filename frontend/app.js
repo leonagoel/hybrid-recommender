@@ -75,6 +75,7 @@ const els = {
     loadMoreBtn: $('load-more-btn'),
     loadMoreContainer: $('load-more-container'),
     recsSection: $('recs-section'),
+    recsLoader: $('recs-loader'),
     recsStrip: $('recs-strip'),
     toastContainer: $('toast-container'),
     weightAlpha: $('weight-alpha'),
@@ -509,11 +510,16 @@ async function loadRecommendations(title) {
     }
 
     els.recsSection.hidden = false;
-    els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px;">Loading recommendations...</div>';
+    els.recsLoader.hidden = false;
+    els.recsStrip.hidden = true;
+    els.recsStrip.innerHTML = '';
 
     try {
         const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
         const recs = data.recommendations || [];
+
+        els.recsLoader.hidden = true;
+        els.recsStrip.hidden = false;
 
         if (!recs.length) {
             els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
@@ -545,6 +551,8 @@ async function loadRecommendations(title) {
         // Scroll to recs
         els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch {
+        els.recsLoader.hidden = true;
+        els.recsStrip.hidden = false;
         els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
     }
 }
@@ -709,45 +717,52 @@ function bindEvents() {
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
         slider.addEventListener('change', handleWeightChange);
     });
+    // Weights
+    [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
+        slider.addEventListener('change', handleWeightChange);
+    });
 
-    els.categoryFilter.addEventListener('change', (e) => {
-    state.filters.category = e.target.value;
-    renderProducts(state.allProducts, false);
-});
-
-els.ratingFilter.addEventListener('change', (e) => {
-    state.filters.rating = e.target.value;
-    renderProducts(state.allProducts, false);
-});
-
-els.sentimentFilter.addEventListener('change', (e) => {
-    state.filters.sentiment = e.target.value;
-    renderProducts(state.allProducts, false);
-});
-
-els.clearFiltersBtn.addEventListener('click', () => {
-
-    state.filters.category = '';
-    state.filters.rating = '';
-    state.filters.sentiment = '';
-
-    els.categoryFilter.value = '';
-    els.ratingFilter.value = '';
-    els.sentimentFilter.value = '';
-
-    renderProducts(state.allProducts, false);
-});
+    // Scroll Progress Bar
+    window.addEventListener('scroll', () => {
+        const progressBar = document.getElementById('scroll-progress');
+        if (!progressBar) return;
+        
+        const scrollY = window.scrollY;
+        const docHeight = document.documentElement.scrollHeight;
+        const windowHeight = window.innerHeight;
+        
+        const width = (scrollY / (docHeight - windowHeight)) * 100;
+        progressBar.style.width = width + "%";
+    });
 }
-
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
 spinStyle.textContent = `@keyframes spin { to { transform: rotate(360deg); } } .spin { animation: spin 1s linear infinite; }`;
 document.head.appendChild(spinStyle);
 
+// ── Back To Top ─────────────────────────────────────────────────────
+function initBackToTop() {
+    const backToTop = document.getElementById('backToTop');
+
+    if (!backToTop) return;
+
+    
+    backToTop.style.display = 'none';
+
+    window.addEventListener('scroll', () => {
+        backToTop.style.display =
+            window.scrollY > 700 ? 'block' : 'none';
+    });
+
+    backToTop.addEventListener('click', () => {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+}
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
     initTypeToSearch();
+    initBackToTop();
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
@@ -756,5 +771,4 @@ async function init() {
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
 }
-
 document.addEventListener('DOMContentLoaded', init);

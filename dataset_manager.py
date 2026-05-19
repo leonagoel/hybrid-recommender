@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import uuid
 from data_adapter import adapt_data
+from data_preprocessing import preprocess
 
 
 class DatasetManager:
@@ -31,6 +32,7 @@ class DatasetManager:
             if name is None:
                 name = 'uploaded_dataset'
 
+        raw_df = preprocess(raw_df)
         adapted_df, meta = adapt_data(raw_df)
         ds_id = str(uuid.uuid4())[:8]
 

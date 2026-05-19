@@ -12,6 +12,8 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
+    <!-- Scroll Bar -->
+    <div id="scroll-progress"></div>
     <!-- Header -->
     <header class="header" id="header">
         <div class="header__inner">
@@ -119,6 +121,10 @@
                 </svg>
                 Recommended for you
             </h2>
+            <div class="recs-loader" id="recs-loader" hidden aria-live="polite" aria-label="Loading recommendations">
+                <div class="spinner" role="status"></div>
+                <span class="recs-loader__text">Loading recommendations...</span>
+            </div>
             <div class="recs-strip" id="recs-strip"></div>
         </section>
         <div class="filters-bar">
@@ -180,5 +186,6 @@
     </footer>
 
     <script src="/static/app.js"></script>
+    <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
 </body>
 </html>

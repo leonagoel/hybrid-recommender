@@ -1,0 +1,52 @@
+name: Welcome New Contributor
+
+permissions:
+  issues: write
+  pull-requests: write
+
+on:
+  pull_request_target:
+    types: [opened]
+  issues:
+    types: [opened]
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Welcome new contributor
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const sender = context.payload.sender.login;
+            const isPR = !!context.payload.pull_request;
+            const number = isPR 
+              ? context.payload.pull_request.number 
+              : context.payload.issue.number;
+
+            // Check if this is their first contribution
+            let query, variables;
+            if (isPR) {
+              const prs = await github.rest.pulls.list({
+                owner, repo, state: 'all'
+              });
+              const userPRs = prs.data.filter(pr => pr.user.login === sender);
+              if (userPRs.length > 1) return; // Not first PR
+              
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number,
+                body: `🎉 **Welcome to Hybrid Recommender, @${sender}!**\n\nThank you for submitting your first PR! Here's what happens next:\n\n1. 🔍 A mentor (@leonagoel) will review your changes\n2. ✅ CI checks must pass (lint + smoke test)\n3. 🏷️ Labels will be added for GSSoC points after approval\n4. 🔀 PR will be merged once approved\n\n⏱️ Please respond to review comments within **48 hours**.\n\n📖 Make sure your changes follow our [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)\n\nHappy contributing! 🚀`
+              });
+            } else {
+              const issues = await github.rest.issues.listForRepo({
+                owner, repo, state: 'all', creator: sender
+              });
+              if (issues.data.length > 1) return; // Not first issue
+              
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number,
+                body: `👋 **Welcome @${sender}!**\n\nThanks for opening your first issue on **Hybrid Recommender**!\n\n📋 Please make sure you've read our [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md).\n\nA mentor will respond within **24-48 hours**. 🚀\n\nIf you'd like to work on this issue yourself, comment:\n> "I would like to work on this"\n\nAnd a mentor will assign it to you!`
+              });
+            }
