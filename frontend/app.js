@@ -123,31 +123,59 @@ function categoryIcon(cat) {
     return '📦';
 }
 
+// ── API Error Class ──────────────────────────────────────────────────
+class ApiError extends Error {
+    /**
+     * @param {number|null} status  - HTTP status code, or null for network failures
+     * @param {string}      message - Human-readable description
+     */
+    constructor(status, message) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status; // null = network/offline, 404 = not found, 5xx = server error
+    }
+
+    get isNotFound()    { return this.status === 404; }
+    get isServerError() { return this.status !== null && this.status >= 500; }
+    get isNetworkError(){ return this.status === null; }
+}
+
 // ── API Helpers ─────────────────────────────────────────────────────
 const API = {
-    async get(url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
+    async _request(url, options = {}) {
+        let res;
+        try {
+            res = await fetch(url, options);
+        } catch {
+            // fetch() threw — server is unreachable / user is offline
+            throw new ApiError(null, 'Backend server is offline. Please try again later.');
+        }
+
+        if (!res.ok) {
+            const status = res.status;
+            let message;
+            if (status === 404) {
+                // Try to read a detail message from the response body
+                try {
+                    const body = await res.json();
+                    message = body.detail || body.message || 'Product not found. Try searching for something else.';
+                } catch {
+                    message = 'Product not found. Try searching for something else.';
+                }
+            } else if (status >= 500) {
+                message = 'Backend server error. Please try again later.';
+            } else {
+                message = `Unexpected error (${status}). Please try again.`;
+            }
+            throw new ApiError(status, message);
+        }
+
         return res.json();
     },
-    async post(url, data) {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
-    async put(url, data) {
-        const res = await fetch(url, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
+
+    get(url)           { return this._request(url); },
+    post(url, data)    { return this._request(url, { method: 'POST',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); },
+    put(url, data)     { return this._request(url, { method: 'PUT',   headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); },
 };
 
 // ── Auth ────────────────────────────────────────────────────────────
@@ -266,8 +294,12 @@ async function handleSearch(query) {
             state.searchResults = data.results || [];
             state.selectedSearchIdx = -1;
             renderSearchDropdown(state.searchResults, query);
-        } catch {
+        } catch (err) {
             closeSearchDropdown();
+            if (err instanceof ApiError && err.isNetworkError) {
+                toast('Backend server is offline. Please try again later.', 'error');
+            }
+            // 404 on search just means no results — dropdown already shows "No results"
         }
     }, 200);
 }
@@ -368,7 +400,21 @@ async function loadProducts(append = false) {
         els.loadMoreContainer.hidden = products.length < state.perPage;
     } catch (err) {
         els.skeletonLoader.hidden = true;
-        toast('Failed to load products', 'error');
+        if (err instanceof ApiError) {
+            if (err.isNetworkError || err.isServerError) {
+                toast('⚠️ ' + err.message, 'error');
+                els.productGrid.innerHTML = `
+                    <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
+                        <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                        <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">Backend Server Unavailable</div>
+                        <div style="font-size:13px;">The server is offline or experiencing issues. Please try again later.</div>
+                    </div>`;
+            } else {
+                toast('Failed to load products: ' + err.message, 'error');
+            }
+        } else {
+            toast('Failed to load products', 'error');
+        }
     }
 }
 
@@ -385,9 +431,27 @@ async function loadSearchResults(query) {
         state.products = [];
         renderProducts(products, false);
         els.loadMoreContainer.hidden = true;
-    } catch {
+    } catch (err) {
         els.skeletonLoader.hidden = true;
-        toast('Search failed', 'error');
+        if (err instanceof ApiError && err.isNotFound) {
+            toast('🔍 Product not found. Try searching for something else.', 'error');
+            els.productGrid.innerHTML = `
+                <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
+                    <div style="font-size:48px;margin-bottom:16px;">🔍</div>
+                    <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">No Results Found</div>
+                    <div style="font-size:13px;">No products matched "<strong style="color:var(--text-primary)">${query}</strong>". Try a different search term.</div>
+                </div>`;
+        } else if (err instanceof ApiError && (err.isServerError || err.isNetworkError)) {
+            toast('⚠️ ' + err.message, 'error');
+            els.productGrid.innerHTML = `
+                <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
+                    <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                    <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">Backend Server Unavailable</div>
+                    <div style="font-size:13px;">The server is offline or experiencing issues. Please check your connection and try again.</div>
+                </div>`;
+        } else {
+            toast('Search failed. Please try again.', 'error');
+        }
     }
 }
 
@@ -490,10 +554,25 @@ async function loadRecommendations(title) {
 
         // Scroll to recs
         els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch {
+    } catch (err) {
         els.recsLoader.hidden = true;
         els.recsStrip.hidden = false;
-        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
+        if (err instanceof ApiError && err.isNotFound) {
+            els.recsStrip.innerHTML = `
+                <div style="padding:24px 16px;text-align:center;color:var(--text-muted);">
+                    <span style="font-size:28px;">🔍</span>
+                    <div style="margin-top:8px;font-size:13px;">Product not found. Try searching for something else.</div>
+                </div>`;
+        } else if (err instanceof ApiError && (err.isServerError || err.isNetworkError)) {
+            toast('⚠️ ' + err.message, 'error');
+            els.recsStrip.innerHTML = `
+                <div style="padding:24px 16px;text-align:center;color:var(--text-muted);">
+                    <span style="font-size:28px;">⚠️</span>
+                    <div style="margin-top:8px;font-size:13px;">Backend server is offline. Please try again later.</div>
+                </div>`;
+        } else {
+            els.recsStrip.innerHTML = `<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>`;
+        }
     }
 }
 
@@ -510,7 +589,11 @@ async function handleUpload(file) {
         toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
         checkStatus();
     } catch (err) {
-        toast('Upload failed: ' + err.message, 'error');
+        if (err instanceof ApiError && (err.isServerError || err.isNetworkError)) {
+            toast('⚠️ ' + err.message, 'error');
+        } else {
+            toast('Upload failed: ' + (err.message || 'Unknown error'), 'error');
+        }
     }
 }
 
@@ -529,7 +612,11 @@ async function handleBuild() {
         updateStatus('ready', `Ready — ${data.items?.toLocaleString()} products`);
         loadProducts();
     } catch (err) {
-        toast('Build failed: ' + err.message, 'error');
+        if (err instanceof ApiError && (err.isServerError || err.isNetworkError)) {
+            toast('⚠️ ' + err.message, 'error');
+        } else {
+            toast('Build failed: ' + (err.message || 'Unknown error'), 'error');
+        }
     } finally {
         els.buildBtn.disabled = false;
         els.buildBtn.innerHTML = `
@@ -565,6 +652,13 @@ async function checkStatus() {
         }
     } catch {
         updateStatus('error', 'Backend offline');
+        els.skeletonLoader.hidden = true;
+        els.productGrid.innerHTML = `
+            <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
+                <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">Backend Server Unavailable</div>
+                <div style="font-size:13px;">The server is offline or experiencing issues. Please check your connection and try again.</div>
+            </div>`;
     }
 }
 
