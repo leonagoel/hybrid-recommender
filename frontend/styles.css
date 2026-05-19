@@ -912,6 +912,42 @@ body {
     gap: 8px;
 }
 
+.filters-bar {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+.filters-bar select,
+.filters-bar button {
+    padding: 10px 14px;
+    border-radius: 10px;
+}
+
+.no-results {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+}
+
+.no-results__icon {
+    font-size: 42px;
+    margin-bottom: 12px;
+}
+
+@media (max-width: 768px) {
+    .filters-bar {
+        flex-direction: column;
+    }
+
+    .filters-bar select,
+    .filters-bar button {
+        width: 100%;
+    }
+}
+
 .toast.success { border-left: 3px solid var(--success); }
 .toast.error { border-left: 3px solid var(--danger); }
 .toast.info { border-left: 3px solid var(--info); }

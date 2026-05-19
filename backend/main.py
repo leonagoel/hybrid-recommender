@@ -33,6 +33,9 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
+from functools import lru_cache
+from datetime import datetime, timedelta
+
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 logger = logging.getLogger("hybrid_recommender.api")
@@ -91,6 +94,10 @@ models = {
     "ready": False,
     "item_df": None,
     "build_time": None,
+}
+TRENDING_CACHE = {
+    "data": None,
+    "timestamp": None
 }
 
 
@@ -497,6 +504,93 @@ def create_purchase(data: PurchaseCreate):
         'review_text': data.review_text[:1000],
     }).execute()
     return {"purchase": result.data}
+
+@app.get("/api/trending")
+def get_trending(days: int = 7, limit: int = 10):
+        now = datetime.utcnow()
+
+    if (
+        TRENDING_CACHE["data"] is not None
+        and TRENDING_CACHE["timestamp"] is not None
+        and now - TRENDING_CACHE["timestamp"]
+        < timedelta(hours=1)
+    ):
+    return TRENDING_CACHE["data"]
+
+    mock_interactions = [
+        {
+            "title": "iPhone 15",
+            "interactions": 120,
+            "avg_rating": 4.8
+        },
+        {
+            "title": "Samsung Galaxy S24",
+            "interactions": 95,
+            "avg_rating": 4.7
+        },
+        {
+            "title": "MacBook Air M3",
+            "interactions": 80,
+            "avg_rating": 4.9
+        },
+        {
+            "title": "Sony WH-1000XM5",
+            "interactions": 70,
+            "avg_rating": 4.6
+        },
+        {
+            "title": "Apple Watch Ultra",
+            "interactions": 65,
+            "avg_rating": 4.7
+        }
+    ]
+
+    global_avg = (
+        sum(p["avg_rating"] for p in mock_interactions)
+        / len(mock_interactions)
+    )
+
+    min_votes = 50
+
+    trending = []
+
+    for item in mock_interactions:
+
+        v = item["interactions"]
+        R = item["avg_rating"]
+        C = global_avg
+        m = min_votes
+
+        bayesian_rating = (
+            (v / (v + m)) * R
+            + (m / (v + m)) * C
+        )
+
+        item["bayesian_rating"] = round(
+            bayesian_rating,
+            3
+        )
+
+        trending.append(item)
+
+    trending.sort(
+        key=lambda x: (
+            x["interactions"],
+            x["bayesian_rating"]
+        ),
+        reverse=True
+    )
+
+    response= {
+        "days": days,
+        "results": trending[:limit],
+        "generated_at": datetime.utcnow()
+    }
+
+    TRENDING_CACHE["data"] = response
+    TRENDING_CACHE["timestamp"] = datetime.utcnow()
+
+    return response
 
 
 # ── Frontend Serving ────────────────────────────────────────────────
