@@ -98,7 +98,7 @@
                 </button>
                 <input type="file" id="file-input" accept=".csv,.json" hidden>
             </div>
-            <div class="controls__right">
+            <div class="controls__right" style="display: flex; align-items: center; gap: 16px;">
                 <div class="weight-control" id="weight-controls">
                     <span class="weight-label">Content</span>
                     <input type="range" id="weight-alpha" min="0" max="100" value="40" class="weight-slider">
@@ -106,6 +106,10 @@
                     <input type="range" id="weight-beta" min="0" max="100" value="35" class="weight-slider">
                     <span class="weight-label">Sentiment</span>
                     <input type="range" id="weight-gamma" min="0" max="100" value="25" class="weight-slider">
+                </div>
+                <div class="diversify-control" style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" id="diversify-toggle" style="accent-color: var(--primary);">
+                    <label for="diversify-toggle" class="weight-label" style="margin: 0; cursor: pointer;">Diversify</label>
                 </div>
             </div>
         </div>
@@ -124,6 +128,9 @@
             <div class="recs-loader" id="recs-loader" hidden aria-live="polite" aria-label="Loading recommendations">
                 <div class="spinner" role="status"></div>
                 <span class="recs-loader__text">Loading recommendations...</span>
+            </div>
+            <div id="diversity-metrics" hidden style="margin-bottom: 16px; padding: 12px; background: var(--bg-surface); border-radius: 8px; font-size: 14px; border: 1px solid var(--border-color); color: var(--text-secondary);">
+                Diversity Score: <strong id="diversity-score-value" style="color: var(--text-primary);"></strong>%
             </div>
             <div class="recs-strip" id="recs-strip"></div>
         </section>

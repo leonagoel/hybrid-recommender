@@ -74,6 +74,9 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    diversifyToggle: $('diversify-toggle'),
+    diversityMetrics: $('diversity-metrics'),
+    diversityScoreValue: $('diversity-score-value'),
 };
 
 // ── Utilities ───────────────────────────────────────────────────────
@@ -453,13 +456,22 @@ async function loadRecommendations(title) {
     els.recsLoader.hidden = false;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
+    els.diversityMetrics.hidden = true;
 
     try {
-        const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+        const isDiversified = els.diversifyToggle ? els.diversifyToggle.checked : false;
+        const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12&diversify=${isDiversified}`);
         const recs = data.recommendations || [];
 
         els.recsLoader.hidden = true;
         els.recsStrip.hidden = false;
+
+        if (data.diversity_score !== undefined) {
+            els.diversityMetrics.hidden = false;
+            els.diversityScoreValue.textContent = (data.diversity_score * 100).toFixed(2);
+        } else {
+            els.diversityMetrics.hidden = true;
+        }
 
         if (!recs.length) {
             els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
@@ -493,6 +505,7 @@ async function loadRecommendations(title) {
     } catch {
         els.recsLoader.hidden = true;
         els.recsStrip.hidden = false;
+        els.diversityMetrics.hidden = true;
         els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
     }
 }

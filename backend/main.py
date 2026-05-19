@@ -1,12 +1,10 @@
-"""
-FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
-Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
-"""
 import os
 import sys
 import io
 import time
 import logging
+import math
+import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -17,6 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
+from backend.diversity import calculate_diversity_score, diversify_results
 
 load_dotenv()
 
@@ -33,7 +32,6 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
-# ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 logger = logging.getLogger("hybrid_recommender.api")
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
@@ -46,7 +44,6 @@ def _get_slow_response_threshold_ms() -> float:
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
-# CORS — restrict in production; allow localhost for development
 allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -55,10 +52,8 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
-
 @app.middleware("http")
 async def response_time_middleware(request: Request, call_next):
-    """Attach response duration headers and log every API request."""
     started_at = time.perf_counter()
     response = None
 
@@ -83,7 +78,6 @@ async def response_time_middleware(request: Request, call_next):
             },
         )
 
-# ── State ────────────────────────────────────────────────────────────
 models = {
     "content": None,
     "collab": None,
@@ -93,12 +87,10 @@ models = {
     "build_time": None,
 }
 
-
 class WeightsUpdate(BaseModel):
     alpha: float = 0.4
     beta: float = 0.35
     gamma: float = 0.25
-
 
 class PurchaseCreate(BaseModel):
     user_id: str
@@ -107,18 +99,13 @@ class PurchaseCreate(BaseModel):
     review_text: str = ""
 
 
-# ── Config (for frontend — serves only public keys) ─────────────────
-
 @app.get("/api/config")
 def get_config():
-    """Serve Supabase public config to the frontend. Only exposes the anon key (safe for public use)."""
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
         "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
     }
 
-
-# ── Status ───────────────────────────────────────────────────────────
 
 @app.get("/api/status")
 def status():
@@ -133,18 +120,12 @@ def status():
     }
 
 
-# ── Search (PostgreSQL FTS) ─────────────────────────────────────────
-
 @app.get("/api/search")
 def search_items(
     q: str = "",
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """
-    Search products using PostgreSQL full-text search.
-    Falls back to top-rated products when query is empty.
-    """
     sb = get_supabase()
 
     if q.strip():
@@ -157,7 +138,6 @@ def search_items(
             products = result.data or []
         except Exception as e:
             logger.warning("Full-text search failed for query '%s': %s", q.strip(), e)
-            # Fallback: do a LIKE search if FTS parsing fails
             result = sb.table('products') \
                 .select('id, title, description, category, rating, avg_sentiment, review_count') \
                 .ilike('title', f'%{q.strip()}%') \
@@ -177,7 +157,6 @@ def search_items(
             .execute()
         products = result.data or []
 
-    # Format response
     results = []
     for p in products:
         results.append({
@@ -199,12 +178,8 @@ def search_items(
     }
 
 
-# ── Upload + Import ─────────────────────────────────────────────────
-
 @app.post("/api/upload")
 async def upload_dataset(file: UploadFile = File(...)):
-    """Upload a CSV or JSON dataset and import into Supabase."""
-    import math
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
 
@@ -218,7 +193,6 @@ async def upload_dataset(file: UploadFile = File(...)):
         adapted_df, meta = adapt_data(raw_df)
         adapted_df = adapted_df.drop_duplicates(subset='title', keep='first')
 
-        # Use admin client if available, otherwise fall back to anon
         try:
             sb = get_supabase_admin()
         except RuntimeError:
@@ -233,7 +207,6 @@ async def upload_dataset(file: UploadFile = File(...)):
             chunk = adapted_df.iloc[start:start + batch_size]
             rows = []
             for _, row in chunk.iterrows():
-                # Safely convert rating — handle NaN, inf, None
                 raw_rating = row.get('rating', 0)
                 try:
                     rating_val = float(raw_rating)
@@ -265,7 +238,7 @@ async def upload_dataset(file: UploadFile = File(...)):
             except Exception as e:
                 errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
 
-        models["ready"] = False  # Force rebuild
+        models["ready"] = False
 
         result = {
             "message": f"Imported {imported:,} products from {filename}",
@@ -277,7 +250,7 @@ async def upload_dataset(file: UploadFile = File(...)):
             },
         }
         if errors:
-            result["warnings"] = errors[:5]  # Return first 5 errors
+            result["warnings"] = errors[:5]
             logger.warning("Imported dataset with %d batch warnings", len(errors))
 
         logger.info("Imported %d products from %s", imported, filename)
@@ -286,18 +259,13 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.error("Upload failed for %s: %s", filename, e, exc_info=True)
-        # Don't leak internal details — log server-side, return generic message
         raise HTTPException(400, "Upload failed. Check file format and try again.")
 
 
-# ── Build Models ────────────────────────────────────────────────────
-
 @app.post("/api/build")
 def build_models():
-    """Build recommendation models from Supabase data."""
     sb = get_supabase()
 
-    # Fetch products
     all_products = []
     page_size = 1000
     offset = 0
@@ -316,7 +284,6 @@ def build_models():
         logger.warning("Model build requested with no products in database")
         raise HTTPException(400, "No products in database. Upload data first.")
 
-    import pandas as pd
     item_df = pd.DataFrame(all_products)
     item_df['combined'] = (
         item_df['title'].astype(str) + ' ' +
@@ -327,10 +294,8 @@ def build_models():
 
     start_time = time.time()
 
-    # Content model
     content_model = ContentRecommender(item_df)
 
-    # Collaborative model (from purchases)
     collab_model = None
     try:
         purchases_result = sb.table('purchases') \
@@ -340,7 +305,6 @@ def build_models():
         purchases = purchases_result.data or []
 
         if len(purchases) > 10:
-            # Map product_id → title
             product_title_map = {p['id']: p['title'] for p in all_products}
             interaction_rows = []
             for p in purchases:
@@ -359,7 +323,6 @@ def build_models():
     except Exception as e:
         logger.warning("Collaborative model data load failed: %s", e)
 
-    # Hybrid model
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
 
     build_time = round(time.time() - start_time, 2)
@@ -385,25 +348,32 @@ def build_models():
     }
 
 
-# ── Recommendations ────────────────────────────────────────────────
-
 @app.get("/api/recommend/{item_title}")
-def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False)):
-    """Get hybrid recommendations for an item."""
+def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False), diversify: bool = False):
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-    recs = models["hybrid"].recommend(item_title, top_n=top_n, explain=explain)
+        
+    fetch_limit = top_n * 3 if diversify else top_n
+    recs = models["hybrid"].recommend(item_title, top_n=fetch_limit, explain=explain)
+    
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
+        
+    if diversify:
+        recs = diversify_results(recs, top_n=top_n)
+    else:
+        recs = recs[:top_n]
+        
+    diversity_score = calculate_diversity_score(recs)
+        
     return {
         "query_item": item_title,
         "recommendations": recs,
+        "diversity_score": diversity_score,
         "weights": models["hybrid"].get_weights(),
         "explain": explain,
     }
 
-
-# ── Weights ─────────────────────────────────────────────────────────
 
 @app.get("/api/weights")
 def get_weights():
@@ -420,11 +390,8 @@ def update_weights(w: WeightsUpdate):
     return {"message": "Weights updated", "weights": models["hybrid"].get_weights()}
 
 
-# ── Items ───────────────────────────────────────────────────────────
-
 @app.get("/api/items")
 def list_items(page: int = 1, per_page: int = 50):
-    """List products from Supabase with pagination."""
     sb = get_supabase()
     offset = (page - 1) * per_page
     result = sb.table('products') \
@@ -454,28 +421,21 @@ def list_items(page: int = 1, per_page: int = 50):
     }
 
 
-# ── Categories ──────────────────────────────────────────────────────
-
 @app.get("/api/categories")
 def get_categories():
-    """Get all unique categories."""
     sb = get_supabase()
     result = sb.rpc('get_categories', {}).execute()
     if result.data:
         return {"categories": result.data}
 
-    # Fallback: distinct query
     result = sb.table('products').select('category').limit(5000).execute()
     cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
     cats.sort()
     return {"categories": cats}
 
 
-# ── Purchases ───────────────────────────────────────────────────────
-
 @app.get("/api/purchases/{user_id}")
 def get_user_purchases(user_id: str, limit: int = 50):
-    """Get purchase history for a user (via anon client — RLS enforced)."""
     sb = get_supabase()
     result = sb.table('purchases') \
         .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)') \
@@ -488,7 +448,6 @@ def get_user_purchases(user_id: str, limit: int = 50):
 
 @app.post("/api/purchases")
 def create_purchase(data: PurchaseCreate):
-    """Record a purchase (validated input)."""
     sb = get_supabase()
     result = sb.table('purchases').insert({
         'user_id': data.user_id,
@@ -499,7 +458,6 @@ def create_purchase(data: PurchaseCreate):
     return {"purchase": result.data}
 
 
-# ── Frontend Serving ────────────────────────────────────────────────
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
 
 if os.path.isdir(frontend_dir):
