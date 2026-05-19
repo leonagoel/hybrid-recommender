@@ -123,33 +123,80 @@ function categoryIcon(cat) {
     return '📦';
 }
 
+async function getAuthHeaders() {
+
+    if (!sbClient) {
+        return {
+            'Content-Type': 'application/json'
+        };
+    }
+
+    const {
+        data: { session }
+    } = await sbClient.auth.getSession();
+
+    const token = session?.access_token;
+
+    return {
+        'Content-Type': 'application/json',
+        ...(token && {
+            Authorization: `Bearer ${token}`
+        })
+    };
+}
+
 // ── API Helpers ─────────────────────────────────────────────────────
 const API = {
+
     async get(url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
+
+        const headers = await getAuthHeaders();
+
+        const res = await fetch(url, {
+            headers
+        });
+
+        if (!res.ok) {
+            throw new Error(`API error: ${res.status}`);
+        }
+
         return res.json();
     },
+
     async post(url, data) {
+
+        const headers = await getAuthHeaders();
+
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify(data),
         });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
+
+        if (!res.ok) {
+            throw new Error(`API error: ${res.status}`);
+        }
+
         return res.json();
     },
+
     async put(url, data) {
+
+        const headers = await getAuthHeaders();
+
         const res = await fetch(url, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify(data),
         });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
+
+        if (!res.ok) {
+            throw new Error(`API error: ${res.status}`);
+        }
+
         return res.json();
     },
 };
-
 // ── Auth ────────────────────────────────────────────────────────────
 async function initAuth() {
     if (!sbClient) {

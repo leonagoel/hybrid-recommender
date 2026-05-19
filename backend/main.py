@@ -10,7 +10,15 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Depends
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -27,6 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from db import get_supabase, get_supabase_admin
+from backend.auth import get_current_user
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
@@ -101,7 +110,6 @@ class WeightsUpdate(BaseModel):
 
 
 class PurchaseCreate(BaseModel):
-    user_id: str
     product_id: int
     rating: float = 0.0
     review_text: str = ""
@@ -473,30 +481,50 @@ def get_categories():
 
 # ── Purchases ───────────────────────────────────────────────────────
 
-@app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = 50):
-    """Get purchase history for a user (via anon client — RLS enforced)."""
+@app.get("/api/purchases")
+def get_user_purchases(
+    limit: int = 50,
+    current_user = Depends(get_current_user)
+):
+
     sb = get_supabase()
+
+    user_id = current_user.id
+
     result = sb.table('purchases') \
-        .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)') \
+        .select(
+            'id, product_id, rating, review_text, purchased_at, products(title, category, rating)'
+        ) \
         .eq('user_id', user_id) \
         .order('purchased_at', desc=True) \
         .limit(limit) \
         .execute()
-    return {"purchases": result.data or []}
+
+    return {
+        "purchases": result.data or []
+    }
 
 
 @app.post("/api/purchases")
-def create_purchase(data: PurchaseCreate):
-    """Record a purchase (validated input)."""
+def create_purchase(
+    data: PurchaseCreate,
+    current_user = Depends(get_current_user)
+):
+
     sb = get_supabase()
+
+    user_id = current_user.id
+
     result = sb.table('purchases').insert({
-        'user_id': data.user_id,
+        'user_id': user_id,
         'product_id': data.product_id,
         'rating': max(0, min(5, data.rating)),
         'review_text': data.review_text[:1000],
     }).execute()
-    return {"purchase": result.data}
+
+    return {
+        "purchase": result.data
+    }
 
 
 # ── Frontend Serving ────────────────────────────────────────────────
