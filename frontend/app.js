@@ -37,6 +37,7 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
+    compareList: [],
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -523,6 +524,10 @@ function renderProducts(products, append) {
             <div class="product-card__actions">
                 <label class="compare-label">
                     <input type="checkbox" class="compare-checkbox" data-title="${p.title}" ${isChecked ? 'checked' : ''}>
+                    Heatmap
+                </label>
+                <label class="compare-label">
+                    <input type="checkbox" class="side-compare-checkbox" data-title="${p.title}">
                     Compare
                 </label>
                 <button class="btn--add-cart" data-title="${p.title}">
@@ -558,6 +563,16 @@ function renderProducts(products, append) {
                     state.heatmapSelected = state.heatmapSelected.filter(t => t !== title);
                 }
                 updateCompareCount();
+            });
+        }
+
+        // Side-by-side compare checkbox
+        const sideCheckbox = card.querySelector('.side-compare-checkbox');
+        if (sideCheckbox) {
+            sideCheckbox.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const success = toggleCompare(p, sideCheckbox.checked);
+                if (!success) sideCheckbox.checked = false;
             });
         }
 
@@ -987,4 +1002,132 @@ async function sendFeedback(item, feedback, button) {
         console.error(error);
         toast('Feedback failed', 'error');
     }
+}
+// ── Product Comparison (Side by Side) ──────────────────────────────
+function toggleCompare(product, checked) {
+    if (checked) {
+        if (state.compareList.length >= 3) {
+            toast('Maximum 3 products can be compared', 'error');
+            return false;
+        }
+        if (!state.compareList.find(p => p.title === product.title)) {
+            state.compareList.push(product);
+        }
+    } else {
+        state.compareList = state.compareList.filter(p => p.title !== product.title);
+    }
+    updateCompareBar();
+    return true;
+}
+
+function updateCompareBar() {
+    let bar = document.getElementById('compare-bar');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'compare-bar';
+        bar.className = 'compare-bar';
+        document.body.appendChild(bar);
+    }
+    if (state.compareList.length === 0) {
+        bar.hidden = true;
+        return;
+    }
+    bar.hidden = false;
+    bar.innerHTML = `
+        <div class="compare-bar__items">
+            ${state.compareList.map(p => `
+                <div class="compare-bar__item">
+                    <span>${p.title.substring(0, 25)}${p.title.length > 25 ? '...' : ''}</span>
+                    <button onclick="removeFromCompare('${p.title.replace(/'/g, "\\'")}')">✕</button>
+                </div>
+            `).join('')}
+        </div>
+        <div class="compare-bar__actions">
+            <span class="compare-bar__count">${state.compareList.length}/3 selected</span>
+            <button class="compare-bar__btn" onclick="openComparePage()"
+                ${state.compareList.length < 2 ? 'disabled' : ''}>
+                Compare Now
+            </button>
+            <button class="compare-bar__clear" onclick="clearCompare()">Clear</button>
+        </div>
+    `;
+}
+
+function removeFromCompare(title) {
+    state.compareList = state.compareList.filter(p => p.title !== title);
+    document.querySelectorAll('.side-compare-checkbox').forEach(cb => {
+        if (cb.dataset.title === title) cb.checked = false;
+    });
+    updateCompareBar();
+}
+
+function clearCompare() {
+    state.compareList = [];
+    document.querySelectorAll('.side-compare-checkbox').forEach(cb => {
+        cb.checked = false;
+    });
+    updateCompareBar();
+}
+
+function openComparePage() {
+    if (state.compareList.length < 2) {
+        toast('Select at least 2 products to compare', 'info');
+        return;
+    }
+
+    let modal = document.getElementById('compare-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'compare-modal';
+        modal.className = 'modal-overlay';
+        document.body.appendChild(modal);
+    }
+
+    const products = state.compareList;
+
+    modal.innerHTML = `
+        <div class="modal" style="max-width:900px;width:95%;">
+            <button class="modal__close" onclick="document.getElementById('compare-modal').hidden=true">&times;</button>
+            <h2 class="modal__title">Product Comparison</h2>
+            <div style="overflow-x:auto;margin-top:16px;">
+                <table class="compare-table">
+                    <thead>
+                        <tr>
+                            <th style="min-width:120px;">Attribute</th>
+                            ${products.map(p => `
+                                <th style="min-width:180px;">${p.title}</th>
+                            `).join('')}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Category</strong></td>
+                            ${products.map(p => `<td>${p.category || 'N/A'}</td>`).join('')}
+                        </tr>
+                        <tr>
+                            <td><strong>Rating</strong></td>
+                            ${products.map(p => `<td>⭐ ${(p.rating || 0).toFixed(1)}</td>`).join('')}
+                        </tr>
+                        <tr>
+                            <td><strong>Sentiment</strong></td>
+                            ${products.map(p => {
+                                const s = p.avg_sentiment || 0;
+                                const label = s > 0.05 ? '😊 Positive' : s < -0.05 ? '😞 Negative' : '😐 Neutral';
+                                return `<td>${label}</td>`;
+                            }).join('')}
+                        </tr>
+                        <tr>
+                            <td><strong>Description</strong></td>
+                            ${products.map(p => `<td style="font-size:12px;">${(p.description || 'N/A').substring(0, 100)}...</td>`).join('')}
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+
+    modal.hidden = false;
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.hidden = true;
+    });
 }
