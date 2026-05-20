@@ -1029,3 +1029,10 @@ body {
         transform: rotate(360deg);
     }
 }
+.sort-dropdown {
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    border: 1px solid #ccc;
+    cursor: pointer;
+}

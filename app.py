@@ -23,6 +23,26 @@ if uploaded_file:
 
     st.write("### Adapted Data")
     st.dataframe(adapted_df.head())
+    # Sorting options
+    sort_option = st.selectbox(
+    "Sort Products By",
+    ["Relevance", "Price: Low to High", "Price: High to Low", "Rating"]
+    )
+
+    # Apply sorting
+    sorted_df = adapted_df.copy()
+
+    if sort_option == "Price: Low to High" and "price" in sorted_df.columns:
+        sorted_df = sorted_df.sort_values(by="price", ascending=True)
+
+    elif sort_option == "Price: High to Low" and "price" in sorted_df.columns:
+        sorted_df = sorted_df.sort_values(by="price", ascending=False)
+
+    elif sort_option == "Rating" and "rating" in sorted_df.columns:
+        sorted_df = sorted_df.sort_values(by="rating", ascending=False)
+
+    st.write("### Sorted Products")
+    st.dataframe(sorted_df.head(20))
 
     # Build models
     content_model = ContentRecommender(adapted_df)

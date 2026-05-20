@@ -128,11 +128,22 @@
 
         <!-- Product Grid -->
         <section class="products-section" id="products-section">
-            <div class="section-header">
-                <h2 class="section-title" id="products-title">Top Products</h2>
-                <span class="product-count" id="product-count"></span>
+        <div class="section-header">
+            <h2 class="section-title" id="products-title">Top Products</h2>
+            <div style="display:flex; align-items:center; gap:12px;">
+            <span class="product-count" id="product-count"></span>
+
+                <select id="sort-select" class="sort-dropdown">
+                <option value="relevance">Relevance</option>
+                <option value="price-low">Price: Low to High</option>
+                <option value="price-high">Price: High to Low</option>
+                <option value="rating">Rating</option>
+                </select>
             </div>
-            <div class="product-grid" id="product-grid"></div>
+        </div>
+            <div class="product-grid" id="product-grid">
+
+            </div>
             <div class="load-more" id="load-more-container" hidden>
                 <button class="btn btn--outline" id="load-more-btn">Load More</button>
             </div>

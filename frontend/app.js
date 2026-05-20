@@ -44,6 +44,7 @@ const els = {
     searchInput: $('search-input'),
     searchDropdown: $('search-dropdown'),
     searchShortcut: $('search-shortcut'),
+    sortSelect: $('sort-select'),
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
     authModal: $('auth-modal'),
@@ -353,7 +354,10 @@ async function loadProducts(append = false) {
     }
 
     try {
-        const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}`);
+        const sort = els.sortSelect?.value || 'relevance';
+        const data = await API.get(
+        `/api/search?q=&sort=${sort}&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}`
+        );
         const products = data.results || [];
         state.totalProducts = data.total || products.length;
 
@@ -378,7 +382,10 @@ async function loadSearchResults(query) {
     els.productsTitle.textContent = `Results for "${query}"`;
 
     try {
-        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
+        const sort = els.sortSelect?.value || 'relevance';
+        const data = await API.get(
+        `/api/search?q=${encodeURIComponent(query)}&sort=${sort}&limit=40`
+        );
         const products = data.results || [];
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${products.length} results`;
@@ -394,7 +401,11 @@ async function loadSearchResults(query) {
 function renderProducts(products, append) {
     if (!append) state.products = [];
 
+    const sortBy = els.sortSelect?.value || 'relevance';
+    products = sortProducts(products, sortBy);
+
     const fragment = document.createDocumentFragment();
+    
 
     products.forEach((p, i) => {
         state.products.push(p);
@@ -441,7 +452,29 @@ function renderProducts(products, append) {
 
     els.productGrid.appendChild(fragment);
 }
+function sortProducts(products, sortBy) {
+    const sorted = [...products];
 
+    switch (sortBy) {
+        case 'price-low':
+            sorted.sort((a, b) => (a.price || 0) - (b.price || 0));
+            break;
+
+        case 'price-high':
+            sorted.sort((a, b) => (b.price || 0) - (a.price || 0));
+            break;
+
+        case 'rating':
+            sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+            break;
+
+        case 'relevance':
+        default:
+            break;
+    }
+
+    return sorted;
+}
 // ── Recommendations ─────────────────────────────────────────────────
 async function loadRecommendations(title) {
     if (!state.modelReady) {
@@ -630,6 +663,15 @@ function bindEvents() {
 
     // Build
     els.buildBtn.addEventListener('click', handleBuild);
+    // Sorting
+    els.sortSelect?.addEventListener('change', () => {
+    const query = els.searchInput.value.trim();
+    if (query) {
+        loadSearchResults(query);
+    } else {
+        loadProducts();
+    }
+    });
 
     // Load more
     els.loadMoreBtn.addEventListener('click', () => {
