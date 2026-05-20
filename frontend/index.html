@@ -12,6 +12,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
+     <div class="page-wrapper">
     <!-- Header -->
     <header class="header" id="header">
         <div class="header__inner">
@@ -207,12 +208,35 @@
     <!-- Toast Container -->
     <div class="toast-container" id="toast-container"></div>
 
-    <footer class="footer">
-        <p>&copy; 2026 HybridRec — Powered by TF-IDF, SVD, VADER &amp; PostgreSQL FTS</p>
-    </footer>
     <div id="saveToast" class="save-toast">
     Preferences saved
     </div>
+    <footer class="footer">
+  <div class="footer-container">
+    
+    <div class="footer-left">
+      <h3>Hybrid Recommender System</h3>
+      <p>Smart product recommendations powered by AI</p>
+    </div>
+
+    <div class="footer-right">
+      <a
+        href="https://github.com/your-username/hybrid-recommender"
+        target="_blank"
+      >
+        GitHub Repository
+      </a>
+
+      <img
+        src="https://gssoc.girlscript.tech/badges/postman.png"
+        alt="GSSoC Badge"
+        class="gssoc-badge"
+      />
+    </div>
+
+  </div>
+</footer>
+</div>
 
     <script src="/static/app.js"></script>
 </body>
