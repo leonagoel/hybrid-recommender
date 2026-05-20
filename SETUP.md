@@ -88,6 +88,7 @@ hybrid-recommender/
 ├── data_adapter.py      # CSV/JSON schema adapter
 ├── dataset_manager.py   # Multi-dataset manager
 ├── db.py                # Supabase client
+├── app.py               # Streamlit UI (no Supabase needed)
 ├── Dockerfile           # FastAPI container image
 ├── .dockerignore        # Docker build exclusions
 ├── .env                 # Credentials (git-ignored)
@@ -100,3 +101,4 @@ hybrid-recommender/
 - **Recommendations:** Hybrid (Content + Collaborative + Sentiment)
 - **Upload:** CSV and JSON format support
 - **UI:** Amazon-like modern design with animations
+- **Streamlit UI:** Upload a CSV locally, build models, and get recommendations — no Supabase or server setup needed (`streamlit run app.py`)

@@ -39,8 +39,16 @@ jobs:
             // ── /approve-assignment @username (mentor/PA only) ──
             const approveMatch = comment.match(/^\/approve-assignment\s+@?([\w-]+)/i);
             if (approveMatch) {
+              // Only repo owner can approve assignments
+              if (sender !== owner) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `⛔ @${sender} — Only the project maintainer can approve assignments. Please wait for @${owner} to review your request.`
+                });
+                return;
+              }
+
               const targetUser = approveMatch[1];
-              // Only owner or collaborators can approve
               try {
                 await github.rest.issues.addAssignees({
                   owner, repo, issue_number: issueNumber,

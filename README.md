@@ -101,6 +101,7 @@ Review text analyzed for compound polarity ∈ [-1, 1]. Per-item aggregation →
 | `Type-to-Search` | Global keyboard capture — start typing anywhere to search instantly |
 | `Responsive UI` | Amazon-inspired dark header, 4→3→2→1 column card grid across breakpoints |
 | `Secure by Default` | Pydantic validation, parameterized queries, CORS-restricted, no stack-trace leakage |
+| `Streamlit UI` | Local CSV upload → build models → recommendations, no Supabase or server required |
 
 ---
 
@@ -149,6 +150,7 @@ hybrid-recommender/
 ├── nlp_engine.py                # VADER sentiment analysis pipeline
 ├── evaluation.py                # Precision@K, Recall@K, NDCG@K benchmarks
 ├── db.py                        # Supabase client singleton (anon + admin)
+├── app.py                       # Streamlit UI — upload CSV, build models, get recommendations
 ├── requirements.txt
 ├── .env.example
 └── SETUP.md
@@ -188,6 +190,15 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 Open **http://localhost:8000**, upload any CSV/JSON from `datasets/`, click **Build Models**, then start typing to search.
+
+### Alternative — Streamlit UI *(no Supabase required)*
+
+```bash
+# After cloning and installing dependencies (step 1 above)
+streamlit run app.py
+```
+
+Upload any CSV file, click **Build Models**, then enter an item name or User ID to get recommendations directly in your browser — no database or server setup needed.
 
 ## 06 — API Reference
 
@@ -258,3 +269,13 @@ National Finalist · Smart India Hackathon 2025 · Top 8% of 950+ Teams
 [![Email](https://img.shields.io/badge/Email-leona.goel123%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel123@gmail.com)
 
 </div>
+## 09 — Screenshots
+
+### Home Page
+![Home Page](assets/homepage.png)
+
+### Recommendation Results
+![Recommendations](assets/recommendations.png)
+
+### API Documentation
+![Swagger Docs](assets/swagger.png)
