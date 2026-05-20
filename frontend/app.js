@@ -155,7 +155,6 @@ const API = {
             const status = res.status;
             let message;
             if (status === 404) {
-                // Try to read a detail message from the response body
                 try {
                     const body = await res.json();
                     message = body.detail || body.message || 'Product not found. Try searching for something else.';
@@ -173,9 +172,9 @@ const API = {
         return res.json();
     },
 
-    get(url)           { return this._request(url); },
-    post(url, data)    { return this._request(url, { method: 'POST',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); },
-    put(url, data)     { return this._request(url, { method: 'PUT',   headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); },
+    get(url)        { return this._request(url); },
+    post(url, data) { return this._request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); },
+    put(url, data)  { return this._request(url, { method: 'PUT',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); },
 };
 
 // ── Auth ────────────────────────────────────────────────────────────
@@ -399,6 +398,9 @@ async function loadProducts(append = false) {
         // Show load more if there might be more
         els.loadMoreContainer.hidden = products.length < state.perPage;
     } catch (err) {
+        // ── CONFLICT 1 RESOLVED ── (originally lines 432–453)
+        // Kept friendly error UI from feat/friendly-error-pages
+        // + restored finally-equivalent cleanup from main
         els.skeletonLoader.hidden = true;
         if (err instanceof ApiError) {
             if (err.isNetworkError || err.isServerError) {
@@ -415,9 +417,11 @@ async function loadProducts(append = false) {
         } else {
             toast('Failed to load products', 'error');
         }
+        els.loadMoreContainer.hidden = true;
     }
 }
 
+// ── Search Results ──────────────────────────────────────────────────
 async function loadSearchResults(query) {
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
@@ -432,6 +436,9 @@ async function loadSearchResults(query) {
         renderProducts(products, false);
         els.loadMoreContainer.hidden = true;
     } catch (err) {
+        // ── CONFLICT 2 RESOLVED ── (originally lines 541–545)
+        // Changed catch { to catch (err) so ApiError checks work
+        // Kept full friendly error pages from feat/friendly-error-pages
         els.skeletonLoader.hidden = true;
         if (err instanceof ApiError && err.isNotFound) {
             toast('🔍 Product not found. Try searching for something else.', 'error');
@@ -541,6 +548,10 @@ async function loadRecommendations(title) {
                     Score: ${(r.hybrid_score || 0).toFixed(3)}
                     · Content: ${(r.content_score || 0).toFixed(2)}
                     · Collab: ${(r.collab_score || 0).toFixed(2)}
+                </div>
+                <div class="feedback-buttons" style="margin-top:10px;display:flex;gap:10px;">
+                    <button onclick="sendFeedback('${r.title}', 'up', this)">👍</button>
+                    <button onclick="sendFeedback('${r.title}', 'down', this)">👎</button>
                 </div>
             </div>
         `).join('');
@@ -731,28 +742,24 @@ function bindEvents() {
         loadProducts(true);
     });
 
-    // Weights
-    [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
-        slider.addEventListener('change', handleWeightChange);
-    });
-    // Weights
+    // Weights — bound once only (duplicate removed)
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
         slider.addEventListener('change', handleWeightChange);
     });
 
-    // Scroll Progress Bar
+    // Scroll progress bar
     window.addEventListener('scroll', () => {
         const progressBar = document.getElementById('scroll-progress');
         if (!progressBar) return;
-        
+
         const scrollY = window.scrollY;
         const docHeight = document.documentElement.scrollHeight;
         const windowHeight = window.innerHeight;
-        
         const width = (scrollY / (docHeight - windowHeight)) * 100;
-        progressBar.style.width = width + "%";
+        progressBar.style.width = width + '%';
     });
 }
+
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
 spinStyle.textContent = `@keyframes spin { to { transform: rotate(360deg); } } .spin { animation: spin 1s linear infinite; }`;
@@ -761,21 +768,54 @@ document.head.appendChild(spinStyle);
 // ── Back To Top ─────────────────────────────────────────────────────
 function initBackToTop() {
     const backToTop = document.getElementById('backToTop');
-
     if (!backToTop) return;
 
-    
     backToTop.style.display = 'none';
 
     window.addEventListener('scroll', () => {
-        backToTop.style.display =
-            window.scrollY > 700 ? 'block' : 'none';
+        backToTop.style.display = window.scrollY > 700 ? 'block' : 'none';
     });
 
     backToTop.addEventListener('click', () => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     });
 }
+
+// ── Feedback ────────────────────────────────────────────────────────
+async function sendFeedback(item, feedback, button) {
+    const storageKey = `feedback_${item}`;
+
+    if (sessionStorage.getItem(storageKey)) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: 'demo_user',
+                item: item,
+                feedback: feedback,
+            }),
+        });
+
+        if (response.ok) {
+            sessionStorage.setItem(storageKey, 'true');
+
+            const parent = button.parentElement;
+            parent.querySelectorAll('button').forEach((btn) => {
+                btn.disabled = true;
+            });
+
+            toast('Thanks for your feedback!', 'success');
+        }
+    } catch (error) {
+        console.error(error);
+        toast('Feedback failed', 'error');
+    }
+}
+
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
@@ -789,4 +829,5 @@ async function init() {
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
 }
+
 document.addEventListener('DOMContentLoaded', init);
