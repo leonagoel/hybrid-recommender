@@ -37,6 +37,7 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
+    heatmapSelected: [],
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -358,52 +359,39 @@ function handleSearchKeydown(e) {
 
 // ── Product Loading (Infinite Scroll) ───────────────────────────────
 async function loadProducts(append = false) {
-    // Guard: prevent duplicate requests and loading past end
-    if (state.isLoading) return;
-    if (append && !state.hasMore) return;
+    if (state.loading || !state.hasMore && append) return;
 
-    state.isLoading = true;
+    state.loading = true;
 
     if (!append) {
-        els.productGrid.innerHTML = '';
         els.skeletonLoader.hidden = false;
-        els.infiniteEnd.hidden = true;
-        state.page = 1;
-        state.hasMore = true;
-        state.products = [];
-    } else {
-        els.infiniteLoader.hidden = false;
     }
 
+    els.infiniteLoader.hidden = false;
+
     try {
-const sort = els.sortSelect?.value || 'relevance';
+        const sort = els.sortSelect?.value || 'relevance';
 
-const data = await API.get(
-    `/api/items?page=${state.page}&limit=${state.perPage}&sort=${sort}`
-);
+        const data = await API.get(
+            `/api/items?page=${state.page}&limit=${state.perPage}&sort=${sort}`
+        );
 
-const products = data.items || [];
-state.totalProducts = data.total || 0;
-state.hasMore = data.has_more ?? products.length >= state.perPage;
+        const products = data.items || [];
+
+        state.totalProducts = data.total || 0;
+        state.hasMore = data.has_more ?? products.length >= state.perPage;
 
         if (!append) {
             els.skeletonLoader.hidden = true;
+            els.productGrid.innerHTML = '';
         }
 
         renderProducts(products, append);
-        els.productCount.textContent = `${state.products.length} of ${state.totalProducts} products`;
 
-        if (!state.hasMore) {
-            els.infiniteEnd.hidden = state.products.length === 0;
-        }
-
-        // Advance page for next fetch
-        state.page++;
     } catch (err) {
-        els.skeletonLoader.hidden = true;
-        toast('Failed to load products', 'error');
+        console.error(err);
     } finally {
-        state.isLoading = false;
+        state.loading = false;
         els.infiniteLoader.hidden = true;
     }
 }
@@ -475,28 +463,25 @@ function renderTrending(items) {
 }
 
 async function loadSearchResults(query) {
-    // Pause infinite scroll during search
-    destroyScrollObserver();
-
-    els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
-    els.productsTitle.textContent = `Results for "${query}"`;
     els.infiniteEnd.hidden = true;
 
     try {
         const sort = els.sortSelect?.value || 'relevance';
+
         const data = await API.get(
-        `/api/search?q=${encodeURIComponent(query)}&sort=${sort}&limit=40`
+            `/api/search?q=${encodeURIComponent(query)}&sort=${sort}&limit=40`
         );
+
         const products = data.results || [];
+
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${products.length} results`;
-        state.products = [];
-        state.hasMore = false;
+
         renderProducts(products, false);
-    } catch {
-        els.skeletonLoader.hidden = true;
-        toast('Search failed', 'error');
+
+    } catch (err) {
+        console.error(err);
     }
 }
 
