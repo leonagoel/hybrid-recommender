@@ -36,7 +36,21 @@ recs = hm.recommend(title, top_n=5)
 for i, r in enumerate(recs):
     print(f"   #{i+1} {r['title']} — Hybrid: {r['hybrid_score']:.4f}")
 
-print("\n7. Testing search...")
+print("\n7. Testing LLM Explanations...")
+from llm_explainer import get_explainer
+explainer = get_explainer()
+print(f"   LLM client initialized: {explainer.client is not None}")
+
+# Generate explanations for first 3 recommendations
+explained_recs = explainer.explain_multiple(recs[:3], title)
+for i, rec in enumerate(explained_recs, start=1):
+    explanation = rec.get("llm_explanation", "No explanation")
+    # Truncate for display
+    explanation_short = (explanation[:80] + "...") if len(explanation) > 80 else explanation
+    print(f"   #{i} {rec['title']}")
+    print(f"      → {explanation_short}")
+
+print("\n8. Testing search...")
 results = cm.search("Premium", top_n=3)
 for r in results:
     print(f"   Found: {r['title']} (score: {r['score']:.4f})")

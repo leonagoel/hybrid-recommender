@@ -12,7 +12,8 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
-  <div class="page-wrapper">
+    <!-- Scroll Bar -->
+    <div id="scroll-progress"></div>
     <!-- Header -->
     <header class="header" id="header">
         <div class="header__inner">
@@ -25,7 +26,7 @@
                     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
                 <input type="text" id="search-input" placeholder="Search products..." autocomplete="off" spellcheck="false">
-                <span class="search-shortcut" id="search-shortcut">Type anywhere</span>
+                <span class="search-shortcut" id="search-shortcut">Press / to search</span>
                 <div class="search-dropdown" id="search-dropdown"></div>
             </div>
             <div class="header__actions">
@@ -120,7 +121,30 @@
                 </svg>
                 Recommended for you
             </h2>
+            <div class="recs-loader" id="recs-loader" hidden aria-live="polite" aria-label="Loading recommendations">
+                <div class="spinner" role="status"></div>
+                <span class="recs-loader__text">Loading recommendations...</span>
+            </div>
             <div class="recs-strip" id="recs-strip"></div>
+        </section>
+
+        <!-- Similarity Heatmap -->
+        <section class="heatmap-section" id="heatmap-section" hidden>
+            <div class="section-header">
+                <h2 class="section-title">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                        <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+                    </svg>
+                    Similarity Heatmap
+                </h2>
+                <button class="btn btn--outline btn--sm" id="heatmap-close-btn">✕ Close</button>
+            </div>
+            <div class="heatmap-loader" id="heatmap-loader" hidden>
+                <div class="spinner" role="status"></div>
+                <span class="heatmap-loader__text">Computing similarities…</span>
+            </div>
+            <div class="heatmap-container" id="heatmap-container"></div>
         </section>
 
         <!-- Product Grid -->
@@ -130,8 +154,15 @@
                 <span class="product-count" id="product-count"></span>
             </div>
             <div class="product-grid" id="product-grid"></div>
-            <div class="load-more" id="load-more-container" hidden>
-                <button class="btn btn--outline" id="load-more-btn">Load More</button>
+            <!-- Infinite-scroll sentinel (observed by IntersectionObserver) -->
+            <div id="scroll-sentinel" aria-hidden="true"></div>
+            <div class="infinite-scroll-loader" id="infinite-scroll-loader" hidden>
+                <div class="spinner" role="status"></div>
+                <span class="infinite-scroll-loader__text">Loading more products…</span>
+            </div>
+            <div class="infinite-scroll-end" id="infinite-scroll-end" hidden>
+                <span class="infinite-scroll-end__icon">✓</span>
+                <span class="infinite-scroll-end__text">No more products</span>
             </div>
         </section>
 
@@ -147,12 +178,20 @@
             <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
         </div>
     </main>
+    <div id="compare-panel" class="compare-panel">
+    <div id="compare-content"></div>
+</div>
 
     <!-- Toast Container -->
     <div class="toast-container" id="toast-container"></div>
 
     <footer class="footer">
-  <div class="footer-container">
+        <p>&copy; 2026 HybridRec — Powered by TF-IDF, SVD, VADER &amp; PostgreSQL FTS</p>
+        <p><a href="/dashboard.html" class="footer__link">Admin Dashboard</a></p>
+    </footer>
+    <footer style="text-align:center; margin-top:40px;">
+    <a href="/dashboard.html">Admin Dashboard</a>
+    </footer>
 
     <div class="footer-left">
       <h3>Hybrid Recommender System</h3>
@@ -178,5 +217,7 @@
 </footer>
 </div>
     <script src="/static/app.js"></script>
+    <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
 </body>
 </html>
+

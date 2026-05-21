@@ -1,0 +1,79 @@
+name: GSSoC PR Bot
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+  issues: write
+  contents: read
+
+jobs:
+  welcome-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Welcome PR and check requirements
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const sender = pr.user.login;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = pr.number;
+            const isFirstTime = pr.author_association === 'FIRST_TIME_CONTRIBUTOR' || 
+                               pr.author_association === 'NONE';
+            const body = pr.body || '';
+
+            // Check if PR description has required sections
+            const hasWhatChanged = body.toLowerCase().includes('what changed');
+            const hasWhy = body.toLowerCase().includes('why');
+            const hasHowToTest = body.toLowerCase().includes('how to test');
+            const hasRelatedIssue = body.toLowerCase().includes('closes #') || 
+                                    body.toLowerCase().includes('fixes #') ||
+                                    body.toLowerCase().includes('related issue');
+
+            let checklist = '';
+            checklist += hasWhatChanged ? '✅' : '❌';
+            checklist += ' What changed section\n';
+            checklist += hasWhy ? '✅' : '❌';
+            checklist += ' Why section\n';
+            checklist += hasHowToTest ? '✅' : '❌';
+            checklist += ' How to test section\n';
+            checklist += hasRelatedIssue ? '✅' : '❌';
+            checklist += ' Related issue linked\n';
+
+            const allGood = hasWhatChanged && hasWhy && hasHowToTest && hasRelatedIssue;
+
+            let welcomeMessage = '';
+
+            if (isFirstTime) {
+              welcomeMessage = `🎉 **Welcome to Hybrid Recommender, @${sender}!** This is your first contribution here!\n\n`;
+            } else {
+              welcomeMessage = `👋 **Thanks for your PR, @${sender}!**\n\n`;
+            }
+
+            welcomeMessage += `**PR Description Checklist:**\n${checklist}\n`;
+
+            if (!allGood) {
+              welcomeMessage += `\n⚠️ **Some required sections are missing from your PR description.**\nPlease update your PR description to include all required sections from [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md).\n\n`;
+            } else {
+              welcomeMessage += `\n✅ **PR description looks complete!**\n\n`;
+            }
+
+            welcomeMessage += `**What happens next:**\n`;
+            welcomeMessage += `1. A mentor (@${owner}) will review your changes\n`;
+            welcomeMessage += `2. CI checks must pass (lint + smoke test)\n`;
+            welcomeMessage += `3. Once approved, labels will be added for GSSoC points\n`;
+            welcomeMessage += `4. PR will be merged after approval\n\n`;
+            welcomeMessage += `⏱️ Please respond to review comments within **48 hours**.\n\n`;
+            welcomeMessage += `📖 Make sure your changes follow our [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)`;
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: prNumber,
+              body: welcomeMessage
+            });

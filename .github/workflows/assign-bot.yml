@@ -1,0 +1,137 @@
+name: GSSoC Assignment Bot
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  handle-assignment:
+    runs-on: ubuntu-latest
+    if: github.event.issue.pull_request == null
+
+    steps:
+      - name: Handle assignment request
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const comment = context.payload.comment.body.trim();
+            const sender = context.payload.comment.user.login;
+            const issueNumber = context.payload.issue.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueAuthor = context.payload.issue.user.login;
+
+            // Get current assignees
+            const issue = await github.rest.issues.get({
+              owner, repo, issue_number: issueNumber
+            });
+            const assignees = issue.data.assignees.map(a => a.login);
+            const labels = issue.data.labels.map(l => l.name);
+
+            // Check if issue has gssoc:approved label
+            const isGssocApproved = labels.includes('gssoc:approved');
+
+            // ── /approve-assignment @username (mentor/PA only) ──
+            const approveMatch = comment.match(/^\/approve-assignment\s+@?([\w-]+)/i);
+            if (approveMatch) {
+              // Only repo owner can approve assignments
+              if (sender !== owner) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `⛔ @${sender} — Only the project maintainer can approve assignments. Please wait for @${owner} to review your request.`
+                });
+                return;
+              }
+
+              const targetUser = approveMatch[1];
+              try {
+                await github.rest.issues.addAssignees({
+                  owner, repo, issue_number: issueNumber,
+                  assignees: [targetUser]
+                });
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `✅ **Assignment Approved!**\n\n@${targetUser} has been assigned to this issue by @${sender}.\n\n**Next steps:**\n- Fork the repo and create a branch: \`fix/issue-${issueNumber}\`\n- Read [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) before starting\n- Submit your PR within **7 days** or the issue may be reassigned\n\nGood luck! 🚀`
+                });
+              } catch (e) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `❌ Could not assign @${targetUser}. Please check the username is correct.`
+                });
+              }
+              return;
+            }
+
+            // ── /unassign (self-unassign) ──
+            if (comment.toLowerCase() === '/unassign') {
+              await github.rest.issues.removeAssignees({
+                owner, repo, issue_number: issueNumber,
+                assignees: [sender]
+              });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `👋 @${sender} has been unassigned from this issue. It's now open for others to pick up!`
+              });
+              return;
+            }
+
+            // ── Assignment request keywords ──
+            const requestKeywords = [
+              'i would like to work on this',
+              'i want to work on this',
+              'can i work on this',
+              'assign this to me',
+              'assign me',
+              'i would like to take this',
+              'i want to take this',
+              'can i take this',
+              'please assign me',
+              'i am interested in this',
+              'i\'d like to work on this',
+            ];
+
+            const lowerComment = comment.toLowerCase();
+            const isRequest = requestKeywords.some(kw => lowerComment.includes(kw));
+
+            if (!isRequest) return;
+
+            // Don't respond to the repo owner requesting on their own issue
+            if (sender === owner) return;
+
+            // Check if issue is approved for GSSoC
+            if (!isGssocApproved) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `⚠️ @${sender} — This issue is not yet approved for GSSoC contributions. Please wait for a mentor to add the \`gssoc:approved\` label before requesting assignment.`
+              });
+              return;
+            }
+
+            // Check if already assigned to someone
+            if (assignees.length > 0 && !assignees.includes(sender)) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `⚠️ **Already Assigned**\n\nHi @${sender}! This issue is currently assigned to @${assignees.join(', ')}.\n\nPlease check other open issues here: [Open Issues](../issues?q=is%3Aissue+is%3Aopen+no%3Aassignee+label%3Agssoc%3Aapproved)`
+              });
+              return;
+            }
+
+            // Already assigned to this person
+            if (assignees.includes(sender)) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `✅ @${sender} — You are already assigned to this issue! Start working on it and submit a PR when ready.`
+              });
+              return;
+            }
+
+            // Record the request and notify mentors
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issueNumber,
+              body: `📌 **Assignment Request Recorded**\n\nHi @${sender}, your assignment request has been queued for review.\n\n⚠️ This issue requires mentor validation before assignment.\n\n👥 **Mentor Review Requested**\n\n@${owner}\n\nPlease review and assign using:\n\`\`\`\n/approve-assignment @${sender}\n\`\`\`\n\n**Assignment factors:**\n- Issue suitability\n- Contributor workload\n- Prior participation\n\nThank you for your patience 🚀`
+            });

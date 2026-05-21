@@ -71,8 +71,31 @@ def evaluate():
         dm.load_csv(sample_file)
 
     interaction_df, item_df = dm.merge_all()
+    # Create synthetic users if dataset has only one user
+    if interaction_df['user_id'].nunique() <= 1:
+     print("Generating synthetic users for evaluation...")
+
+    interaction_df = interaction_df.copy()
+
+    synthetic_users = []
+    num_fake_users = 50
+
+    for i in range(num_fake_users):
+        temp = interaction_df.sample(
+            min(40, len(interaction_df)),
+            replace=True,
+            random_state=i
+        ).copy()
+
+        temp['user_id'] = f"user_{i}"
+        synthetic_users.append(temp)
+
+    interaction_df = pd.concat(synthetic_users, ignore_index=True)
+
+    print("Synthetic users created:",
+          interaction_df['user_id'].nunique())
     print("Running NLP Sentiment Analysis on reviews...")
-    interaction_df = batch_analyze(interaction_df, 'review_text')
+    interaction_df = batch_analyze(interaction_df.head(2000), 'review_text')
     sentiment_agg = aggregate_sentiment_by_item(interaction_df, 'title')
     item_df = item_df.merge(sentiment_agg, on='title', how='left')
     item_df['avg_sentiment'] = item_df['avg_sentiment'].fillna(0.0)
@@ -82,29 +105,31 @@ def evaluate():
     user_groups = interaction_df.groupby('user_id')
     test_pairs = []
     for user_id, group in user_groups:
-        if len(group) < 3:
+        if len(group) < 2:
             continue
         top_item = group.sort_values('rating', ascending=False).iloc[0]['title']
-        # Relevant items = items this user rated >= 4
-        relevant = group[group['rating'] >= 4]['title'].tolist()
+        # Relevant items = items this user rated >= 3
+        relevant = group[group['rating'] >= 3]['title'].tolist()
         if relevant:
             test_pairs.append((user_id, top_item, relevant))
+        print("Interaction rows:", len(interaction_df))
+        print("Unique users:", interaction_df['user_id'].nunique())
 
-    if not test_pairs:
-        print("Not enough data for evaluation.")
-        return
+        user_counts = interaction_df.groupby('user_id').size()
+        print(user_counts.describe())
+
+        if not test_pairs:
+            print("Not enough data for evaluation.")
+            return  
 
     # 3. Build models
     content_model = ContentRecommender(item_df)
     collab_model = CollaborativeRecommender(interaction_df)
 
     configs = [
-        ("Content-Only",       1.0, 0.0, 0.0),
-        ("Collab-Only",        0.0, 1.0, 0.0),
-        ("Sentiment-Only",     0.0, 0.0, 1.0),
-        ("Hybrid (0.4/0.35/0.25)", 0.4, 0.35, 0.25),
-        ("Hybrid (0.5/0.3/0.2)",   0.5, 0.3,  0.2),
-        ("Hybrid (0.33/0.33/0.33)", 0.33, 0.33, 0.34),
+    ("Alpha 0.3", 0.3, 0.7, 0.0),
+    ("Alpha 0.5", 0.5, 0.5, 0.0),
+    ("Alpha 0.7", 0.7, 0.3, 0.0),
     ]
 
     K = 10
@@ -144,5 +169,106 @@ def evaluate():
     print(f"    Precision: {best[1]:.4f}  Recall: {best[2]:.4f}  NDCG: {best[3]:.4f}\n")
 
 
+def _build_test_data():
+    """Shared helper — loads data, builds models, and returns test pairs.
+
+    Returns (content_model, collab_model, item_df, test_pairs).
+    """
+    dm = DatasetManager()
+    data_dir = os.path.join(os.path.dirname(__file__), 'datasets')
+
+    datasets_to_load = ['books.csv', 'booksdata.csv', 'ratings.csv']
+    loaded_any = False
+
+    for filename in datasets_to_load:
+        filepath = os.path.join(data_dir, filename)
+        if os.path.exists(filepath):
+            print(f"Loading dataset: {filename}...")
+            dm.load_csv(filepath)
+            loaded_any = True
+
+    if not loaded_any:
+        sample_file = os.path.join(data_dir, 'sample_products.csv')
+        if not os.path.exists(sample_file):
+            print("ERROR: datasets not found. Run: python scripts/generate_sample_data.py")
+            return None, None, None, []
+        print("Loading sample_products.csv...")
+        dm.load_csv(sample_file)
+
+    interaction_df, item_df = dm.merge_all()
+
+    if interaction_df['user_id'].nunique() <= 1:
+        print("Generating synthetic users for evaluation...")
+        interaction_df = interaction_df.copy()
+        synthetic_users = []
+        for i in range(50):
+            temp = interaction_df.sample(
+                min(40, len(interaction_df)), replace=True, random_state=i
+            ).copy()
+            temp['user_id'] = f"user_{i}"
+            synthetic_users.append(temp)
+        interaction_df = pd.concat(synthetic_users, ignore_index=True)
+
+    print("Running NLP Sentiment Analysis on reviews...")
+    interaction_df = batch_analyze(interaction_df.head(2000), 'review_text')
+    sentiment_agg = aggregate_sentiment_by_item(interaction_df, 'title')
+    item_df = item_df.merge(sentiment_agg, on='title', how='left')
+    item_df['avg_sentiment'] = item_df['avg_sentiment'].fillna(0.0)
+
+    # Leave-one-out test pairs
+    user_groups = interaction_df.groupby('user_id')
+    test_pairs = []
+    for user_id, group in user_groups:
+        if len(group) < 2:
+            continue
+        top_item = group.sort_values('rating', ascending=False).iloc[0]['title']
+        relevant = group[group['rating'] >= 3]['title'].tolist()
+        if relevant:
+            test_pairs.append((user_id, top_item, relevant))
+
+    if not test_pairs:
+        print("Not enough data for evaluation.")
+        return None, None, None, []
+
+    content_model = ContentRecommender(item_df)
+    collab_model = CollaborativeRecommender(interaction_df)
+
+    return content_model, collab_model, item_df, test_pairs
+
+
+def run_ab_test(config_a=None, config_b=None, k=10):
+    """Entry point for the --ab-test flag."""
+    from ab_testing import ABTestRunner
+
+    content_model, collab_model, item_df, test_pairs = _build_test_data()
+    if not test_pairs:
+        return
+
+    runner = ABTestRunner(
+        content_model, collab_model, item_df,
+        config_a=config_a,
+        config_b=config_b,
+        k=k,
+    )
+
+    runner.run(test_pairs)
+    runner.print_results()
+    runner.write_results_md()
+
+
 if __name__ == '__main__':
-    evaluate()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Evaluate the Hybrid Recommender System")
+    parser.add_argument(
+        '--ab-test',
+        action='store_true',
+        help='Run A/B test comparing two weight configurations and output results to results.md',
+    )
+    parser.add_argument('--k', type=int, default=10, help='Top-K for evaluation metrics (default: 10)')
+    args = parser.parse_args()
+
+    if args.ab_test:
+        run_ab_test(k=args.k)
+    else:
+        evaluate()

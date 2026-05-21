@@ -16,6 +16,9 @@
 [![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-F7931E?style=flat-square&logo=scikit-learn&logoColor=white)](https://scikit-learn.org)
 [![NLTK](https://img.shields.io/badge/NLTK-VADER_NLP-154f3c?style=flat-square)](https://nltk.org)
 [![MIT License](https://img.shields.io/badge/License-MIT-ff6b35?style=flat-square)](LICENSE)
+[![CI](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml/badge.svg)](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/leonagoel/hybrid-recommender)](https://github.com/leonagoel/hybrid-recommender/blob/main/LICENSE)
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 
 </div>
 
@@ -98,6 +101,7 @@ Review text analyzed for compound polarity ∈ [-1, 1]. Per-item aggregation →
 | `Type-to-Search` | Global keyboard capture — start typing anywhere to search instantly |
 | `Responsive UI` | Amazon-inspired dark header, 4→3→2→1 column card grid across breakpoints |
 | `Secure by Default` | Pydantic validation, parameterized queries, CORS-restricted, no stack-trace leakage |
+| `Streamlit UI` | Local CSV upload → build models → recommendations, no Supabase or server required |
 
 ---
 
@@ -146,6 +150,7 @@ hybrid-recommender/
 ├── nlp_engine.py                # VADER sentiment analysis pipeline
 ├── evaluation.py                # Precision@K, Recall@K, NDCG@K benchmarks
 ├── db.py                        # Supabase client singleton (anon + admin)
+├── app.py                       # Streamlit UI — upload CSV, build models, get recommendations
 ├── requirements.txt
 ├── .env.example
 └── SETUP.md
@@ -185,6 +190,15 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 Open **http://localhost:8000**, upload any CSV/JSON from `datasets/`, click **Build Models**, then start typing to search.
+
+### Alternative — Streamlit UI *(no Supabase required)*
+
+```bash
+# After cloning and installing dependencies (step 1 above)
+streamlit run app.py
+```
+
+Upload any CSV file, click **Build Models**, then enter an item name or User ID to get recommendations directly in your browser — no database or server setup needed.
 
 ## 06 — API Reference
 
@@ -249,8 +263,19 @@ B.Tech CSE · Vellore Institute of Technology
 National Finalist · Smart India Hackathon 2025 · Top 8% of 950+ Teams
 ```
 
+
 [![LinkedIn](https://img.shields.io/badge/Connect-LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/leona-goel)
 [![GitHub](https://img.shields.io/badge/Follow-GitHub-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/leonagoel)
-[![Email](https://img.shields.io/badge/Email-leona.goel23%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel23@gmail.com)
+[![Email](https://img.shields.io/badge/Email-leona.goel123%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel123@gmail.com)
 
 </div>
+## 09 — Screenshots
+
+### Home Page
+![Home Page](assets/homepage.png)
+
+### Recommendation Results
+![Recommendations](assets/recommendations.png)
+
+### API Documentation
+![Swagger Docs](assets/swagger.png)

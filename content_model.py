@@ -24,18 +24,18 @@ class ContentRecommender:
         self.matrix = self.vectorizer.fit_transform(self.df['combined'].fillna(''))
         # Do not compute full similarity matrix here to avoid OOM
         self._title_to_idx = {
-            t: i for i, t in enumerate(self.df['title'])
-        }
+    t.lower(): i for i, t in enumerate(self.df['title'])
+}
 
     def recommend(self, title, top_n=10):
         """
         Get content-based recommendations for a given item title.
         Returns list of dicts: [{ 'title', 'content_score' }, ...]
         """
-        if title not in self._title_to_idx:
+        if title.lower() not in self._title_to_idx:
             return []
 
-        idx = self._title_to_idx[title]
+        idx = self._title_to_idx[title.lower()]
         query_vec = self.matrix[idx]
         scores = cosine_similarity(query_vec, self.matrix).flatten()
         sim_scores = list(enumerate(scores))
@@ -56,6 +56,32 @@ class ContentRecommender:
                 break
 
         return results
+
+    def explain_similarity(self, source_title, candidate_title, top_n=5):
+        """Return top TF-IDF terms shared by the source and candidate item."""
+        if source_title not in self._title_to_idx or candidate_title not in self._title_to_idx:
+            return []
+
+        source_idx = self._title_to_idx[source_title]
+        candidate_idx = self._title_to_idx[candidate_title]
+        contributions = self.matrix[source_idx].multiply(self.matrix[candidate_idx]).toarray().ravel()
+        if not np.any(contributions):
+            return []
+
+        feature_names = self.vectorizer.get_feature_names_out()
+        top_indices = contributions.argsort()[::-1]
+        terms = []
+        for idx in top_indices:
+            score = float(contributions[idx])
+            if score <= 0:
+                break
+            terms.append({
+                'term': str(feature_names[idx]),
+                'score': round(score, 4),
+            })
+            if len(terms) >= top_n:
+                break
+        return terms
 
     def search(self, query, top_n=20):
         """
