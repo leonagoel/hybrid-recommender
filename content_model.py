@@ -24,8 +24,8 @@ class ContentRecommender:
         self.matrix = self.vectorizer.fit_transform(self.df['combined'].fillna(''))
         # Do not compute full similarity matrix here to avoid OOM
         self._title_to_idx = {
-    t.lower(): i for i, t in enumerate(self.df['title'])
-}
+            t.lower(): i for i, t in enumerate(self.df['title'])
+        }
 
     def recommend(self, title, top_n=10):
         """
@@ -33,7 +33,7 @@ class ContentRecommender:
         Returns list of dicts: [{ 'title', 'content_score' }, ...]
         """
         if title.lower() not in self._title_to_idx:
-        return []
+            return []
 
         idx = self._title_to_idx[title.lower()]
         query_vec = self.matrix[idx]
