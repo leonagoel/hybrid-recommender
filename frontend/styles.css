@@ -1076,3 +1076,89 @@ main {
     background: rgba(255,255,255,0.6);
     border-radius: inherit;
 }
+@media print {
+
+  /* Hide unnecessary UI */
+  nav,
+  header,
+  footer,
+  .navbar,
+  .search-bar,
+  .search-container,
+  .filters,
+  .slider-container,
+  .controls,
+  button,
+  .btn,
+  input,
+  select,
+  textarea {
+    display: none !important;
+  }
+
+  /* Reset page styling */
+  body {
+    background: white !important;
+    color: black !important;
+    margin: 0;
+    padding: 20px;
+    font-family: Arial, sans-serif;
+  }
+
+  /* Print title */
+  body::before {
+    content: "HybridRec — My Recommendations";
+    display: block;
+    font-size: 28px;
+    font-weight: bold;
+    margin-bottom: 24px;
+    text-align: center;
+  }
+
+  /* Product grid layout */
+  .products-grid,
+  .product-grid,
+  .recommendations-grid {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  /* Product cards */
+  .product-card,
+  .card {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    background: white !important;
+    border: 1px solid #ccc;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 16px;
+    color: black !important;
+  }
+
+  /* Remove gradients and effects */
+  * {
+    box-shadow: none !important;
+    text-shadow: none !important;
+    background-image: none !important;
+  }
+
+  /* Ensure important product info is visible */
+  .product-name,
+  .product-title,
+  .rating,
+  .score,
+  .product-score {
+    display: block !important;
+    color: black !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+  }
+
+  /* Product images */
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+}
