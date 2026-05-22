@@ -1049,13 +1049,6 @@ def _recommendation_payload(
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain, llm_explain)
-    cached = _get_cached_response(cache_key)
-    if cached is not None:
-        if response is not None:
-            _set_cache_headers(response, "HIT")
-        return cached
-
     recs = models["hybrid"].recommend(query_title, top_n=top_n, explain=explain)
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
@@ -1063,12 +1056,11 @@ def _recommendation_payload(
     payload = {
         "query_item": query_title,
         "recommendations": recs,
-        "weights": models["hybrid"].get_weights(),
+        "weights": weights,
         "explain": explain,
         "llm_explain": llm_explain,
     }
-
-
+    return payload
 
 def _json_scalar(val: Any) -> Any:
     """Convert numpy or pandas datatypes to standard JSON-compatible Python types."""
@@ -1142,9 +1134,6 @@ def get_similar_items(
         "total": len(recs),
         "explain": explain,
     }
-    if experiment:
-        response["experiment"] = experiment
-    return response
 
 
 @app.websocket("/ws/recommendations")
