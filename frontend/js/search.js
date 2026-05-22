@@ -1,131 +1,141 @@
-// =============================================================================
-// search.js — Search Functionality
-// Debounced FTS, global keyboard capture, category filter, pagination.
-// =============================================================================
+import { state, els } from './state.js';
+import { API } from './api.js';
 
-import { state, setState } from './state.js';
-import { renderProductCards, setLoadingState, showToast, renderPagination } from './ui.js';
+// ── Search Dropdown ──────────────────────────────────────────────────
+export function renderSearchDropdown(results, query) {
+    if (!results.length) {
+        closeSearchDropdown();
+        return;
+    }
 
-const DEBOUNCE_MS = 300;
-let _debounceTimer = null;
+    els.searchDropdown.innerHTML = results
+        .map((title, index) => `
+            <div
+                class="search-result ${index === state.selectedSearchIdx ? 'active' : ''}"
+                data-title="${title}"
+                data-idx="${index}"
+            >
+                <span class="search-result__icon">🔍</span>
+                <div class="search-result__info">
+                    <div class="search-result__title">
+                        ${highlightMatch(title, query)}
+                    </div>
+                </div>
+            </div>
+        `)
+        .join('');
 
-/** Bind search input, keyboard capture, category filter. Call once from app.js. */
-export function initSearch() {
-  _bindSearchInput();
-  _bindGlobalKeyCapture();
-  _bindCategoryFilter();
-}
+    els.searchDropdown.classList.add('active');
 
-/** Run a search query against /api/search. */
-export async function runSearch(query, limit = 20) {
-  const q = query.trim();
-  setState({ lastQuery: q, isSearching: true });
-  setLoadingState('search', true);
-
-  try {
-    const params = new URLSearchParams({ q, limit });
-    if (state.activeCategory) params.set('category', state.activeCategory);
-
-    const res  = await fetch(`/api/search?${params}`);
-    if (!res.ok) throw new Error(`Search error: ${res.status}`);
-
-    const data    = await res.json();
-    const results = data.results ?? data ?? [];
-
-    setState({ searchResults: results, isSearching: false });
-    renderProductCards(results, { context: 'search', query: q });
-    renderPagination(1, data.total ?? results.length, state.perPage, loadProducts);
-  } catch (err) {
-    showToast('Search failed. Please try again.', 'error');
-    console.error('[search]', err);
-    setState({ isSearching: false });
-  } finally {
-    setLoadingState('search', false);
-  }
-}
-
-/** Load paginated product listing (no query). */
-export async function loadProducts(page = 1) {
-  setLoadingState('products', true);
-  setState({ currentPage: page });
-
-  try {
-    const params = new URLSearchParams({ page, per_page: state.perPage });
-    if (state.activeCategory) params.set('category', state.activeCategory);
-
-    const res   = await fetch(`/api/items?${params}`);
-    if (!res.ok) throw new Error(`Items error: ${res.status}`);
-
-    const data  = await res.json();
-    const items = data.items ?? data ?? [];
-
-    setState({ searchResults: items });
-    renderProductCards(items, { context: 'browse', page });
-    renderPagination(page, data.total ?? items.length, state.perPage, loadProducts);
-  } catch (err) {
-    showToast('Failed to load products.', 'error');
-    console.error('[search]', err);
-  } finally {
-    setLoadingState('products', false);
-  }
-}
-
-/** Fetch categories and populate the dropdown. */
-export async function loadCategories() {
-  try {
-    const res  = await fetch('/api/categories');
-    if (!res.ok) return;
-    const data = await res.json();
-    const cats = data.categories ?? data ?? [];
-    setState({ categories: cats });
-    _renderCategoryOptions(cats);
-  } catch (err) {
-    console.warn('[search] loadCategories:', err);
-  }
-}
-
-// ── Internal ──────────────────────────────────────────────────────────────────
-
-function _bindSearchInput() {
-  const input = document.getElementById('search-input');
-  if (!input) return;
-
-  input.addEventListener('input', (e) => {
-    clearTimeout(_debounceTimer);
-    const q = e.target.value;
-    if (!q.trim()) { loadProducts(1); return; }
-    _debounceTimer = setTimeout(() => runSearch(q), DEBOUNCE_MS);
-  });
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { input.value = ''; loadProducts(1); }
-  });
-}
-
-function _bindGlobalKeyCapture() {
-  document.addEventListener('keydown', (e) => {
-    const tag = document.activeElement?.tagName?.toLowerCase();
-    if (['input', 'textarea', 'select'].includes(tag)) return;
-    if (e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1) return;
-    document.getElementById('search-input')?.focus();
-  });
-}
-
-function _bindCategoryFilter() {
-  document.getElementById('category-filter')
-    ?.addEventListener('change', (e) => {
-      setState({ activeCategory: e.target.value || null, currentPage: 1 });
-      state.lastQuery ? runSearch(state.lastQuery) : loadProducts(1);
+    els.searchDropdown.querySelectorAll('.search-result').forEach((el) => {
+        el.addEventListener('click', () => {
+            selectSearchResult(el.dataset.title);
+        });
     });
 }
 
-function _renderCategoryOptions(categories) {
-  const select = document.getElementById('category-filter');
-  if (!select) return;
-  select.innerHTML = '<option value="">All Categories</option>';
-  categories.forEach(cat => {
-    const opt = document.createElement('option');
-    opt.value = cat; opt.textContent = cat;
-    select.appendChild(opt);
-  });
+function highlightMatch(text, query) {
+    if (!query) return text;
+    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return text.replace(regex, '<strong>$1</strong>');
+}
+
+export function selectSearchResult(title) {
+    els.searchInput.value = title;
+    closeSearchDropdown();
+    // Lazy import to avoid circular dependency with recommendations.js
+    import('./recommendations.js').then(({ loadRecommendations, loadSearchResults }) => {
+        loadSearchResults(title);
+        loadRecommendations(title);
+    });
+}
+
+export function closeSearchDropdown() {
+    els.searchDropdown.classList.remove('active');
+    state.selectedSearchIdx = -1;
+}
+
+// ── Keyboard Handling ────────────────────────────────────────────────
+export function handleSearchKeydown(e) {
+    const results = state.autocompleteResults;
+
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        if (
+            state.selectedSearchIdx >= 0 &&
+            results.length &&
+            els.searchDropdown.classList.contains('active')
+        ) {
+            selectSearchResult(results[state.selectedSearchIdx]);
+        } else if (els.searchInput.value.trim().length > 0) {
+            selectSearchResult(els.searchInput.value.trim());
+        }
+        return;
+    }
+
+    if (e.key === 'Escape') {
+        closeSearchDropdown();
+        return;
+    }
+
+    if (!results.length || !els.searchDropdown.classList.contains('active')) return;
+
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        state.selectedSearchIdx = Math.min(state.selectedSearchIdx + 1, results.length - 1);
+        renderSearchDropdown(results, els.searchInput.value);
+    } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, 0);
+        renderSearchDropdown(results, els.searchInput.value);
+    }
+}
+
+// ── Debounced Search Input ───────────────────────────────────────────
+export function handleSearch(query) {
+    if (!query || query.trim().length < 1) {
+        closeSearchDropdown();
+        return;
+    }
+
+    clearTimeout(state.searchTimer);
+
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(
+                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=5`
+            );
+            state.autocompleteResults = data.suggestions || [];
+            state.selectedSearchIdx = -1;
+            renderSearchDropdown(state.autocompleteResults, query);
+        } catch (err) {
+            console.error('Autocomplete failed:', err);
+            closeSearchDropdown();
+        }
+    }, 300);
+}
+
+// ── Type-to-Search (Global / Shortcut) ──────────────────────────────
+export function initTypeToSearch() {
+    document.addEventListener('keydown', (e) => {
+        const tag = document.activeElement?.tagName;
+        const isTypingField =
+            tag === 'INPUT' ||
+            tag === 'TEXTAREA' ||
+            tag === 'SELECT' ||
+            document.activeElement?.isContentEditable;
+
+        if (isTypingField) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return;
+        if (e.key !== '/') return;
+
+        e.preventDefault();
+        els.searchInput.focus();
+    });
+
+    // Close dropdown on outside click
+    window.addEventListener('click', (e) => {
+        const container = document.getElementById('search-container');
+        if (!container.contains(e.target)) closeSearchDropdown();
+    });
 }
