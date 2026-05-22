@@ -7,6 +7,7 @@ Welcome! This project is part of **GSSoC 2026 (GirlScript Summer of Code)**. We'
 ## Table of Contents
 
 - [Before You Start](#before-you-start)
+- [Prerequisites](#Prerequisites)
 - [How to Contribute](#how-to-contribute)
 - [Branch Naming](#branch-naming)
 - [Commit Message Format](#commit-message-format)
@@ -14,6 +15,7 @@ Welcome! This project is part of **GSSoC 2026 (GirlScript Summer of Code)**. We'
 - [Code Style](#code-style)
 - [Running the Project Locally](#running-the-project-locally)
 - [GSSoC Label Guide](#gssoc-label-guide)
+- [Common Mistakes to Avoid](#Common-Mistakes-to-Avoid)
 
 ---
 
@@ -22,6 +24,14 @@ Welcome! This project is part of **GSSoC 2026 (GirlScript Summer of Code)**. We'
 1. **Find an issue** — Go to the [Issues tab](../../issues) and look for ones labelled `gssoc:approved` + `good first issue` if you are a beginner.
 2. **Comment to claim** — Comment `"I'd like to work on this"` on the issue and **wait for it to be assigned to you** before starting any code.
 3. **Do not submit a PR for an unassigned issue** — it will be closed without review.
+
+---
+
+## Prerequisites
+- Python 3.8+
+- Git installed
+- GitHub account
+- Basic knowledge of Python
 
 ---
 
@@ -196,5 +206,13 @@ For your PR to count on the GSSoC leaderboard, mentors will add these labels aft
 - Open a [GitHub Discussion](../../discussions) or comment on the issue
 - Join the **GSSoC Discord** and find the project channel
 - Tag **@leonagoel** if you are blocked for more than 48 hours
+
+---
+
+## Common Mistakes to Avoid
+- Don't work on unassigned issues
+- Don't submit multiple PRs for same issue  
+- Don't forget to sync fork before starting
+- Always test locally before PR
 
 Happy contributing! 🚀

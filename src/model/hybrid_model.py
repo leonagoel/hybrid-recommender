@@ -57,7 +57,12 @@ class HybridRecommender:
                     self._sentiment_map[title] = row['avg_sentiment']
 
                 raw_rating = float(row.get('rating', 0))
-                review_count = int(row.get('review_count', 0))
+                review_count = row.get('review_count', 0)
+
+                if np.isnan(review_count):
+                    review_count = 0
+
+                review_count = int(review_count)
                 self._review_count_map[title] = review_count
                 self._rating_map[title] = bayesian_rating(
                     raw_rating, review_count, global_avg
@@ -94,7 +99,7 @@ class HybridRecommender:
             return [0.5] * len(scores)
         return [(v - mn) / (mx - mn) for v in scores]
 
-    def recommend(self, title, top_n=10):
+    def recommend(self, title, user_id=None, top_n=10, explain=False):
         """
         Get hybrid recommendations for a given item title.
         Returns list of dicts sorted by hybrid_score.
@@ -140,18 +145,24 @@ class HybridRecommender:
         collab_scores = self._normalize([it['raw_collab'] for it in items])
         sentiment_scores = [(it['raw_sentiment'] + 1) / 2 for it in items]
 
-        # 5. Determine active weights
+        # 5. Determine active weights dynamically
         a, b, g = self.alpha, self.beta, self.gamma
+        
+        if user_id and self.collab_model and user_id in self.collab_model._user_to_idx:
+            user_interacts = len(self.collab_model.df[self.collab_model.df['user_id'] == user_id])
+            if user_interacts > 10:
+                b += 0.2  # high confidence in collaborative
+            elif user_interacts < 3:
+                a += 0.2  # fallback to content for cold users
+                
         if self.collab_model is None:
-            total = a + g
-            if total > 0:
-                a, g = a / total, g / total
             b = 0
         if not self._sentiment_map:
-            total = a + b
-            if total > 0:
-                a, b = a / total, b / total
             g = 0
+            
+        total = a + b + g
+        if total > 0:
+            a, b, g = a / total, b / total, g / total
 
         # 6. Compute hybrid score with popularity boost
         results = []
@@ -179,7 +190,7 @@ class HybridRecommender:
                 tp = row_data.iloc[0].get('top_reviews', [])
                 top_reviews = tp if isinstance(tp, list) else []
 
-            results.append({
+            result = {
                 'title': item['title'],
                 'content_score': round(content_scores[i], 4),
                 'collab_score': round(collab_scores[i], 4),
@@ -189,10 +200,83 @@ class HybridRecommender:
                 'category': category,
                 'description': description,
                 'top_reviews': top_reviews,
-            })
+            }
+            if explain:
+                result['explanation'] = self._build_explanation(
+                    title,
+                    item['title'],
+                    content_scores[i],
+                    collab_scores[i],
+                    sentiment_scores[i],
+                    popularity,
+                    a,
+                    b,
+                    g,
+                    item,
+                )
+            results.append(result)
 
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
         return results[:top_n]
+
+    def _build_explanation(
+        self,
+        source_title,
+        candidate_title,
+        content_score,
+        collab_score,
+        sentiment_score,
+        popularity,
+        alpha,
+        beta,
+        gamma,
+        raw_item,
+    ):
+        content_terms = []
+        if hasattr(self.content_model, 'explain_similarity'):
+            content_terms = self.content_model.explain_similarity(source_title, candidate_title)
+
+        weighted_components = {
+            'content': round(alpha * content_score, 4),
+            'collaborative': round(beta * collab_score, 4),
+            'sentiment': round(gamma * sentiment_score, 4),
+            'popularity_bonus': round(0.05 * popularity, 4),
+        }
+        strongest = max(weighted_components, key=weighted_components.get)
+
+        return {
+            'source_item': source_title,
+            'candidate_item': candidate_title,
+            'active_weights': {
+                'alpha': round(alpha, 4),
+                'beta': round(beta, 4),
+                'gamma': round(gamma, 4),
+            },
+            'component_scores': {
+                'content': round(content_score, 4),
+                'collaborative': round(collab_score, 4),
+                'sentiment': round(sentiment_score, 4),
+                'raw_content': round(raw_item['raw_content'], 4),
+                'raw_collaborative': round(raw_item['raw_collab'], 4),
+                'raw_sentiment': round(raw_item['raw_sentiment'], 4),
+            },
+            'weighted_components': weighted_components,
+            'top_content_terms': content_terms,
+            'signals': {
+                'strongest_component': strongest,
+                'collaborative_match': raw_item['raw_collab'] > 0,
+                'sentiment_polarity': self._sentiment_label(raw_item['raw_sentiment']),
+                'popularity': round(popularity, 4),
+            },
+        }
+
+    @staticmethod
+    def _sentiment_label(score):
+        if score > 0.2:
+            return 'positive'
+        if score < -0.2:
+            return 'negative'
+        return 'neutral'
 
     def _cold_start_fallback(self, title, top_n):
         """
