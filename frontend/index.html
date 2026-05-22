@@ -132,7 +132,12 @@
                 <input type="file" id="file-input" accept=".csv,.json" hidden>
             </div>
             <div class="controls__right">
-                <div class="weight-control" id="weight-controls">
+
+                <select id="category-filter" class="category-filter">
+                    <option value="All Categories">All Categories</option>
+                </select>
+
+            <div class="weight-control" id="weight-controls">
                     <span class="weight-label">Content</span>
                     <input type="range" id="weight-alpha" min="0" max="100" value="40" class="weight-slider">
                     <span class="weight-label">Collab</span>

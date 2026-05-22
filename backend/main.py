@@ -7,7 +7,7 @@ import sys
 import io
 import time
 import logging
-import math
+import re
 from collections import deque, Counter
 from threading import Lock
 
@@ -27,6 +27,8 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends
 from pydantic import BaseModel
 from typing import Any, Optional
 from dotenv import load_dotenv
@@ -175,6 +177,23 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+security = HTTPBearer()
+
+def verify_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    token = credentials.credentials
+    if not token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        sb = get_supabase()
+        user = sb.auth.get_user(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return token
 
 # ── Response Time Monitoring ────────────────────────────────────────
 SLOW_RESPONSE_THRESHOLD_MS = 500.0
@@ -386,7 +405,9 @@ def status():
 # ── Dashboard (admin metrics — issue #71) ───────────────────────────
 
 @app.get("/api/dashboard")
-def dashboard():
+def dashboard(
+    token: str = Depends(verify_token)
+):
     """Aggregate metrics for the admin dashboard."""
     sb = get_supabase()
 
@@ -495,39 +516,26 @@ def search_items(
     offset: int = 0
 ):
     """
-    Search products using PostgreSQL full-text search.
-    Falls back to top-rated products when query is empty.
+    Search products using simple case‑insensitive title matching.
     """
+    # Rate limiting (unchanged)
     limit_val_str = os.getenv("RATE_LIMIT_SEARCH_PER_MIN")
     if limit_val_str:
         try:
             limit_val = int(limit_val_str)
             client_ip = request.client.host if request.client else "unknown"
             now = time.time()
-            
             if client_ip not in _rate_limit_buckets:
                 _rate_limit_buckets[client_ip] = []
-            
-            # Clean old requests (>60s)
             _rate_limit_buckets[client_ip] = [t for t in _rate_limit_buckets[client_ip] if now - t < 60]
-            
             if len(_rate_limit_buckets[client_ip]) >= limit_val:
                 headers = {
                     "x-ratelimit-limit": str(limit_val),
                     "x-ratelimit-remaining": "0",
                     "x-ratelimit-reset": str(int(now + 60)),
                 }
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "error": "Rate limit exceeded",
-                        "message": "Too many requests. Please try again later.",
-                    },
-                    headers=headers
-                )
-            
+                return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"}, headers=headers)
             _rate_limit_buckets[client_ip].append(now)
-            
             remaining = limit_val - len(_rate_limit_buckets[client_ip])
             response.headers["x-ratelimit-limit"] = str(limit_val)
             response.headers["x-ratelimit-remaining"] = str(remaining)
@@ -541,31 +549,19 @@ def search_items(
         _set_cache_headers(response, "HIT")
         return cached
 
-
     try:
         sb = get_supabase()
-        is_fallback = False
+        query = q.strip()
 
-        if q.strip():
-            try:
-                result = sb.rpc('search_products', {
-                    'query_text': q.strip(),
-                    'match_count': limit,
-                    'offset_val': offset,
-                }).execute()
-                products = result.data or []
-            except Exception as e:
-                logger.warning("Full-text search failed for query '%s': %s", q.strip(), e)
-                # Fallback: do a LIKE search if FTS parsing fails
-                result = sb.table('products') \
-                    .select('id, title, description, category, rating, avg_sentiment, review_count') \
-                    .ilike('title', f'%{q.strip()}%') \
-                    .order('rating', desc=True) \
-                    .limit(limit) \
-                    .execute()
-                products = result.data or []
-                for p in products:
-                    p['rank'] = 0.0
+        if query:
+            result = sb.table('products') \
+                .select('id, title, description, category, rating, avg_sentiment, review_count') \
+                .ilike('title', f'%{query}%') \
+                .order('rating', desc=True) \
+                .limit(limit) \
+                .offset(offset) \
+                .execute()
+            products = result.data or []
         else:
             result = sb.table('products') \
                 .select('id, title, description, category, rating, avg_sentiment, review_count') \
@@ -575,7 +571,6 @@ def search_items(
                 .offset(offset) \
                 .execute()
             products = result.data or []
-            is_fallback = True
 
         results = []
         for p in products:
@@ -587,27 +582,18 @@ def search_items(
                 'rating': p.get('rating', 0.0),
                 'avg_sentiment': p.get('avg_sentiment', 0.0),
                 'review_count': p.get('review_count', 0),
-                'rank': p.get('rank', 0.0),
+                'rank': 0.0,
                 'image': p.get('image', ''),
             })
 
-    except Exception:
-        # Graceful fallback when Supabase is not configured locally
-        is_fallback = not bool(q.strip())
-        q_clean = q.strip().lower()
-        
-        if q_clean:
-            # Case-insensitive filtering on mock list
-            matched = [
-                p for p in MOCK_PRODUCTS 
-                if q_clean in p["title"].lower() or q_clean in p["description"].lower()
-            ]
+    except Exception as e:
+        logger.warning("Supabase search failed, falling back to mock products: %s", e)
+        query_clean = q.strip().lower()
+        if query_clean:
+            filtered = [p for p in MOCK_PRODUCTS if query_clean in p["title"].lower()]
         else:
-            matched = MOCK_PRODUCTS
-
-        # Apply limit & offset manually
-        paginated = matched[offset : offset + limit]
-
+            filtered = MOCK_PRODUCTS
+        paginated = filtered[offset: offset + limit]
         results = []
         for p in paginated:
             results.append({
@@ -618,7 +604,7 @@ def search_items(
                 'rating': p['rating'],
                 'avg_sentiment': p['avg_sentiment'],
                 'review_count': p['review_count'],
-                'rank': 1.0 if q_clean else 0.0,
+                'rank': 0.0,
                 'image': p['image'],
             })
 
@@ -626,12 +612,11 @@ def search_items(
         "results": results,
         "total": len(results),
         "query": q,
-        "is_fallback": is_fallback,
+        "is_fallback": not bool(q.strip()),
     }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
-
 
 @app.get("/api/autocomplete")
 def autocomplete_products(
@@ -691,7 +676,10 @@ def autocomplete_products(
 # ── Upload + Import ─────────────────────────────────────────────────
 
 @app.post("/api/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(
+    file: UploadFile = File(...),
+    token: str = Depends(verify_token)
+):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
     filename = file.filename or "data.csv"
@@ -798,7 +786,9 @@ async def upload_dataset(file: UploadFile = File(...)):
 
 
 @app.post("/api/build")
-def build_models():
+def build_models(
+    token: str = Depends(verify_token)
+):
     """Build recommendation models from Supabase data."""
     sb = None
     all_products = []
@@ -1049,13 +1039,6 @@ def _recommendation_payload(
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain, llm_explain)
-    cached = _get_cached_response(cache_key)
-    if cached is not None:
-        if response is not None:
-            _set_cache_headers(response, "HIT")
-        return cached
-
     recs = models["hybrid"].recommend(query_title, top_n=top_n, explain=explain)
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
@@ -1063,12 +1046,11 @@ def _recommendation_payload(
     payload = {
         "query_item": query_title,
         "recommendations": recs,
-        "weights": models["hybrid"].get_weights(),
+        "weights": weights,
         "explain": explain,
         "llm_explain": llm_explain,
     }
-
-
+    return payload
 
 def _json_scalar(val: Any) -> Any:
     """Convert numpy or pandas datatypes to standard JSON-compatible Python types."""
@@ -1142,9 +1124,6 @@ def get_similar_items(
         "total": len(recs),
         "explain": explain,
     }
-    if experiment:
-        response["experiment"] = experiment
-    return response
 
 
 @app.websocket("/ws/recommendations")
@@ -1199,7 +1178,10 @@ def get_weights():
 
 
 @app.put("/api/weights")
-def update_weights(w: WeightsUpdate):
+def update_weights(
+    w: WeightsUpdate,
+    token: str = Depends(verify_token)
+    ):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
     models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
@@ -1350,7 +1332,11 @@ def get_categories():
 # ── Purchases ───────────────────────────────────────────────────────
 
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = 50):
+def get_user_purchases(
+    user_id: str, 
+    limit: int = 50,
+    token: str = Depends(verify_token)
+):
     """Get purchase history for a user (via anon client — RLS enforced)."""
     try:
         sb = get_supabase()
@@ -1367,7 +1353,10 @@ def get_user_purchases(user_id: str, limit: int = 50):
 
 
 @app.post("/api/purchases")
-def create_purchase(data: PurchaseCreate):
+def create_purchase(
+    data: PurchaseCreate,
+    token: str = Depends(verify_token)
+):
     """Record a purchase (validated input)."""
     try:
         sb = get_supabase()
@@ -1407,7 +1396,10 @@ def health_check():
 
 
 @app.post("/api/feedback")
-def submit_feedback(data: FeedbackCreate):
+def submit_feedback(
+    data: FeedbackCreate,
+    token: str = Depends(verify_token)
+    ):
 
     return {
         "message": "Feedback submitted successfully",

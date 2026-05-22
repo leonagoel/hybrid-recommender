@@ -256,8 +256,56 @@ GET    /api/weights                  →  Current α, β, γ blend weights
 PUT    /api/weights                  →  Update blend weights live
 GET    /api/purchases/{user_id}      →  User purchase history
 POST   /api/purchases                →  Record a purchase event
-```
 
+06.1 — API Examples (curl)
+All examples assume the server is running at http://localhost:8000
+
+System Status
+curl http://localhost:8000/api/status
+
+Search Products
+curl "http://localhost:8000/api/search?q=laptop&limit=10"
+
+Paginated Items
+curl "http://localhost:8000/api/items?page=1&per_page=20"
+
+All Categories
+curl http://localhost:8000/api/categories
+
+Get Current Weights
+curl http://localhost:8000/api/weights
+
+Update Hybrid Weights
+curl -X PUT "http://localhost:8000/api/weights" \
+  -H "Content-Type: application/json" \
+  -d '{"alpha": 0.5, "beta": 0.3, "gamma": 0.2}'
+
+Get User Purchases
+curl "http://localhost:8000/api/purchases/user_123"
+
+Record a Purchase
+curl -X POST "http://localhost:8000/api/purchases" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "user_123", "item_id": "prod_456"}'
+
+Async Recommendation (Dispatch)
+curl -X POST "http://localhost:8000/api/recommend?item_title=Wireless%20Mouse&top_n=10"
+
+Poll Task Result (replace task_id with actual ID)
+curl "http://localhost:8000/api/task/abc123"
+
+Sync Recommendation (Legacy)
+curl "http://localhost:8000/api/recommend/Laptop"
+
+Upload Dataset
+curl -X POST "http://localhost:8000/api/upload" \
+  -F "file=@/path/to/your/dataset.csv"
+
+Build/Train Models
+curl -X POST http://localhost:8000/api/build
+
+Get Config
+curl http://localhost:8000/api/config
 ---
 
 ## 07 — Evaluation

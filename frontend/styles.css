@@ -1736,7 +1736,6 @@ feat/add-theme-toggle
     background: rgba(255,255,255,0.12);
     border-color: var(--accent);
     transform: scale(1.1);
-=======
 /* Empty search results */
 .empty-search-results {
     grid-column: 1 / -1;
