@@ -495,39 +495,26 @@ def search_items(
     offset: int = 0
 ):
     """
-    Search products using PostgreSQL full-text search.
-    Falls back to top-rated products when query is empty.
+    Search products using simple case‑insensitive title matching.
     """
+    # Rate limiting (unchanged)
     limit_val_str = os.getenv("RATE_LIMIT_SEARCH_PER_MIN")
     if limit_val_str:
         try:
             limit_val = int(limit_val_str)
             client_ip = request.client.host if request.client else "unknown"
             now = time.time()
-            
             if client_ip not in _rate_limit_buckets:
                 _rate_limit_buckets[client_ip] = []
-            
-            # Clean old requests (>60s)
             _rate_limit_buckets[client_ip] = [t for t in _rate_limit_buckets[client_ip] if now - t < 60]
-            
             if len(_rate_limit_buckets[client_ip]) >= limit_val:
                 headers = {
                     "x-ratelimit-limit": str(limit_val),
                     "x-ratelimit-remaining": "0",
                     "x-ratelimit-reset": str(int(now + 60)),
                 }
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "error": "Rate limit exceeded",
-                        "message": "Too many requests. Please try again later.",
-                    },
-                    headers=headers
-                )
-            
+                return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"}, headers=headers)
             _rate_limit_buckets[client_ip].append(now)
-            
             remaining = limit_val - len(_rate_limit_buckets[client_ip])
             response.headers["x-ratelimit-limit"] = str(limit_val)
             response.headers["x-ratelimit-remaining"] = str(remaining)
@@ -541,31 +528,19 @@ def search_items(
         _set_cache_headers(response, "HIT")
         return cached
 
-
     try:
         sb = get_supabase()
-        is_fallback = False
+        query = q.strip()
 
-        if q.strip():
-            try:
-                result = sb.rpc('search_products', {
-                    'query_text': q.strip(),
-                    'match_count': limit,
-                    'offset_val': offset,
-                }).execute()
-                products = result.data or []
-            except Exception as e:
-                logger.warning("Full-text search failed for query '%s': %s", q.strip(), e)
-                # Fallback: do a LIKE search if FTS parsing fails
-                result = sb.table('products') \
-                    .select('id, title, description, category, rating, avg_sentiment, review_count') \
-                    .ilike('title', f'%{q.strip()}%') \
-                    .order('rating', desc=True) \
-                    .limit(limit) \
-                    .execute()
-                products = result.data or []
-                for p in products:
-                    p['rank'] = 0.0
+        if query:
+            result = sb.table('products') \
+                .select('id, title, description, category, rating, avg_sentiment, review_count') \
+                .ilike('title', f'%{query}%') \
+                .order('rating', desc=True) \
+                .limit(limit) \
+                .offset(offset) \
+                .execute()
+            products = result.data or []
         else:
             result = sb.table('products') \
                 .select('id, title, description, category, rating, avg_sentiment, review_count') \
@@ -575,7 +550,6 @@ def search_items(
                 .offset(offset) \
                 .execute()
             products = result.data or []
-            is_fallback = True
 
         results = []
         for p in products:
@@ -587,27 +561,18 @@ def search_items(
                 'rating': p.get('rating', 0.0),
                 'avg_sentiment': p.get('avg_sentiment', 0.0),
                 'review_count': p.get('review_count', 0),
-                'rank': p.get('rank', 0.0),
+                'rank': 0.0,
                 'image': p.get('image', ''),
             })
 
-    except Exception:
-        # Graceful fallback when Supabase is not configured locally
-        is_fallback = not bool(q.strip())
-        q_clean = q.strip().lower()
-        
-        if q_clean:
-            # Case-insensitive filtering on mock list
-            matched = [
-                p for p in MOCK_PRODUCTS 
-                if q_clean in p["title"].lower() or q_clean in p["description"].lower()
-            ]
+    except Exception as e:
+        logger.warning("Supabase search failed, falling back to mock products: %s", e)
+        query_clean = q.strip().lower()
+        if query_clean:
+            filtered = [p for p in MOCK_PRODUCTS if query_clean in p["title"].lower()]
         else:
-            matched = MOCK_PRODUCTS
-
-        # Apply limit & offset manually
-        paginated = matched[offset : offset + limit]
-
+            filtered = MOCK_PRODUCTS
+        paginated = filtered[offset: offset + limit]
         results = []
         for p in paginated:
             results.append({
@@ -618,7 +583,7 @@ def search_items(
                 'rating': p['rating'],
                 'avg_sentiment': p['avg_sentiment'],
                 'review_count': p['review_count'],
-                'rank': 1.0 if q_clean else 0.0,
+                'rank': 0.0,
                 'image': p['image'],
             })
 
@@ -626,12 +591,11 @@ def search_items(
         "results": results,
         "total": len(results),
         "query": q,
-        "is_fallback": is_fallback,
+        "is_fallback": not bool(q.strip()),
     }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
-
 
 @app.get("/api/autocomplete")
 def autocomplete_products(
