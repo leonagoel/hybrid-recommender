@@ -20,7 +20,7 @@ def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_ratings(
     df: pd.DataFrame,
-    column: str
+    column: str = "rating"
 ) -> pd.DataFrame:
     df = df.copy()
 
@@ -36,19 +36,31 @@ def normalize_ratings(
 
 def encode_categorical(
     df: pd.DataFrame,
-    columns: list[str]
+    columns: list[str] = None
 ) -> pd.DataFrame:
     df = df.copy()
+    
+    if columns is None:
+        columns = ["authors"]
+        add_suffix = True
+    else:
+        add_suffix = False
 
     le = LabelEncoder()
 
     for col in columns:
         if col in df.columns:
-            df[col] = le.fit_transform(
+            encoded_val = le.fit_transform(
                 df[col].astype(str)
             )
+            if add_suffix:
+                df[f"{col}_encoded"] = encoded_val
+            else:
+                df[col] = encoded_val
 
     return df
+
+
 
 
 def preprocess_books_data(df: pd.DataFrame) -> pd.DataFrame:

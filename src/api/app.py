@@ -10,11 +10,11 @@ Run with:
 import streamlit as st
 import pandas as pd
 
-from data_adapter import adapt_data, read_file
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
-from hybrid_model import HybridRecommender
-from llm_explainer import get_explainer
+from src.data.data_adapter import adapt_data, read_file
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.model.llm_explainer import get_explainer
 
 
 # ── Page configuration ───────────────────────────────────────────────────────

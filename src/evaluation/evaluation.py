@@ -10,11 +10,11 @@ from math import log2
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from dataset_manager import DatasetManager
-from nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
-from hybrid_model import HybridRecommender
+from src.data.dataset_manager import DatasetManager
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender
 
 
 def precision_at_k(recommended, relevant, k):
@@ -42,6 +42,19 @@ def ndcg_at_k(recommended, relevant, k):
     ideal_count = min(len(relevant), k)
     idcg = sum(1.0 / log2(i + 2) for i in range(ideal_count))
     return dcg / idcg if idcg > 0 else 0
+
+
+def average_precision_at_k(recommended, relevant, k):
+    """Average Precision @ K for a single query."""
+    rec_k = recommended[:k]
+    hits = 0
+    sum_precisions = 0.0
+    for i, item in enumerate(rec_k):
+        if item in relevant:
+            hits += 1
+            sum_precisions += hits / (i + 1)
+    
+    return sum_precisions / min(len(relevant), k) if relevant else 0.0
 
 
 def evaluate():

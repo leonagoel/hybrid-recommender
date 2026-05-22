@@ -1,8 +1,8 @@
 import pandas as pd
 import os
 import uuid
-from data_adapter import adapt_data
-from data_preprocessing import preprocess
+from src.data.data_adapter import adapt_data
+from src.data.data_preprocessing import preprocess
 
 
 class DatasetManager:
