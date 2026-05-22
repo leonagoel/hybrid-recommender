@@ -26,6 +26,9 @@ async function initSupabase() {
 const state = {
     user: null,
     isGuest: true,
+    products: [],
+    trending: [],
+    page: 1,
     products: [],    trending: [],    page: 1,
     perPage: 20,
     totalProducts: 0,
@@ -38,6 +41,7 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
+    heatmapSelected: [],
     compareList: [],
 };
 
@@ -215,6 +219,17 @@ function categoryIcon(cat) {
     return '📦';
 }
 
+// ── API Error Class ──────────────────────────────────────────────────
+class ApiError extends Error {
+    constructor(status, message) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+    }
+
+    get isNotFound()    { return this.status === 404; }
+    get isServerError() { return this.status !== null && this.status >= 500; }
+    get isNetworkError(){ return this.status === null; }
 // ── Wishlist ────────────────────────────────────────────────────────
 function getWishlist() {
     return JSON.parse(localStorage.getItem('wishlist')) || [];
@@ -248,29 +263,38 @@ function toggleWishlist(product) {
 
 // ── API Helpers ─────────────────────────────────────────────────────
 const API = {
-    async get(url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
+    async _request(url, options = {}) {
+        let res;
+        try {
+            res = await fetch(url, options);
+        } catch {
+            throw new ApiError(null, 'Backend server is offline. Please try again later.');
+        }
+
+        if (!res.ok) {
+            const status = res.status;
+            let message;
+            if (status === 404) {
+                try {
+                    const body = await res.json();
+                    message = body.detail || body.message || 'Product not found. Try searching for something else.';
+                } catch {
+                    message = 'Product not found. Try searching for something else.';
+                }
+            } else if (status >= 500) {
+                message = 'Backend server error. Please try again later.';
+            } else {
+                message = `Unexpected error (${status}). Please try again.`;
+            }
+            throw new ApiError(status, message);
+        }
+
         return res.json();
     },
-    async post(url, data) {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
-    async put(url, data) {
-        const res = await fetch(url, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
+
+    get(url)        { return this._request(url); },
+    post(url, data) { return this._request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); },
+    put(url, data)  { return this._request(url, { method: 'PUT',  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); },
 };
 
 // ── Auth ────────────────────────────────────────────────────────────
@@ -286,7 +310,6 @@ async function initAuth() {
         if (session) {
             setUser(session.user);
         } else {
-            // Auto guest sign-in
             const { data, error } = await sbClient.auth.signInAnonymously();
             if (error) {
                 console.warn('Guest login failed:', error.message);
@@ -391,8 +414,11 @@ async function handleSearch(query) {
             state.searchResults = data.items || [];
             state.selectedSearchIdx = -1;
             renderSearchDropdown(state.searchResults, query);
-        } catch {
+        } catch (err) {
             closeSearchDropdown();
+            if (err instanceof ApiError && err.isNetworkError) {
+                toast('Backend server is offline. Please try again later.', 'error');
+            }
         }
     }, 200);
 }
@@ -535,6 +561,10 @@ function handleSearch(query) {
     }, 300);
 }
 
+// ── Product Loading (Infinite Scroll) ───────────────────────────────
+// CONFLICT 1 RESOLVED: kept friendly error UI from feat/friendly-error-pages
+// + infinite scroll cleanup (finally block) from main
+async function loadProducts(append = false) {
 // ── Product Loading ─────────────────────────────────────────────────
 // ── Product Loading (Infinite Scroll) ───────────────────────────────
 
@@ -577,6 +607,53 @@ async function loadProducts(append = false) {
 
         renderProducts(products, append);
         els.productCount.textContent = `${state.products.length} of ${state.totalProducts} products`;
+
+        if (!state.hasMore) {
+            els.infiniteEnd.hidden = state.products.length === 0;
+        }
+
+        state.page++;
+    } catch (err) {
+        els.skeletonLoader.hidden = true;
+        if (err instanceof ApiError) {
+            if (err.isNetworkError || err.isServerError) {
+                toast('⚠️ ' + err.message, 'error');
+                els.productGrid.innerHTML = `
+                    <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
+                        <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                        <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">Backend Server Unavailable</div>
+                        <div style="font-size:13px;">The server is offline or experiencing issues. Please try again later.</div>
+                    </div>`;
+            } else {
+                toast('Failed to load products: ' + err.message, 'error');
+            }
+        } else {
+            toast('Failed to load products', 'error');
+        }
+    } finally {
+        state.isLoading = false;
+        els.infiniteLoader.hidden = true;
+    }
+}
+
+// ── Trending ────────────────────────────────────────────────────────
+async function loadTrending(days = 7, limit = 10) {
+    els.trendingSection.hidden = true;
+    els.trendingGrid.innerHTML = '';
+
+    try {
+        const data = await API.get(`/api/trending?days=${days}&limit=${limit}`);
+        const items = data.results || [];
+        if (!items.length) return;
+
+        state.trending = items;
+        renderTrending(items);
+        els.trendingSection.hidden = false;
+    } catch (err) {
+        console.warn('Trending load failed:', err.message || err);
+    }
+}
+
 
         if (!state.hasMore) {
             els.infiniteEnd.hidden = state.products.length === 0;
@@ -659,6 +736,10 @@ function renderTrending(items) {
     els.trendingGrid.appendChild(fragment);
 }
 
+// ── Search Results ──────────────────────────────────────────────────
+// CONFLICT 2 RESOLVED: kept (err) in catch so ApiError checks work,
+// kept friendly error pages from feat/friendly-error-pages
+async function loadSearchResults(query) {
 async function loadSearchResults(query) {
     // Pause infinite scroll during search
     destroyScrollObserver();
@@ -677,9 +758,28 @@ async function loadSearchResults(query) {
         state.products = [];
         state.hasMore = false;
         renderProducts(products, false);
+    } catch (err) {
     } catch {
         els.skeletonLoader.hidden = true;
-        toast('Search failed', 'error');
+        if (err instanceof ApiError && err.isNotFound) {
+            toast('🔍 Product not found. Try searching for something else.', 'error');
+            els.productGrid.innerHTML = `
+                <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
+                    <div style="font-size:48px;margin-bottom:16px;">🔍</div>
+                    <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">No Results Found</div>
+                    <div style="font-size:13px;">No products matched "<strong style="color:var(--text-primary)">${query}</strong>". Try a different search term.</div>
+                </div>`;
+        } else if (err instanceof ApiError && (err.isServerError || err.isNetworkError)) {
+            toast('⚠️ ' + err.message, 'error');
+            els.productGrid.innerHTML = `
+                <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
+                    <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                    <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">Backend Server Unavailable</div>
+                    <div style="font-size:13px;">The server is offline or experiencing issues. Please check your connection and try again.</div>
+                </div>`;
+        } else {
+            toast('Search failed. Please try again.', 'error');
+        }
     }
 }
 
@@ -779,7 +879,6 @@ function renderProducts(products, append) {
             card.querySelector('.product-card__image').appendChild(imgEl);
         }
 
-        // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
             const wishlistBtn = card.querySelector('.wishlist-btn');
 
@@ -836,6 +935,7 @@ function renderProducts(products, append) {
 }
 
 // ── Recommendations ─────────────────────────────────────────────────
+// CONFLICT 3 RESOLVED: kept clean indentation + feedback buttons from feat/friendly-error-pages
 function getRealtimeUrl() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${protocol}//${window.location.host}/ws/recommendations`;
@@ -966,6 +1066,51 @@ async function loadRecommendations(title) {
             els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
             return;
         }
+
+        els.recsStrip.innerHTML = recs.map((r) => `
+            <div class="rec-card" data-title="${r.title}">
+                <div class="rec-card__title">${r.title}</div>
+                <div class="rec-card__rating">
+                    <div class="star-rating">${renderStars(r.rating || 0)}</div>
+                    <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
+                </div>
+                <div class="rec-card__score">
+                    Score: ${(r.hybrid_score || 0).toFixed(3)}
+                    · Content: ${(r.content_score || 0).toFixed(2)}
+                    · Collab: ${(r.collab_score || 0).toFixed(2)}
+                </div>
+                <div class="feedback-buttons" style="margin-top:10px;display:flex;gap:10px;">
+                    <button onclick="sendFeedback('${r.title}', 'up', this)">👍</button>
+                    <button onclick="sendFeedback('${r.title}', 'down', this)">👎</button>
+                </div>
+            </div>
+        `).join('');
+
+        els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
+            card.addEventListener('click', () => {
+                loadRecommendations(card.dataset.title);
+            });
+        });
+
+        els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+        els.recsLoader.hidden = true;
+        els.recsStrip.hidden = false;
+        if (err instanceof ApiError && err.isNotFound) {
+            els.recsStrip.innerHTML = `
+                <div style="padding:24px 16px;text-align:center;color:var(--text-muted);">
+                    <span style="font-size:28px;">🔍</span>
+                    <div style="margin-top:8px;font-size:13px;">Product not found. Try searching for something else.</div>
+                </div>`;
+        } else if (err instanceof ApiError && (err.isServerError || err.isNetworkError)) {
+            toast('⚠️ ' + err.message, 'error');
+            els.recsStrip.innerHTML = `
+                <div style="padding:24px 16px;text-align:center;color:var(--text-muted);">
+                    <span style="font-size:28px;">⚠️</span>
+                    <div style="margin-top:8px;font-size:13px;">Backend server is offline. Please try again later.</div>
+                </div>`;
+        } else {
+            els.recsStrip.innerHTML = `<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>`;
     } catch {
         try {
             await loadRecommendationsOverHttp(title);
@@ -990,7 +1135,11 @@ async function handleUpload(file) {
         toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
         checkStatus();
     } catch (err) {
-        toast('Upload failed: ' + err.message, 'error');
+        if (err instanceof ApiError && (err.isServerError || err.isNetworkError)) {
+            toast('⚠️ ' + err.message, 'error');
+        } else {
+            toast('Upload failed: ' + (err.message || 'Unknown error'), 'error');
+        }
     }
 }
 
@@ -1011,7 +1160,11 @@ async function handleBuild() {
         loadProducts();
         setupScrollObserver();
     } catch (err) {
-        toast('Build failed: ' + err.message, 'error');
+        if (err instanceof ApiError && (err.isServerError || err.isNetworkError)) {
+            toast('⚠️ ' + err.message, 'error');
+        } else {
+            toast('Build failed: ' + (err.message || 'Unknown error'), 'error');
+        }
     } finally {
         els.buildBtn.disabled = false;
         els.buildBtn.innerHTML = `
@@ -1050,6 +1203,13 @@ async function checkStatus() {
         }
     } catch {
         updateStatus('error', 'Backend offline');
+        els.skeletonLoader.hidden = true;
+        els.productGrid.innerHTML = `
+            <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
+                <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">Backend Server Unavailable</div>
+                <div style="font-size:13px;">The server is offline or experiencing issues. Please check your connection and try again.</div>
+            </div>`;
     }
 }
 
@@ -1086,6 +1246,9 @@ function populateCategoryFilter(products) {
 }
 
 // ── Event Listeners ─────────────────────────────────────────────────
+// CONFLICT 4 & 5 RESOLVED: removed duplicate loadMoreBtn (replaced by infinite scroll),
+// kept scroll progress bar from feat/friendly-error-pages,
+// kept heatmap close button from main
 function bindEvents() {
     // Search
     els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
@@ -1094,7 +1257,6 @@ function bindEvents() {
         if (els.searchInput.value) handleSearch(els.searchInput.value);
     });
 
-    // Close dropdown on outside click
     document.addEventListener('click', (e) => {
         if (!e.target.closest('.header__search')) closeSearchDropdown();
     });
@@ -1104,13 +1266,12 @@ function bindEvents() {
         if (state.isGuest) {
             els.authModal.hidden = false;
         } else {
-            // Logged in → sign out
             sbClient.auth.signOut().then(() => {
                 state.user = null;
                 state.isGuest = true;
                 els.authLabel.textContent = 'Sign In';
                 toast('Signed out', 'info');
-                initAuth(); // Re-login as guest
+                initAuth();
             });
         }
     });
@@ -1135,6 +1296,22 @@ function bindEvents() {
     // Weights
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
         slider.addEventListener('change', handleWeightChange);
+    });
+
+    // Heatmap close
+    els.heatmapCloseBtn.addEventListener('click', () => {
+        els.heatmapSection.hidden = true;
+    });
+
+    // Scroll progress bar
+    window.addEventListener('scroll', () => {
+        const progressBar = document.getElementById('scroll-progress');
+        if (!progressBar) return;
+        const scrollY = window.scrollY;
+        const docHeight = document.documentElement.scrollHeight;
+        const windowHeight = window.innerHeight;
+        const width = (scrollY / (docHeight - windowHeight)) * 100;
+        progressBar.style.width = width + '%';
     });
 
     // Heatmap close
@@ -1204,6 +1381,8 @@ function renderHeatmap(labels, matrix) {
 
     let html = `<div class="heatmap-grid" style="grid-template-columns: 140px repeat(${n}, 1fr); grid-template-rows: auto repeat(${n}, 1fr);">`;
 
+    html += '<div class="heatmap-cell heatmap-corner"></div>';
+
     // Top-left empty corner cell
     html += '<div class="heatmap-cell heatmap-corner"></div>';
 
@@ -1212,6 +1391,7 @@ function renderHeatmap(labels, matrix) {
         html += `<div class="heatmap-cell heatmap-col-label" title="${labels[j]}">${shortLabels[j]}</div>`;
     }
 
+    for (let i = 0; i < n; i++) {
     // Rows
     for (let i = 0; i < n; i++) {
         // Row label
@@ -1276,21 +1456,55 @@ document.head.appendChild(spinStyle);
 // ── Back To Top ─────────────────────────────────────────────────────
 function initBackToTop() {
     const backToTop = document.getElementById('backToTop');
-
     if (!backToTop) return;
 
-    
     backToTop.style.display = 'none';
 
     window.addEventListener('scroll', () => {
-        backToTop.style.display =
-            window.scrollY > 700 ? 'block' : 'none';
+        backToTop.style.display = window.scrollY > 700 ? 'block' : 'none';
     });
 
     backToTop.addEventListener('click', () => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     });
 }
+
+// ── Feedback ────────────────────────────────────────────────────────
+// CONFLICT 6 RESOLVED: single definition kept (duplicate at bottom of main removed)
+async function sendFeedback(item, feedback, button) {
+    const storageKey = `feedback_${item}`;
+
+    if (sessionStorage.getItem(storageKey)) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/feedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: 'demo_user',
+                item: item,
+                feedback: feedback,
+            }),
+        });
+
+        if (response.ok) {
+            sessionStorage.setItem(storageKey, 'true');
+
+            const parent = button.parentElement;
+            parent.querySelectorAll('button').forEach((btn) => {
+                btn.disabled = true;
+            });
+
+            toast('Thanks for your feedback!', 'success');
+        }
+    } catch (error) {
+        console.error(error);
+        toast('Feedback failed', 'error');
+    }
+}
+
 // ── Init ────────────────────────────────────────────────────────────
 setPageMeta(null, 'A hybrid recommender fusing TF-IDF, SVD and VADER sentiment.');
 async function init() {
@@ -1298,14 +1512,13 @@ async function init() {
     initTypeToSearch();
     initBackToTop();
 
-    // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
 
-    // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
 }
 
+document.addEventListener('DOMContentLoaded', init);
 // Debounce helper
 function debounce(func, delay) {
   let timeout;
