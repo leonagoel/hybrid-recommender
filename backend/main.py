@@ -408,10 +408,10 @@ def dashboard():
 # ── Search (PostgreSQL FTS) ─────────────────────────────────────────
 @app.get("/api/search")
 def search_items(
-    response: Response,
+
     q: str = "",
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    limit: int = 8,
+    offset: int = 0
 ):
     """
     Search products using PostgreSQL full-text search.
@@ -455,25 +455,12 @@ def search_items(
             .execute()
         products = result.data or []
 
-    # Format response
-    results = []
-    for p in products:
-        results.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''),
-            'rating': p.get('rating', 0.0),
-            'avg_sentiment': p.get('avg_sentiment', 0.0),
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0),
-        })
+    return {
+    "items": products,
+    "limit": limit,
+    "offset": offset,
+    "count": len(products)
 
-    payload = {
-        "results": results,
-        "total": len(results),
-        "query": q,
-        "is_fallback": not q.strip(),
     }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
