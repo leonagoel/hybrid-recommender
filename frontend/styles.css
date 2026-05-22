@@ -857,6 +857,40 @@ body {
     width: 100%;
 }
 
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 18px 0 12px;
+    flex-wrap: wrap;
+    padding: 0 8px;
+}
+
+.pagination-summary {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.pagination-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.pagination-actions .btn {
+    min-width: 100px;
+}
+
+.pagination-btn {
+    min-width: unset;
+}
+
+.pagination-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
 .infinite-scroll-loader__text {
     font-size: 13px;
     font-weight: 500;

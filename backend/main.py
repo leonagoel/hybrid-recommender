@@ -39,13 +39,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from db import get_supabase, get_supabase_admin
-from data_adapter import adapt_data, read_file
-from nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
-from hybrid_model import HybridRecommender
-from ab_testing import DEFAULT_EXPERIMENT_ID, run_recommendation_experiment
+from src.data.db import get_supabase, get_supabase_admin
+from src.data.data_adapter import adapt_data, read_file
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.evaluation.ab_testing import DEFAULT_EXPERIMENT_ID, run_recommendation_experiment
 
 from functools import lru_cache
 from datetime import datetime, timedelta
@@ -878,18 +878,19 @@ def update_weights(w: WeightsUpdate):
 # ── Items ───────────────────────────────────────────────────────────
 
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
-    """List products from Supabase with cursor-style pagination.
+def list_items(page: int = Query(1, ge=1), per_page: int = Query(20, ge=1, le=200)):
+    """List products from Supabase with page/per_page pagination.
 
-    Supports ``?page=1&limit=20`` for infinite-scroll on the frontend.
-    Returns a ``has_more`` flag so the client knows when to stop fetching.
+    Supports ``?page=1&per_page=20``. Response includes pagination
+    metadata: total_count, total_pages, current_page, and items. For
+    backward compatibility the old keys are also present.
     """
     sb = get_supabase()
-    offset = (page - 1) * limit
+    offset = (page - 1) * per_page
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count') \
         .order('rating', desc=True) \
-        .range(offset, offset + limit - 1) \
+        .range(offset, offset + per_page - 1) \
         .execute()
 
     count_result = sb.table('products').select('id', count='exact').limit(0).execute()
@@ -906,14 +907,22 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
             'description': str(p.get('description', ''))[:200],
         })
 
-    return {
+    total_pages = math.ceil(total / per_page) if per_page > 0 else 1
+
+    # New response shape
+    payload = {
         "items": items,
+        "total_count": total,
+        "total_pages": total_pages,
+        "current_page": page,
+        # Backwards-compatible fields
         "total": total,
         "page": page,
-        "limit": limit,
+        "limit": per_page,
         "has_more": (offset + len(items)) < total,
     }
 
+    return payload
 
 # ── Similarity Matrix ──────────────────────────────────────────────
 
@@ -1024,7 +1033,7 @@ def create_purchase(data: PurchaseCreate):
     return {"purchase": result.data}
 # ── Dashboard ───────────────────────────────────────────────────────
 
-@app.route("/health")
+@app.get("/health")
 def health_check():
     """
     Returns server status. Useful for uptime monitors and Docker health checks.
