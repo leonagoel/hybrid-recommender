@@ -54,7 +54,6 @@ const state = {
     isLoading: false,
     hasMore: true,
     searchTimer: null,
-    searchResults: [],
     autocompleteResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
@@ -65,8 +64,8 @@ const state = {
     filters: {
         category: '',
         rating: '',
-        sentiment: ''
-    }
+        sentiment: '',
+    },
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -141,6 +140,18 @@ function loadPreferences() {
     }
 }
 // ── Utilities ───────────────────────────────────────────────────────
+function setPageMeta(title, description) {
+    if (title) {
+        document.title = `${title} — HybridRec`;
+    } else {
+        document.title = 'HybridRec — Smart Recommendations';
+    }
+    const metaDesc = document.querySelector('meta[name="description"]');
+    if (metaDesc && description) {
+        metaDesc.setAttribute('content', description);
+    }
+}
+
 function toast(message, type = 'info') {
     const el = document.createElement('div');
     el.className = `toast ${type}`;
@@ -153,23 +164,7 @@ function toast(message, type = 'info') {
         setTimeout(() => el.remove(), 300);
     }, 3500);
 }
-function setPageMeta(title, description) {
 
-    document.title = title
-        ? `${title} | HybridRec`
-        : 'HybridRec';
-
-    let meta = document.querySelector('meta[name="description"]');
-
-    if (!meta) {
-        meta = document.createElement('meta');
-        meta.name = 'description';
-        document.head.appendChild(meta);
-    }
-
-    meta.content =
-        description || 'HybridRec recommendation platform';
-}
 function createSkeletonCard() {
     return `
         <div class="product-card skeleton-card">
@@ -422,25 +417,7 @@ function initTypeToSearch() {
     });
 }
 
-// ── Search ──────────────────────────────────────────────────────────
-async function handleSearch(query) {
-    if (!query || query.length < 1) {
-        closeSearchDropdown();
-        return;
-    }
-
-    clearTimeout(state.searchTimer);
-    state.searchTimer = setTimeout(async () => {
-        try {
-            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
-            state.searchResults = data.items || [];
-            state.selectedSearchIdx = -1;
-            renderSearchDropdown(state.searchResults, query);
-        } catch {
-            closeSearchDropdown();
-        }
-    }, 200);
-}
+// ── Search Dropdown ──────────────────────────────────────────────────
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
@@ -512,6 +489,23 @@ window.addEventListener('click', (e) => {
 function handleSearchKeydown(e) {
     const results = state.autocompleteResults;
 
+    if (e.key === 'Enter') {
+        e.preventDefault();
+
+        if (state.selectedSearchIdx >= 0 && results.length && els.searchDropdown.classList.contains('active')) {
+            const selected = results[state.selectedSearchIdx];
+            selectSearchResult(selected);
+        } else if (els.searchInput.value.trim().length > 0) {
+            selectSearchResult(els.searchInput.value.trim());
+        }
+        return;
+    }
+
+    if (e.key === 'Escape') {
+        closeSearchDropdown();
+        return;
+    }
+
     if (!results.length || !els.searchDropdown.classList.contains('active')) {
         return;
     }
@@ -536,19 +530,6 @@ function handleSearchKeydown(e) {
         );
 
         renderSearchDropdown(results, els.searchInput.value);
-    }
-
-    else if (e.key === 'Enter') {
-        e.preventDefault();
-
-        if (state.selectedSearchIdx >= 0) {
-            const selected = results[state.selectedSearchIdx];
-            selectSearchResult(selected);
-        }
-    }
-
-    else if (e.key === 'Escape') {
-        closeSearchDropdown();
     }
 }
 
@@ -623,7 +604,10 @@ async function loadProducts(append = false, requestedPage = null) {
             : (data.has_more ?? products.length >= state.perPage);
 
         if (!append) {
+            state.allProducts = [...products];
             els.skeletonLoader.hidden = true;
+        } else {
+            state.allProducts = [...(state.allProducts || []), ...products];
         }
 
         renderProducts(products, append);
@@ -752,13 +736,14 @@ async function loadSearchResults(query) {
 
     try {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
-        const products = data.items || [];
+        const products = data.results || data.items || [];
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
         state.hasMore = false;
         state.totalPages = 0;
         state.currentPage = 0;
+        state.allProducts = [...products];
         renderProducts(products, false);
         renderPaginationControls();
     } catch {
@@ -804,30 +789,56 @@ function renderProducts(products, append) {
 }
     if (!append) state.products = [];
     if (!products.length) {
-    els.productGrid.innerHTML = `
-        <div class="empty-search-results">
-            <div class="empty-search-illustration">
-                <svg width="120" height="120" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M15.5 15.5L19 19M5 11C5 14.866 8.13401 18 12 18C13.2862 18 14.4834 17.6482 15.5 17.0522M5 11C5 7.13401 8.13401 4 12 4C15.866 4 19 7.13401 19 11C19 13.0712 18.0735 14.9284 16.592 16.2077M5 11L2 11M5 11L8 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    <circle cx="12" cy="11" r="3" stroke="currentColor" stroke-width="1.5"/>
-                </svg>
-            </div>
-            <p class="empty-search-message">No products found. Try a different search.</p>
-            <button id="clear-search-btn" class="btn--outline">Clear Search</button>
-        </div>
-    `;
+        els.productGrid.innerHTML = `
+            <div class="no-results animate-fade-in">
+                <svg class="no-results-svg" width="180" height="180" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="blue-grad" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+                            <stop offset="0%" stop-color="var(--primary)" stop-opacity="0.8"/>
+                            <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.1"/>
+                        </linearGradient>
+                        <linearGradient id="amber-grad" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+                            <stop offset="0%" stop-color="var(--accent)"/>
+                            <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.3"/>
+                        </linearGradient>
+                    </defs>
+                    <circle cx="100" cy="100" r="70" fill="url(#blue-grad)" filter="blur(8px)" opacity="0.15" />
+                    <circle cx="120" cy="80" r="40" fill="url(#amber-grad)" filter="blur(6px)" opacity="0.1" />
+                    
+                    <path d="M50 80 L65 140 H135 L150 80" stroke="var(--text-muted)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M40 80 H160" stroke="var(--text-muted)" stroke-width="4" stroke-linecap="round" />
+                    
+                    <circle cx="130" cy="65" r="28" stroke="var(--primary)" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
+                    
+                    <g class="search-glass">
+                        <circle cx="130" cy="65" r="16" stroke="var(--accent)" stroke-width="3.5" fill="var(--bg-card)"/>
+                        <path d="M142 77 L158 93" stroke="var(--accent)" stroke-width="3.5" stroke-linecap="round"/>
+                    </g>
 
-    // Add event listener to clear search button
-    const clearBtn = document.getElementById('clear-search-btn');
-    if (clearBtn) {
-        clearBtn.addEventListener('click', () => {
-            els.searchInput.value = '';
-            handleSearch('');   // trigger empty search to reset
-            loadProducts();     // reload all products
-        });
+                    <path d="M129 60 C129 57.5, 131 56, 133 57.5 C135 59, 132 62, 132 64 M132 67 H132.01" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+                    <circle cx="65" cy="105" r="2.5" fill="var(--accent)" opacity="0.6"/>
+                    <circle cx="85" cy="105" r="3.5" fill="var(--primary)" opacity="0.5"/>
+                    <circle cx="145" cy="125" r="2" fill="var(--text-muted)" opacity="0.4"/>
+                </svg>
+                <h3 class="no-results__title">No products found</h3>
+                <p class="no-results__subtitle">Try adjusting your search keywords or clearing active filters to find what you're looking for.</p>
+                <button class="btn btn--primary btn--clear-search" id="empty-state-clear-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px; display:inline-block; vertical-align:middle;">
+                        <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+                        <polyline points="21 3 21 8 16 8"/>
+                    </svg>
+                    Clear Search & Filters
+                </button>
+            </div>
+        `;
+        
+        const clearBtn = document.getElementById('empty-state-clear-btn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', resetAllFiltersAndSearch);
+        }
+        return;
     }
-    return;
-}
 
     const fragment = document.createDocumentFragment();
 
@@ -878,15 +889,13 @@ function renderProducts(products, append) {
             const imgEl = createLazyImage(p.image, p.title);
             card.querySelector('.product-card__image').appendChild(imgEl);
         }
-
+        const wishlistBtn = card.querySelector('.wishlist-btn');
+        wishlistBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleWishlist(p);
+        });
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
-            const wishlistBtn = card.querySelector('.wishlist-btn');
-
-            wishlistBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleWishlist(p);
-            });
     
             const title = e.target.dataset.title;
             loadRecommendations(title);
@@ -1405,6 +1414,7 @@ function initBackToTop() {
 setPageMeta(null, 'A hybrid recommender fusing TF-IDF, SVD and VADER sentiment.');
 async function init() {
     bindEvents();
+    loadPreferences();
     initTypeToSearch();
     initBackToTop();
 
@@ -1429,26 +1439,72 @@ function debounce(func, delay) {
   };
 }
 
+function savePreferences() {
+    const prefs = {
+        category: state.filters.category,
+        rating: state.filters.rating,
+        sentiment: state.filters.sentiment
+    };
+    localStorage.setItem('userPreferences', JSON.stringify(prefs));
+}
+
+const debouncedSavePreferences = debounce(savePreferences, 500);
+
 els.categoryFilter.addEventListener('change', (e) => {
     state.filters.category = e.target.value;
-
     renderProducts(state.allProducts, false);
-
     debouncedSavePreferences();
 });
 
+els.ratingFilter.addEventListener('change', (e) => {
+    state.filters.rating = e.target.value;
+    renderProducts(state.allProducts, false);
+    debouncedSavePreferences();
+});
+
+els.sentimentFilter.addEventListener('change', (e) => {
+    state.filters.sentiment = e.target.value;
+    renderProducts(state.allProducts, false);
+    debouncedSavePreferences();
+});
+
+els.clearFiltersBtn.addEventListener('click', resetAllFiltersAndSearch);
+
+function resetAllFiltersAndSearch() {
+    els.searchInput.value = '';
+    els.categoryFilter.value = '';
+    els.ratingFilter.value = '';
+    els.sentimentFilter.value = '';
+    
+    state.filters = {
+        category: '',
+        rating: '',
+        sentiment: ''
+    };
+    
+    els.productsTitle.textContent = 'Top Products';
+    
+    debouncedSavePreferences();
+    loadProducts(false);
+    setupScrollObserver();
+}
+
 document.addEventListener('DOMContentLoaded', init);
 async function sendFeedback(item, feedback, button) {
-
     const storageKey = `feedback_${item}`;
 
-  return function (...args) {
-    clearTimeout(timeout);
+    try {
+        localStorage.setItem(storageKey, feedback);
 
-    timeout = setTimeout(() => {
-      func.apply(this, args);
-    }, delay);
-  };
+        if (button) {
+            button.disabled = true;
+        }
+
+        toast('Feedback saved!', 'success');
+    } catch (err) {
+        console.error('Feedback failed:', err);
+        toast('Failed to save feedback', 'error');
+    }
 }
 // ── Product Comparison (Side by Side) ──────────────────────────────
 function toggleCompare(product, checked) {
