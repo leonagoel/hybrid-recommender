@@ -1,40 +1,46 @@
 """
-Unit tests for the A/B Testing Module.
-Run with: pytest tests/test_ab_testing.py -v
+Tests for recommendation A/B testing helpers.
 """
-import pytest
-import pandas as pd
-import sys
 import os
+import sys
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from ab_testing import ABTestRunner
-from content_model import ContentRecommender
+from ab_testing import (
+    DEFAULT_EXPERIMENT_ID,
+    DEFAULT_VARIANTS,
+    ExperimentVariant,
+    assign_variant,
+    run_recommendation_experiment,
+    summarize_variant_metrics,
+)
 from collaborative_model import CollaborativeRecommender
+from content_model import ContentRecommender
+from hybrid_model import HybridRecommender
 
 
 @pytest.fixture
 def sample_item_df():
     return pd.DataFrame({
-        'title': ['Product A', 'Product B', 'Product C', 'Product D', 'Product E'],
-        'description': [
-            'A great wireless headphone with noise cancellation',
-            'Budget earbuds with decent sound quality',
-            'Premium over-ear headphones for audiophiles',
-            'Laptop stand for ergonomic work setup',
-            'USB-C hub with multiple ports for connectivity',
+        "title": ["Product A", "Product B", "Product C", "Product D"],
+        "description": [
+            "Wireless headphones with active noise cancellation",
+            "Budget earbuds with balanced audio",
+            "Premium studio headphones",
+            "Portable USB-C hub with multiple ports",
         ],
-        'category': ['Electronics', 'Electronics', 'Electronics', 'Accessories', 'Accessories'],
-        'rating': [4.5, 3.8, 4.9, 4.2, 3.5],
-        'review_count': [120, 45, 200, 80, 30],
-        'avg_sentiment': [0.6, 0.2, 0.8, 0.5, 0.1],
-        'combined': [
-            'Product A A great wireless headphone with noise cancellation Electronics',
-            'Product B Budget earbuds with decent sound quality Electronics',
-            'Product C Premium over-ear headphones for audiophiles Electronics',
-            'Product D Laptop stand for ergonomic work setup Accessories',
-            'Product E USB-C hub with multiple ports for connectivity Accessories',
+        "category": ["Electronics", "Electronics", "Electronics", "Accessories"],
+        "rating": [4.5, 3.8, 4.9, 4.2],
+        "review_count": [120, 45, 200, 80],
+        "avg_sentiment": [0.6, 0.2, 0.8, 0.4],
+        "combined": [
+            "Product A Wireless headphones with active noise cancellation Electronics",
+            "Product B Budget earbuds with balanced audio Electronics",
+            "Product C Premium studio headphones Electronics",
+            "Product D Portable USB-C hub with multiple ports Accessories",
         ],
     })
 
@@ -42,133 +48,95 @@ def sample_item_df():
 @pytest.fixture
 def sample_interaction_df():
     return pd.DataFrame({
-        'user_id': ['u1', 'u1', 'u2', 'u2', 'u3', 'u3'],
-        'title': ['Product A', 'Product B', 'Product B', 'Product C', 'Product A', 'Product D'],
-        'rating': [5.0, 3.0, 4.0, 5.0, 4.0, 3.5],
+        "user_id": ["u1", "u1", "u2", "u2", "u3"],
+        "title": ["Product A", "Product B", "Product B", "Product C", "Product D"],
+        "rating": [5.0, 3.0, 4.0, 5.0, 3.5],
     })
 
 
 @pytest.fixture
-def content_model(sample_item_df):
-    return ContentRecommender(sample_item_df)
-
-
-@pytest.fixture
-def collab_model(sample_interaction_df):
-    return CollaborativeRecommender(sample_interaction_df)
-
-
-@pytest.fixture
-def test_pairs():
-    return [
-        ('u1', 'Product A', ['Product A', 'Product B', 'Product C']),
-        ('u2', 'Product B', ['Product B', 'Product C']),
-        ('u3', 'Product A', ['Product A', 'Product D']),
-    ]
-
-
-@pytest.fixture
-def runner(content_model, collab_model, sample_item_df):
-    return ABTestRunner(
-        content_model, collab_model, sample_item_df,
-        config_a={"alpha": 0.5, "beta": 0.3, "gamma": 0.2},
-        config_b={"alpha": 0.3, "beta": 0.5, "gamma": 0.2},
-        k=3,
+def hybrid_model(sample_item_df, sample_interaction_df):
+    return HybridRecommender(
+        ContentRecommender(sample_item_df),
+        CollaborativeRecommender(sample_interaction_df),
+        sample_item_df,
     )
 
 
-# ── ABTestRunner Tests ──────────────────────────────────────────────
+def test_assign_variant_is_stable_for_same_user():
+    first = assign_variant("user-123", experiment_id=DEFAULT_EXPERIMENT_ID)
+    second = assign_variant("user-123", experiment_id=DEFAULT_EXPERIMENT_ID)
 
-class TestABTestRunner:
-    def test_run_returns_results(self, runner, test_pairs):
-        results = runner.run(test_pairs)
-        assert isinstance(results, dict)
-        assert 'config_a' in results
-        assert 'config_b' in results
-        assert 'winner' in results
-
-    def test_winner_is_a_or_b(self, runner, test_pairs):
-        results = runner.run(test_pairs)
-        assert results['winner'] in ('A', 'B')
-
-    def test_metrics_are_floats(self, runner, test_pairs):
-        results = runner.run(test_pairs)
-        for config_key in ('config_a', 'config_b'):
-            config = results[config_key]
-            assert isinstance(config['precision'], float)
-            assert isinstance(config['recall'], float)
-            assert isinstance(config['ndcg'], float)
-            assert isinstance(config['diversity'], float)
-
-    def test_metrics_in_valid_range(self, runner, test_pairs):
-        results = runner.run(test_pairs)
-        for config_key in ('config_a', 'config_b'):
-            config = results[config_key]
-            assert 0.0 <= config['precision'] <= 1.0
-            assert 0.0 <= config['recall'] <= 1.0
-            assert 0.0 <= config['ndcg'] <= 1.0
-            assert 0.0 <= config['diversity'] <= 1.0
-
-    def test_test_users_count(self, runner, test_pairs):
-        results = runner.run(test_pairs)
-        assert results['test_users'] == len(test_pairs)
-
-    def test_k_value_stored(self, runner, test_pairs):
-        results = runner.run(test_pairs)
-        assert results['k'] == 3
-
-    def test_empty_test_pairs_returns_empty(self, runner):
-        results = runner.run([])
-        assert results == {}
-
-    def test_print_results_no_crash(self, runner, test_pairs):
-        runner.run(test_pairs)
-        runner.print_results()  # Should not raise
-
-    def test_print_results_before_run_no_crash(self, runner):
-        runner.print_results()  # Should not raise
-
-    def test_write_results_md(self, runner, test_pairs, tmp_path):
-        runner.run(test_pairs)
-        filepath = str(tmp_path / "test_results.md")
-        runner.write_results_md(filepath)
-        assert os.path.exists(filepath)
-        with open(filepath, 'r') as f:
-            content = f.read()
-        assert "A/B Test Results" in content
-        assert "Config A" in content
-        assert "Config B" in content
-
-    def test_write_results_before_run_no_crash(self, runner, tmp_path):
-        filepath = str(tmp_path / "empty_results.md")
-        runner.write_results_md(filepath)
-        assert not os.path.exists(filepath)  # Should not write if no results
+    assert first == second
+    assert first.name in {variant.name for variant in DEFAULT_VARIANTS}
 
 
-class TestDiversityScore:
-    def test_all_same_category(self):
-        recs = [{"category": "Electronics"}] * 5
-        score = ABTestRunner.diversity_score(recs)
-        assert score == 1 / 5
+def test_assign_variant_respects_weighted_traffic():
+    variants = (
+        ExperimentVariant(
+            name="off",
+            description="No traffic",
+            weights={"alpha": 0.4, "beta": 0.35, "gamma": 0.25},
+            traffic=0,
+        ),
+        ExperimentVariant(
+            name="on",
+            description="All traffic",
+            weights={"alpha": 0.6, "beta": 0.25, "gamma": 0.15},
+            traffic=100,
+        ),
+    )
 
-    def test_all_different_categories(self):
-        recs = [
-            {"category": "Electronics"},
-            {"category": "Books"},
-            {"category": "Clothing"},
-        ]
-        score = ABTestRunner.diversity_score(recs)
-        assert score == 1.0
+    assert assign_variant("any-user", variants=variants).name == "on"
 
-    def test_empty_list(self):
-        assert ABTestRunner.diversity_score([]) == 0.0
 
-    def test_mixed_categories(self):
-        recs = [
-            {"category": "A"},
-            {"category": "A"},
-            {"category": "B"},
-            {"category": "C"},
-        ]
-        score = ABTestRunner.diversity_score(recs)
-        assert score == 3 / 4
+def test_run_recommendation_experiment_restores_original_weights(hybrid_model):
+    original_weights = hybrid_model.get_weights()
+
+    result = run_recommendation_experiment(
+        hybrid_model,
+        "Product A",
+        user_key="stable-user",
+        top_n=2,
+        explain=True,
+    )
+
+    assert result["experiment"]["variant"] in {variant.name for variant in DEFAULT_VARIANTS}
+    assert result["recommendations"]
+    assert "explanation" in result["recommendations"][0]
+    assert hybrid_model.get_weights() == original_weights
+
+
+def test_run_recommendation_experiment_uses_assigned_variant_weights(hybrid_model):
+    variant = ExperimentVariant(
+        name="sentiment_only",
+        description="Uses sentiment-heavy ranking for the test.",
+        weights={"alpha": 0, "beta": 0, "gamma": 1},
+    )
+
+    result = run_recommendation_experiment(
+        hybrid_model,
+        "Product A",
+        user_key="stable-user",
+        top_n=2,
+        variants=(variant,),
+    )
+
+    assert result["experiment"]["variant"] == "sentiment_only"
+    assert result["experiment"]["weights"] == {"alpha": 0.0, "beta": 0.0, "gamma": 1.0}
+
+
+def test_summarize_variant_metrics_returns_average_by_variant():
+    summary = summarize_variant_metrics(
+        [
+            {"variant": "control", "clicked": 1},
+            {"variant": "control", "clicked": 0},
+            {"variant": "content_heavy", "clicked": 1},
+        ],
+        metric_name="clicked",
+    )
+
+    assert summary == [
+        {"variant": "content_heavy", "count": 1, "total": 1.0, "average": 1.0},
+        {"variant": "control", "count": 2, "total": 1.0, "average": 0.5},
+    ]

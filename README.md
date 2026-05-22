@@ -249,6 +249,164 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
+---
+
+## 09 — Troubleshooting
+
+### ModuleNotFoundError
+
+If you see:
+
+```bash
+ModuleNotFoundError: No module named 'xyz'
+```
+
+Run:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### Port Already In Use
+
+If port 8000 is busy:
+
+```bash
+python -m uvicorn backend.main:app --port 8001
+```
+
+---
+
+### NLTK VADER Download Error
+
+Run Python shell:
+
+```python
+import nltk
+nltk.download('vader_lexicon')
+```
+
+---
+
+### Streamlit Not Found
+
+Install Streamlit manually:
+
+```bash
+pip install streamlit
+```
+
+---
+
+### Supabase Connection Error
+
+Check your `.env` file:
+
+```env
+SUPABASE_URL=your_url
+SUPABASE_ANON_KEY=your_key
+SUPABASE_SERVICE_KEY=your_service_key
+```
+
+Make sure:
+- No extra spaces
+- No quotes
+- Correct project credentials
+
+---
+
+## 10 — Setup Verification
+
+### Backend Verification
+
+Run:
+
+```bash
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+```
+
+Open:
+
+```text
+http://localhost:8000/api/status
+```
+
+Expected response:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+---
+
+### Streamlit Verification
+
+Run:
+
+```bash
+streamlit run app.py
+```
+
+Expected:
+- Browser opens automatically
+- CSV upload interface visible
+- Recommendation UI loads successfully
+
+---
+
+### Dataset Upload Verification
+
+Upload any sample CSV and verify:
+- Dataset loads without errors
+- Models build successfully
+- Recommendations appear
+
+---
+
+## 11 — Beginner Contributor Tips
+
+### Sync Your Fork Before Starting
+
+```bash
+git remote add upstream https://github.com/leonagoel/hybrid-recommender.git
+git fetch upstream
+git merge upstream/main
+```
+
+---
+
+### Resolve Merge Conflicts
+
+If conflicts happen:
+
+1. Open conflicted files
+2. Remove conflict markers:
+   ```text
+   <<<<<<<
+   =======
+   >>>>>>>
+   ```
+3. Keep correct code
+4. Save file
+5. Commit again
+
+---
+
+### Pull Request Checklist
+
+Before submitting PR:
+
+- [ ] Project runs successfully
+- [ ] README formatting checked
+- [ ] No unnecessary files added
+- [ ] Branch name follows guidelines
+- [ ] Commit message follows convention
+- [ ] PR linked to issue
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE)

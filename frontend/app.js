@@ -33,6 +33,7 @@ const state = {
     hasMore: true,
     searchTimer: null,
     searchResults: [],
+    autocompleteResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
@@ -84,8 +85,32 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    categoryFilter: $('category-filter'),
+    ratingFilter: $('rating-filter'),
+    sentimentFilter: $('sentiment-filter'),
+    clearFiltersBtn: $('clear-filters'),
 };
 
+function loadPreferences() {
+    const saved = localStorage.getItem('userPreferences');
+
+    if (!saved) return;
+
+    try {
+        const prefs = JSON.parse(saved);
+
+        state.filters.category = prefs.category || '';
+        state.filters.rating = prefs.rating || '';
+        state.filters.sentiment = prefs.sentiment || '';
+
+        els.categoryFilter.value = state.filters.category;
+        els.ratingFilter.value = state.filters.rating;
+        els.sentimentFilter.value = state.filters.sentiment;
+
+    } catch (err) {
+        console.warn('Failed to load preferences:', err);
+    }
+}
 // ── Utilities ───────────────────────────────────────────────────────
 function toast(message, type = 'info') {
     const el = document.createElement('div');
@@ -98,6 +123,32 @@ function toast(message, type = 'info') {
         el.style.transition = '300ms ease';
         setTimeout(() => el.remove(), 300);
     }, 3500);
+}
+
+function createSkeletonCard() {
+    return `
+        <div class="product-card skeleton-card">
+            <div class="skeleton skeleton-image"></div>
+
+            <div class="product-info">
+                <div class="skeleton skeleton-title"></div>
+                <div class="skeleton skeleton-text"></div>
+                <div class="skeleton skeleton-text short"></div>
+
+                <div class="skeleton-footer">
+                    <div class="skeleton skeleton-price"></div>
+                    <div class="skeleton skeleton-button"></div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function showSkeletons(container, count = 8) {
+    container.innerHTML = Array(count)
+        .fill("")
+        .map(() => createSkeletonCard())
+        .join("");
 }
 
 function renderStars(rating) {
@@ -118,6 +169,37 @@ function sentimentBadge(score) {
     return '<span class="product-card__sentiment sentiment-neutral">Neutral</span>';
 }
 
+function applyFilters(products) {
+    return products.filter((p) => {
+
+        const matchesCategory =
+            !state.filters.category ||
+            p.category === state.filters.category;
+
+        const matchesRating =
+            !state.filters.rating ||
+            (p.rating || 0) >= Number(state.filters.rating);
+
+        let sentiment = 'neutral';
+
+        if ((p.avg_sentiment || 0) > 0.05) {
+            sentiment = 'positive';
+        } else if ((p.avg_sentiment || 0) < -0.05) {
+            sentiment = 'negative';
+        }
+
+        const matchesSentiment =
+            !state.filters.sentiment ||
+            sentiment === state.filters.sentiment;
+
+        return (
+            matchesCategory &&
+            matchesRating &&
+            matchesSentiment
+        );
+    });
+}
+
 function categoryIcon(cat) {
     const c = (cat || '').toLowerCase();
     if (c.includes('book') || c.includes('fiction') || c.includes('literature')) return '📚';
@@ -131,6 +213,37 @@ function categoryIcon(cat) {
     if (c.includes('cloth') || c.includes('fashion')) return '👕';
     if (c.includes('home') || c.includes('garden')) return '🏡';
     return '📦';
+}
+
+// ── Wishlist ────────────────────────────────────────────────────────
+function getWishlist() {
+    return JSON.parse(localStorage.getItem('wishlist')) || [];
+}
+
+function saveWishlist(items) {
+    localStorage.setItem('wishlist', JSON.stringify(items));
+}
+
+function isWishlisted(title) {
+    return getWishlist().some(item => item.title === title);
+}
+
+function toggleWishlist(product) {
+    let wishlist = getWishlist();
+
+    const exists = wishlist.some(item => item.title === product.title);
+
+    if (exists) {
+        wishlist = wishlist.filter(item => item.title !== product.title);
+        toast('Removed from wishlist', 'info');
+    } else {
+        wishlist.push(product);
+        toast('Added to wishlist', 'success');
+    }
+
+    saveWishlist(wishlist);
+
+    renderProducts(state.allProducts, false);
 }
 
 // ── API Helpers ─────────────────────────────────────────────────────
@@ -286,30 +399,30 @@ async function handleSearch(query) {
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
-        els.searchDropdown.innerHTML = `
-            <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
-                No results for "${query}"
-            </div>`;
-        els.searchDropdown.classList.add('active');
+        closeSearchDropdown();
         return;
     }
 
-    els.searchDropdown.innerHTML = results.map((r, i) => `
-        <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
-             data-title="${r.title}" data-idx="${i}">
-            <span style="font-size:20px;">${categoryIcon(r.category)}</span>
-            <div class="search-result__info">
-                <div class="search-result__title">${highlightMatch(r.title, query)}</div>
-                <div class="search-result__meta">
-                    ★ ${(r.rating || 0).toFixed(1)}
-                    ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
+    els.searchDropdown.innerHTML = results
+        .map((title, index) => `
+            <div
+                class="search-result ${index === state.selectedSearchIdx ? 'active' : ''}"
+                data-title="${title}"
+                data-idx="${index}"
+            >
+                <span class="search-result__icon">🔍</span>
+                <div class="search-result__info">
+                    <div class="search-result__title">
+                        ${highlightMatch(title, query)}
+                    </div>
                 </div>
             </div>
-        </div>
-    `).join('');
+        `)
+        .join('');
+
     els.searchDropdown.classList.add('active');
 
-    // Click handlers
+    // Click suggestion
     els.searchDropdown.querySelectorAll('.search-result').forEach((el) => {
         el.addEventListener('click', () => {
             const title = el.dataset.title;
@@ -326,43 +439,118 @@ function highlightMatch(text, query) {
 
 function selectSearchResult(title) {
     els.searchInput.value = title;
+
     closeSearchDropdown();
+
+    // Trigger actual search
     loadSearchResults(title);
+
+    // Optional recommendation refresh
     loadRecommendations(title);
 }
+
 
 function closeSearchDropdown() {
     els.searchDropdown.classList.remove('active');
     state.selectedSearchIdx = -1;
 }
 
+// Close dropdown when clicking outside
+window.addEventListener('click', (e) => {
+    const container = document.getElementById('search-container');
+
+    if (!container.contains(e.target)) {
+        closeSearchDropdown();
+    }
+});
+
 function handleSearchKeydown(e) {
-    const results = state.searchResults;
-    if (!results.length || !els.searchDropdown.classList.contains('active')) return;
+    const results = state.autocompleteResults;
+
+    if (!results.length || !els.searchDropdown.classList.contains('active')) {
+        return;
+    }
 
     if (e.key === 'ArrowDown') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.min(state.selectedSearchIdx + 1, results.length - 1);
+
+        state.selectedSearchIdx = Math.min(
+            state.selectedSearchIdx + 1,
+            results.length - 1
+        );
+
         renderSearchDropdown(results, els.searchInput.value);
-    } else if (e.key === 'ArrowUp') {
+    }
+
+    else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, -1);
+
+        state.selectedSearchIdx = Math.max(
+            state.selectedSearchIdx - 1,
+            0
+        );
+
         renderSearchDropdown(results, els.searchInput.value);
-    } else if (e.key === 'Enter' && state.selectedSearchIdx >= 0) {
+    }
+
+    else if (e.key === 'Enter') {
         e.preventDefault();
-        selectSearchResult(results[state.selectedSearchIdx].title);
-    } else if (e.key === 'Escape') {
+
+        if (state.selectedSearchIdx >= 0) {
+            const selected = results[state.selectedSearchIdx];
+            selectSearchResult(selected);
+        }
+    }
+
+    else if (e.key === 'Escape') {
         closeSearchDropdown();
     }
 }
 
+
+
+function handleSearch(query) {
+    if (!query || query.trim().length < 1) {
+        closeSearchDropdown();
+        return;
+    }
+
+    clearTimeout(state.searchTimer);
+
+    // 300ms debounce
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(
+                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=5`
+            );
+
+            state.autocompleteResults = data.suggestions || [];
+            state.selectedSearchIdx = -1;
+
+            renderSearchDropdown(state.autocompleteResults, query);
+        } catch (err) {
+            console.error('Autocomplete failed:', err);
+            closeSearchDropdown();
+        }
+    }, 300);
+}
+
+// ── Product Loading ─────────────────────────────────────────────────
 // ── Product Loading (Infinite Scroll) ───────────────────────────────
+
 async function loadProducts(append = false) {
     // Guard: prevent duplicate requests and loading past end
     if (state.isLoading) return;
     if (append && !state.hasMore) return;
 
     state.isLoading = true;
+
+    if (!append) {
+        setPageMeta(
+            'All Products', 
+            'Browse all products on HybridRec — personalised recommendations just for you.'
+        );
+    }
 
     if (!append) {
         els.productGrid.innerHTML = '';
@@ -478,11 +666,12 @@ async function loadSearchResults(query) {
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
+    setPageMeta(`Search: ${query}`, `Showing results for "${query}" on HybridRec.`);
     els.infiniteEnd.hidden = true;
 
     try {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
-        const products = data.results || [];
+        const products = data.items || [];
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
@@ -494,25 +683,75 @@ async function loadSearchResults(query) {
     }
 }
 
+// ── Lazy Loading ────────────────────────────────────────────────────
+const lazyObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const img = entry.target;
+        img.src = img.dataset.src;
+        img.onload = () => img.classList.add('loaded');
+        lazyObserver.unobserve(img);
+    });
+}, { rootMargin: '200px 0px', threshold: 0.01 });
+
+function createLazyImage(src, alt) {
+    const img = document.createElement('img');
+    img.alt = alt || '';
+    img.setAttribute('loading', 'lazy');
+
+    if ('IntersectionObserver' in window) {
+        img.dataset.src = src;
+        img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"%3E%3Crect width="400" height="300" fill="%23232f3e"/%3E%3C/svg%3E';
+        lazyObserver.observe(img);
+    } else {
+        img.src = src;
+        img.classList.add('loaded');
+    }
+
+    img.addEventListener('error', () => img.classList.add('error'));
+    return img;
+}
+
 function renderProducts(products, append) {
+    products = applyFilters(products);
+    els.productCount.textContent = `${products.length} products`;
+    if (!append) {
+    els.productGrid.innerHTML = '';
+}
     if (!append) state.products = [];
+    if (!products.length) {
+    els.productGrid.innerHTML = `
+        <div class="no-results">
+            <div class="no-results__icon">🔍</div>
+            <div>No matching results found</div>
+        </div>
+    `;
+    return;
+}
 
     const fragment = document.createDocumentFragment();
 
     products.forEach((p, i) => {
         state.products.push(p);
         const card = document.createElement('div');
-        card.className = 'product-card';
+        card.className = p.image ? 'product-card' : 'product-card product-card--skeleton';
         card.style.animationDelay = `${i * 50}ms`;
         const isChecked = state.heatmapSelected.includes(p.title);
         card.innerHTML = `
-            <div class="product-card__image">
-                ${categoryIcon(p.category)}
+           <div class="product-card__image">
+            <button class="wishlist-btn" data-title="${p.title}">
+                ${isWishlisted(p.title) ? '❤️' : '🤍'}
+            </button>
+
+            ${categoryIcon(p.category)}
             </div>
             <div class="product-card__body">
                 ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
                 <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
                 <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                <div class="product-card__price">
+                ₹${p.price || 0}
+                </div>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
@@ -535,10 +774,20 @@ function renderProducts(products, append) {
                 </button>
             </div>
         `;
+        if (p.image) {
+            const imgEl = createLazyImage(p.image, p.title);
+            card.querySelector('.product-card__image').appendChild(imgEl);
+        }
 
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
+            const wishlistBtn = card.querySelector('.wishlist-btn');
+
+            wishlistBtn.addEventListener('click', (e) => {
             e.stopPropagation();
+            toggleWishlist(p);
+            });
+    
             const title = e.target.dataset.title;
             loadRecommendations(title);
             toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
@@ -587,6 +836,113 @@ function renderProducts(products, append) {
 }
 
 // ── Recommendations ─────────────────────────────────────────────────
+function getRealtimeUrl() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/recommendations`;
+}
+
+function initRecommendationSocket() {
+    if (!('WebSocket' in window) || state.recommendationSocket) return;
+
+    const socket = new WebSocket(getRealtimeUrl());
+    state.recommendationSocket = socket;
+
+    socket.addEventListener('open', () => {
+        state.realtimeReady = true;
+    });
+
+    socket.addEventListener('message', (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'recommendations') {
+                renderRecommendations(data);
+            } else if (data.type === 'error') {
+                throw new Error(data.detail || 'Recommendation stream failed');
+            }
+        } catch (err) {
+            console.warn('Realtime recommendation update failed:', err.message);
+            fallbackRecommendationRequest(state.pendingRecommendationTitle);
+        }
+    });
+
+    socket.addEventListener('close', () => {
+        state.realtimeReady = false;
+        state.recommendationSocket = null;
+    });
+
+    socket.addEventListener('error', () => {
+        state.realtimeReady = false;
+    });
+}
+
+function requestRealtimeRecommendations(title) {
+    if (!state.realtimeReady || !state.recommendationSocket) return false;
+
+    state.pendingRecommendationTitle = title;
+    state.recommendationSocket.send(JSON.stringify({
+        item_title: title,
+        top_n: 12,
+    }));
+    return true;
+}
+
+async function fallbackRecommendationRequest(title) {
+    if (!title) return;
+
+    clearTimeout(state.realtimeFallbackTimer);
+    state.realtimeFallbackTimer = setTimeout(async () => {
+        try {
+            const data = await API.post('/api/realtime/behavior', {
+                item_title: title,
+                top_n: 12,
+            });
+            renderRecommendations(data);
+        } catch {
+            await loadRecommendationsOverHttp(title);
+        }
+    }, 250);
+}
+
+function renderRecommendations(data) {
+    const recs = data.recommendations || [];
+
+    els.recsLoader.hidden = true;
+    els.recsStrip.hidden = false;
+
+    if (!recs.length) {
+        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
+        return;
+    }
+
+    els.recsStrip.innerHTML = recs.map((r) => `
+        <div class="rec-card" data-title="${r.title}">
+            <div class="rec-card__title">${r.title}</div>
+            <div class="rec-card__rating">
+                <div class="star-rating">${renderStars(r.rating || 0)}</div>
+                <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
+            </div>
+            <div class="rec-card__score">
+                Score: ${(r.hybrid_score || 0).toFixed(3)}
+                · Content: ${(r.content_score || 0).toFixed(2)}
+                · Collab: ${(r.collab_score || 0).toFixed(2)}
+            </div>
+        </div>
+    `).join('');
+
+    els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
+        card.addEventListener('click', () => {
+            loadRecommendations(card.dataset.title);
+        });
+    });
+
+    els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadRecommendationsOverHttp(title) {
+    const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+    renderRecommendations(data);
+}
+
 async function loadRecommendations(title) {
     if (!state.modelReady) {
         toast('Build models first to get recommendations', 'info');
@@ -594,12 +950,13 @@ async function loadRecommendations(title) {
     }
 
     els.recsSection.hidden = false;
+    setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
 
     try {
-        const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+        const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
         const recs = data.recommendations || [];
 
         els.recsLoader.hidden = true;
@@ -609,46 +966,14 @@ async function loadRecommendations(title) {
             els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
             return;
         }
-
-        els.recsStrip.innerHTML = recs.map((r) => `
-    <div class="rec-card" data-title="${r.title}">
-        <div class="rec-card__title">${r.title}</div>
-
-        <div class="rec-card__rating">
-            <div class="star-rating">${renderStars(r.rating || 0)}</div>
-            <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
-        </div>
-
-        <div class="rec-card__score">
-            Score: ${(r.hybrid_score || 0).toFixed(3)}
-            · Content: ${(r.content_score || 0).toFixed(2)}
-            · Collab: ${(r.collab_score || 0).toFixed(2)}
-        </div>
-
-        <div class="feedback-buttons" style="margin-top:10px; display:flex; gap:10px;">
-            <button onclick="sendFeedback('${r.title}', 'up', this)">
-                👍
-            </button>
-
-            <button onclick="sendFeedback('${r.title}', 'down', this)">
-                👎
-            </button>
-        </div>
-    </div>
-`).join('');
-        // Click to chain recommendations
-        els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
-            card.addEventListener('click', () => {
-                loadRecommendations(card.dataset.title);
-            });
-        });
-
-        // Scroll to recs
-        els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch {
-        els.recsLoader.hidden = true;
-        els.recsStrip.hidden = false;
-        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
+        try {
+            await loadRecommendationsOverHttp(title);
+        } catch {
+            els.recsLoader.hidden = true;
+            els.recsStrip.hidden = false;
+            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
+        }
     }
 }
 
@@ -682,6 +1007,7 @@ async function handleBuild() {
         state.modelReady = true;
         toast(`Models built in ${data.build_time_seconds}s — ${data.items?.toLocaleString()} items`, 'success');
         updateStatus('ready', `Ready — ${data.items?.toLocaleString()} products`);
+        initRecommendationSocket();
         loadProducts();
         setupScrollObserver();
     } catch (err) {
@@ -705,6 +1031,7 @@ async function checkStatus() {
         if (data.model_ready) {
             state.modelReady = true;
             updateStatus('ready', `Ready — ${count.toLocaleString()} products`);
+            initRecommendationSocket();
             loadProducts();
             setupScrollObserver();
         } else if (count > 0) {
@@ -740,6 +1067,22 @@ async function handleWeightChange() {
     try {
         await API.put('/api/weights', { alpha: a / 100, beta: b / 100, gamma: g / 100 });
     } catch {}
+}
+
+function populateCategoryFilter(products) {
+
+    const categories = [...new Set(
+        products
+            .map(p => p.category)
+            .filter(Boolean)
+    )];
+
+    els.categoryFilter.innerHTML = `
+        <option value="">All Categories</option>
+        ${categories.map(cat =>
+            `<option value="${cat}">${cat}</option>`
+        ).join('')}
+    `;
 }
 
 // ── Event Listeners ─────────────────────────────────────────────────
@@ -949,6 +1292,7 @@ function initBackToTop() {
     });
 }
 // ── Init ────────────────────────────────────────────────────────────
+setPageMeta(null, 'A hybrid recommender fusing TF-IDF, SVD and VADER sentiment.');
 async function init() {
     bindEvents();
     initTypeToSearch();
@@ -962,46 +1306,39 @@ async function init() {
     checkStatus().catch((e) => console.warn('Status error:', e));
 }
 
+// Debounce helper
+function debounce(func, delay) {
+  let timeout;
+
+  return function (...args) {
+    clearTimeout(timeout);
+
+    timeout = setTimeout(() => {
+      func.apply(this, args);
+    }, delay);
+  };
+}
+
+els.categoryFilter.addEventListener('change', (e) => {
+    state.filters.category = e.target.value;
+
+    renderProducts(state.allProducts, false);
+
+    debouncedSavePreferences();
+});
+
 document.addEventListener('DOMContentLoaded', init);
 async function sendFeedback(item, feedback, button) {
 
     const storageKey = `feedback_${item}`;
 
-    if (sessionStorage.getItem(storageKey)) {
-        return;
-    }
+  return function (...args) {
+    clearTimeout(timeout);
 
-    try {
-
-        const response = await fetch('/api/feedback', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                user_id: 'demo_user',
-                item: item,
-                feedback: feedback
-            })
-        });
-
-        if (response.ok) {
-
-            sessionStorage.setItem(storageKey, 'true');
-
-            const parent = button.parentElement;
-
-            parent.querySelectorAll('button').forEach(btn => {
-                btn.disabled = true;
-            });
-
-            toast('Thanks for your feedback!', 'success');
-        }
-
-    } catch (error) {
-        console.error(error);
-        toast('Feedback failed', 'error');
-    }
+    timeout = setTimeout(() => {
+      func.apply(this, args);
+    }, delay);
+  };
 }
 // ── Product Comparison (Side by Side) ──────────────────────────────
 function toggleCompare(product, checked) {
