@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Admin Dashboard</title>
+
+  <style>
+    body {
+      font-family: Arial;
+      background: #f4f4f4;
+      padding: 20px;
+    }
+
+    h1 {
+      text-align: center;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 20px;
+      margin-top: 30px;
+    }
+
+    .card {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      text-align: center;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+
+    .value {
+      font-size: 28px;
+      font-weight: bold;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>Admin Dashboard</h1>
+
+<div class="grid">
+
+  <div class="card">
+    <h3>Total Products</h3>
+    <div class="value" id="products">-</div>
+  </div>
+
+  <div class="card">
+    <h3>Total Users</h3>
+    <div class="value" id="users">-</div>
+  </div>
+
+  <div class="card">
+    <h3>Total Interactions</h3>
+    <div class="value" id="interactions">-</div>
+  </div>
+
+  <div class="card">
+    <h3>Avg Recommendation Score</h3>
+    <div class="value" id="recommendation">-</div>
+  </div>
+
+  <div class="card">
+    <h3>Avg Sentiment Score</h3>
+    <div class="value" id="sentiment">-</div>
+  </div>
+
+  <div class="card">
+    <h3>Last Trained</h3>
+    <div class="value" id="trained">-</div>
+  </div>
+
+</div>
+
+<div class="card" style="margin-top:30px;">
+  <h3>Top 5 Recommended Products</h3>
+  <ul id="top-products"></ul>
+</div>
+
+<script>
+async function loadDashboard() {
+
+  const response = await fetch('/api/dashboard');
+  const data = await response.json();
+
+  document.getElementById('products').textContent =
+    data.total_products;
+
+  document.getElementById('users').textContent =
+    data.total_users;
+
+  document.getElementById('interactions').textContent =
+    data.total_interactions;
+
+  document.getElementById('recommendation').textContent =
+    data.avg_recommendation_score;
+
+  document.getElementById('sentiment').textContent =
+    data.avg_sentiment_score;
+
+  document.getElementById('trained').textContent =
+    new Date(data.model_last_trained).toLocaleString();
+
+  const list = document.getElementById('top-products');
+
+  data.top_5_recommended_products.forEach(product => {
+    const li = document.createElement('li');
+    li.textContent = product;
+    list.appendChild(li);
+  });
+}
+
+loadDashboard();
+</script>
+
+</body>
+</html>

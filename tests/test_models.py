@@ -184,6 +184,21 @@ class TestHybridRecommender:
         for r in recs:
             assert required.issubset(r.keys())
 
+    def test_recommend_explain_false_keeps_default_payload_compact(self, hybrid_model):
+        recs = hybrid_model.recommend('Product A', top_n=2)
+        assert recs
+        assert 'explanation' not in recs[0]
+
+    def test_recommend_explain_true_adds_score_breakdown(self, hybrid_model):
+        recs = hybrid_model.recommend('Product A', top_n=2, explain=True)
+        assert recs
+        explanation = recs[0]['explanation']
+        assert explanation['source_item'] == 'Product A'
+        assert 'component_scores' in explanation
+        assert 'weighted_components' in explanation
+        assert 'top_content_terms' in explanation
+        assert explanation['signals']['sentiment_polarity'] in {'positive', 'neutral', 'negative'}
+
     def test_recommend_sorted_by_hybrid_score(self, hybrid_model):
         recs = hybrid_model.recommend('Product A', top_n=5)
         scores = [r['hybrid_score'] for r in recs]
