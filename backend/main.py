@@ -123,6 +123,7 @@ class RealtimeRecommendationRequest(BaseModel):
     item_title: str
     top_n: int = 10
     explain: bool = False
+    llm_explain: bool = False
 
 
 class RealtimeRecommendationHub:
@@ -526,12 +527,21 @@ def build_models():
 # ── Recommendations ────────────────────────────────────────────────
 
 @app.get("/api/recommend/{item_title}")
-def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False)):
+def get_recommendations(
+    item_title: str,
+    top_n: int = 10,
+    explain: bool = Query(False),
+    llm_explain: bool = Query(False),
+):
     """Get hybrid recommendations for an item."""
-    return _recommendation_payload(item_title, top_n=top_n, explain=explain)
+    return _recommendation_payload(
+        item_title, top_n=top_n, explain=explain, llm_explain=llm_explain
+    )
 
 
-def _recommendation_payload(item_title: str, top_n: int = 10, explain: bool = False):
+def _recommendation_payload(
+    item_title: str, top_n: int = 10, explain: bool = False, llm_explain: bool = False
+):
     """Build a recommendation response shared by HTTP and real-time transports."""
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
@@ -640,6 +650,7 @@ async def recommendations_websocket(websocket: WebSocket):
                 request.item_title,
                 top_n=top_n,
                 explain=request.explain,
+                llm_explain=request.llm_explain,
             )
             await websocket.send_json({"type": "recommendations", **payload})
     except WebSocketDisconnect:
@@ -657,7 +668,12 @@ async def recommendations_websocket(websocket: WebSocket):
 async def realtime_behavior_update(event: RealtimeRecommendationRequest):
     """HTTP fallback for clients that cannot keep a WebSocket connection open."""
     top_n = max(1, min(50, event.top_n))
-    payload = _recommendation_payload(event.item_title, top_n=top_n, explain=event.explain)
+    payload = _recommendation_payload(
+        event.item_title,
+        top_n=top_n,
+        explain=event.explain,
+        llm_explain=event.llm_explain,
+    )
     message = {"type": "recommendations", **payload}
     await realtime_hub.broadcast(message)
     return message
