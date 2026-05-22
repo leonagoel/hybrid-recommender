@@ -653,4 +653,32 @@ async function init() {
     checkStatus().catch((e) => console.warn('Status error:', e));
 }
 
+// Network status banner
+
+const networkBanner = document.getElementById("network-status-banner");
+
+function showBanner(message, type) {
+  networkBanner.textContent = message;
+  networkBanner.className = `network-banner ${type}`;
+}
+
+function hideBanner() {
+  networkBanner.className = "network-banner hidden";
+}
+
+window.addEventListener("offline", () => {
+  showBanner(
+    "⚠️ You're offline. Please check your connection.",
+    "offline"
+  );
+});
+
+window.addEventListener("online", () => {
+  showBanner("✅ Back online!", "online");
+
+  setTimeout(() => {
+    hideBanner();
+  }, 3000);
+});
+
 document.addEventListener('DOMContentLoaded', init);

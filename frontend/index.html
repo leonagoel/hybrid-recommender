@@ -12,6 +12,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
+<div id="network-status-banner" class="network-banner hidden"></div>
   <div class="page-wrapper">
     <!-- Header -->
     <header class="header" id="header">
@@ -27,6 +28,7 @@
                 <input type="text" id="search-input" placeholder="Search products..." autocomplete="off" spellcheck="false">
                 <span class="search-shortcut" id="search-shortcut">Type anywhere</span>
                 <div class="search-dropdown" id="search-dropdown"></div>
+                <div class="search-history" id="search-history"></div>
             </div>
             <div class="header__actions">
                 <button class="btn btn--ghost" id="auth-btn">

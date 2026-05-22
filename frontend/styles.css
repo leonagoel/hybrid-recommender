@@ -1076,3 +1076,30 @@ main {
     background: rgba(255,255,255,0.6);
     border-radius: inherit;
 }
+/* Network Status Banner */
+
+.network-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding: 14px 20px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 14px;
+  z-index: 9999;
+  color: white;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+.network-banner.hidden {
+  display: none;
+}
+
+.network-banner.offline {
+  background-color: #dc2626;
+}
+
+.network-banner.online {
+  background-color: #16a34a;
+}
