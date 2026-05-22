@@ -600,6 +600,16 @@ function renderProducts(products, append) {
             </div>
         `;
 
+        // Wishlist button
+        const wishlistBtn = card.querySelector('.wishlist-btn');
+
+        if (wishlistBtn) {
+            wishlistBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleWishlist(p);
+            });
+        }
+
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
             e.stopPropagation();
