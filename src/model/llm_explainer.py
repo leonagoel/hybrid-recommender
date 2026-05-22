@@ -160,7 +160,7 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
     def _generate_fallback_explanation(
         self,
         recommended_item: str,
-        query_item: stra,
+        query_item: str,
         scores: Dict[str, float],
         description: str = "",
         category: str = "",
