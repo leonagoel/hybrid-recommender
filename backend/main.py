@@ -803,30 +803,49 @@ def get_task_status(task_id: str):
 def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False)):
     """Synchronous recommend — kept for backward compatibility. Use POST /api/recommend for async."""
 def get_recommendations(
-    item_title: str,
+    response: Response,
+    item_title: Optional[str] = None,
+    title: Optional[str] = Query(None),
     top_n: int = 10,
     explain: bool = Query(False),
     llm_explain: bool = Query(False),
 ):
     """Get hybrid recommendations for an item."""
     return _recommendation_payload(
-        item_title, top_n=top_n, explain=explain, llm_explain=llm_explain
+        title or item_title,
+        top_n=top_n,
+        explain=explain,
+        llm_explain=llm_explain,
+        response=response,
     )
 
 
 def _recommendation_payload(
-    item_title: str, top_n: int = 10, explain: bool = False, llm_explain: bool = False
+    item_title: Optional[str],
+    top_n: int = 10,
+    explain: bool = False,
+    llm_explain: bool = False,
+    response: Optional[Response] = None,
 ):
     """Build a recommendation response shared by HTTP and real-time transports."""
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-    query_title = title or item_title
+    query_title = item_title.strip() if item_title else ""
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
+
+    cache_key = _cache_key("recommend", query_title, top_n, explain, llm_explain)
+    cached = _get_cached_response(cache_key)
+    if cached is not None:
+        if response is not None:
+            _set_cache_headers(response, "HIT")
+        return cached
+
     recs = models["hybrid"].recommend(query_title, top_n=top_n, explain=explain)
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
-    return {
+    weights = models["hybrid"].get_weights()
+    payload = {
         "query_item": query_title,
         "recommendations": recs,
         "weights": weights,
