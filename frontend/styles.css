@@ -1076,3 +1076,18 @@ main {
     background: rgba(255,255,255,0.6);
     border-radius: inherit;
 }
+
+.category-filter {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    outline: none;
+    cursor: pointer;
+}
+
+.category-filter:hover {
+    border-color: var(--accent);
+}
