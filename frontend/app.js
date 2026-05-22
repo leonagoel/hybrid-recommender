@@ -35,6 +35,7 @@ const state = {
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
+    searchHistory: [],
     selectedCategory: 'All Categories',
 };
 
@@ -44,6 +45,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
     searchInput: $('search-input'),
     searchDropdown: $('search-dropdown'),
+    searchHistory: $('search-history'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
@@ -273,6 +275,63 @@ async function handleSearch(query) {
     }, 200);
 }
 
+function addToSearchHistory(query) {
+    if (!query || !query.trim()) return;
+
+    state.searchHistory = [
+        query,
+        ...state.searchHistory.filter(item => item !== query)
+    ].slice(0, 5);
+
+    renderSearchHistory();
+}
+
+function renderSearchHistory() {
+    if (!state.searchHistory.length) {
+        els.searchHistory.innerHTML = '';
+        els.searchHistory.classList.remove('active');
+        return;
+    }
+
+    els.searchHistory.innerHTML = `
+        <div class="search-history__header">
+            <span>Recent Searches</span>
+            <button class="clear-history-btn" id="clear-history-btn">
+                Clear
+            </button>
+        </div>
+
+        ${state.searchHistory.map(item => `
+            <div class="search-history__item" data-query="${item}">
+                ${item}
+            </div>
+        `).join('')}
+    `;
+
+    els.searchHistory.classList.add('active');
+
+    // Click history item
+    els.searchHistory.querySelectorAll('.search-history__item')
+        .forEach((el) => {
+            el.addEventListener('click', () => {
+                const query = el.dataset.query;
+                els.searchInput.value = query;
+                loadSearchResults(query);
+                handleSearch(query);
+            });
+        });
+
+    // Clear history
+    const clearBtn = document.getElementById('clear-history-btn');
+
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            state.searchHistory = [];
+            renderSearchHistory();
+        });
+    }
+}
+
 function renderSearchDropdown(results, query) {
     if (!results.length) {
         els.searchDropdown.innerHTML = `
@@ -314,6 +373,7 @@ function highlightMatch(text, query) {
 }
 
 function selectSearchResult(title) {
+    addToSearchHistory(title);
     els.searchInput.value = title;
     closeSearchDropdown();
     loadSearchResults(title);
@@ -596,8 +656,12 @@ function bindEvents() {
     els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
     els.searchInput.addEventListener('keydown', handleSearchKeydown);
     els.searchInput.addEventListener('focus', () => {
-        if (els.searchInput.value) handleSearch(els.searchInput.value);
-    });
+    if (els.searchInput.value) {
+        handleSearch(els.searchInput.value);
+    } else {
+        renderSearchHistory();
+    }
+});
     els.categoryFilter.addEventListener('change', (e) => {
     state.selectedCategory = e.target.value;
 
@@ -610,8 +674,11 @@ function bindEvents() {
 
     // Close dropdown on outside click
     document.addEventListener('click', (e) => {
-        if (!e.target.closest('.header__search')) closeSearchDropdown();
-    });
+       if (!e.target.closest('.header__search')) {
+    closeSearchDropdown();
+    els.searchHistory.classList.remove('active');
+}
+});
 
     // Auth
     els.authBtn.addEventListener('click', () => {

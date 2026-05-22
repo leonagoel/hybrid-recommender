@@ -1091,3 +1091,49 @@ main {
 .category-filter:hover {
     border-color: var(--accent);
 }
+
+.search-history {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    width: 100%;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    overflow: hidden;
+    display: none;
+    z-index: 30;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+}
+
+.search-history.active {
+    display: block;
+}
+
+.search-history__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.search-history__item {
+    padding: 12px 14px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.search-history__item:hover {
+    background: var(--bg-hover);
+}
+
+.clear-history-btn {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 12px;
+}
