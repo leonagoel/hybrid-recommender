@@ -8,6 +8,7 @@ import io
 import time
 import logging
 import math
+import re
 from collections import deque
 from threading import Lock
 
@@ -530,13 +531,30 @@ async def upload_dataset(file: UploadFile = File(...)):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
     filename = file.filename or "data.csv"
+    filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    
     ext = os.path.splitext(filename)[1].lower()
 
     if ext not in ('.csv', '.json'):
         raise HTTPException(400, "Only CSV and JSON files are supported.")
+    
+    ALLOWED_MIME_TYPES = {
+    "text/csv",
+    "application/json",
+    "application/vnd.ms-excel"
+}
+    if file.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(400, "Invalid file type.")
+    MAX_FILE_SIZE = 5 * 1024 * 1024
 
     try:
         contents = await file.read()
+        if not contents:
+            raise HTTPException(400, "Uploaded file is empty.")
+
+        if len(contents) > MAX_FILE_SIZE:
+            raise HTTPException(400, "File size exceeds 5 MB limit.")
+    
         buf = io.BytesIO(contents)
         raw_df = read_file(buf, file_format=ext.replace('.', ''))
         adapted_df, meta = adapt_data(raw_df)
