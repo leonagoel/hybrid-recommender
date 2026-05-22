@@ -8,6 +8,7 @@ import io
 import time
 import logging
 import math
+import re
 from collections import deque, Counter
 from threading import Lock
 
@@ -39,19 +40,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from db import get_supabase, get_supabase_admin
-from data_adapter import adapt_data, read_file
-from nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
-from hybrid_model import HybridRecommender
+from src.data.db import get_supabase, get_supabase_admin
+from src.data.data_adapter import adapt_data, read_file
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.evaluation.ab_testing import DEFAULT_EXPERIMENT_ID, run_recommendation_experiment
+
 from celery.result import AsyncResult
 from celery_app import celery_app
 from tasks import compute_recommendations
-from ab_testing import DEFAULT_EXPERIMENT_ID, run_recommendation_experiment
 
 from functools import lru_cache
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
@@ -575,9 +577,11 @@ def search_items(
                 .offset(offset) \
                 .execute()
             products = result.data or []
-            is_fallback = True
+            for p in products:
+                p['rank'] = 0.0
 
         results = []
+
         for p in products:
             results.append({
                 'id': p.get('id'),
@@ -594,21 +598,22 @@ def search_items(
     except Exception:
         # Graceful fallback when Supabase is not configured locally
         is_fallback = not bool(q.strip())
+
         q_clean = q.strip().lower()
-        
+
         if q_clean:
-            # Case-insensitive filtering on mock list
             matched = [
-                p for p in MOCK_PRODUCTS 
-                if q_clean in p["title"].lower() or q_clean in p["description"].lower()
+                p for p in MOCK_PRODUCTS
+                if q_clean in p["title"].lower()
+                or q_clean in p["description"].lower()
             ]
         else:
             matched = MOCK_PRODUCTS
 
-        # Apply limit & offset manually
         paginated = matched[offset : offset + limit]
 
         results = []
+
         for p in paginated:
             results.append({
                 'id': p['id'],
@@ -624,9 +629,13 @@ def search_items(
 
     payload = {
         "results": results,
+        "items": results,
         "total": len(results),
+        "count": len(results),
         "query": q,
         "is_fallback": is_fallback,
+        "limit": limit,
+        "offset": offset,
     }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
@@ -1007,59 +1016,113 @@ def get_recommendations(
     llm_explain: bool = Query(False),
 ):
     """Get hybrid recommendations for an item."""
-    query_title = title or item_title
-    cache_key = _cache_key("recommend", query_title or "", top_n, explain, llm_explain)
+
+    query_title = (title or item_title or "").strip()
+
+    cache_key = _cache_key(
+        "recommend",
+        query_title,
+        top_n,
+        explain,
+        llm_explain,
+    )
+
     cached = _get_cached_response(cache_key)
+
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
     payload = _recommendation_payload(
-        query_title, top_n=top_n, explain=explain, llm_explain=llm_explain
+        query_title,
+        top_n=top_n,
+        explain=explain,
+        llm_explain=llm_explain,
+        response=response,
     )
+
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
+
     return payload
 
 
 def _recommendation_payload(
-    item_title: Optional[str], top_n: int = 10, explain: bool = False, llm_explain: bool = False
+    item_title: Optional[str],
+    top_n: int = 10,
+    explain: bool = False,
+    llm_explain: bool = False,
+    response: Optional[Response] = None,
 ):
     """Build a recommendation response shared by HTTP and real-time transports."""
+
     if not models["ready"]:
         if not os.getenv("PYTEST_CURRENT_TEST"):
             try:
                 get_supabase()
             except Exception:
                 recs = [
-                    {"title": p["title"], "hybrid_score": round(0.98 - i * 0.05, 2)}
+                    {
+                        "title": p["title"],
+                        "hybrid_score": round(0.98 - i * 0.05, 2),
+                    }
                     for i, p in enumerate(MOCK_PRODUCTS)
                     if p["title"] != item_title
                 ][:top_n]
+
                 return {
                     "query_item": item_title,
                     "recommendations": recs,
-                    "weights": {"alpha": 0.4, "beta": 0.35, "gamma": 0.25},
+                    "weights": {
+                        "alpha": 0.4,
+                        "beta": 0.35,
+                        "gamma": 0.25,
+                    },
                     "explain": explain,
                     "llm_explain": llm_explain,
                 }
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
 
-    query_title = item_title
+        raise HTTPException(
+            400,
+            "Models not built. Build first via /api/build."
+        )
+
+    query_title = item_title.strip() if item_title else ""
+
     if not query_title:
-        raise HTTPException(422, "Query parameter 'title' is required.")
+        raise HTTPException(
+            422,
+            "Query parameter 'title' is required."
+        )
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain, llm_explain)
+    cache_key = _cache_key(
+        "recommend",
+        query_title,
+        top_n,
+        explain,
+        llm_explain,
+    )
+
     cached = _get_cached_response(cache_key)
+
     if cached is not None:
         if response is not None:
             _set_cache_headers(response, "HIT")
+
         return cached
 
-    recs = models["hybrid"].recommend(query_title, top_n=top_n, explain=explain)
+    recs = models["hybrid"].recommend(
+        query_title,
+        top_n=top_n,
+        explain=explain,
+    )
+
     if not recs:
-        raise HTTPException(404, "Item not found or no recommendations.")
-    weights = models["hybrid"].get_weights()
+        raise HTTPException(
+            404,
+            "Item not found or no recommendations."
+        )
+
     payload = {
         "query_item": query_title,
         "recommendations": recs,
@@ -1067,6 +1130,11 @@ def _recommendation_payload(
         "explain": explain,
         "llm_explain": llm_explain,
     }
+    if response is not None:
+        _set_cached_response(cache_key, payload)
+        _set_cache_headers(response, "MISS")
+
+    return payload
 
 
 
@@ -1210,25 +1278,33 @@ def update_weights(w: WeightsUpdate):
 # ── Items ───────────────────────────────────────────────────────────
 
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
-    """List products from Supabase with cursor-style pagination.
+def list_items(page: int = Query(1, ge=1), per_page: int = Query(20, ge=1, le=200)):
+    """List products from Supabase with page/per_page pagination.
 
-    Supports ``?page=1&limit=20`` for infinite-scroll on the frontend.
-    Returns a ``has_more`` flag so the client knows when to stop fetching.
+    Supports ``?page=1&per_page=20``. Response includes pagination
+    metadata: total_count, total_pages, current_page, and items. For
+    backward compatibility the old keys are also present.
     """
     try:
         sb = get_supabase()
-        offset = (page - 1) * limit
+
+        offset = (page - 1) * per_page
+
         result = sb.table('products') \
             .select('id, title, description, category, rating, avg_sentiment, review_count') \
             .order('rating', desc=True) \
-            .range(offset, offset + limit - 1) \
+            .range(offset, offset + per_page - 1) \
             .execute()
 
-        count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+        count_result = sb.table('products') \
+            .select('id', count='exact') \
+            .limit(0) \
+            .execute()
+
         total = count_result.count or 0
 
         items = []
+
         for p in (result.data or []):
             items.append({
                 'id': p.get('id'),
@@ -1238,12 +1314,21 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
                 'avg_sentiment': round(float(p.get('avg_sentiment', 0)), 4),
                 'description': str(p.get('description', ''))[:200],
             })
+
     except Exception as e:
-        logger.warning("Supabase offline in list_items, falling back to mock products: %s", e)
+        logger.warning(
+            "Supabase offline in list_items, falling back to mock products: %s",
+            e
+        )
+
         total = len(MOCK_PRODUCTS)
-        offset = (page - 1) * limit
-        paginated = MOCK_PRODUCTS[offset : offset + limit]
+
+        offset = (page - 1) * per_page
+
+        paginated = MOCK_PRODUCTS[offset : offset + per_page]
+
         items = []
+
         for p in paginated:
             items.append({
                 'id': p['id'],
@@ -1254,14 +1339,22 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
                 'description': str(p['description'])[:200],
             })
 
-    return {
+    total_pages = math.ceil(total / per_page) if per_page > 0 else 1
+
+    # New response shape
+    payload = {
         "items": items,
+        "total_count": total,
+        "total_pages": total_pages,
+        "current_page": page,
+        # Backwards-compatible fields
         "total": total,
         "page": page,
-        "limit": limit,
+        "limit": per_page,
         "has_more": (offset + len(items)) < total,
     }
 
+    return payload
 
 # ── Similarity Matrix ──────────────────────────────────────────────
 

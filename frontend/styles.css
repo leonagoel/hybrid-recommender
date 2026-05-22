@@ -900,6 +900,40 @@ body {
     width: 100%;
 }
 
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 18px 0 12px;
+    flex-wrap: wrap;
+    padding: 0 8px;
+}
+
+.pagination-summary {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.pagination-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.pagination-actions .btn {
+    min-width: 100px;
+}
+
+.pagination-btn {
+    min-width: unset;
+}
+
+.pagination-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
 .infinite-scroll-loader__text {
     font-size: 13px;
     font-weight: 500;
@@ -1714,8 +1748,8 @@ main {
 .compare-label input {
     cursor: pointer;
 }
-feat/add-theme-toggle
 /* ── Theme Toggle Button ─────────────────────────────────────────── */
+
 #theme-toggle {
     background: none;
     border: 1.5px solid rgba(255,255,255,0.4);
@@ -1736,10 +1770,17 @@ feat/add-theme-toggle
     background: rgba(255,255,255,0.12);
     border-color: var(--accent);
     transform: scale(1.1);
-=======
+}
+
 /* Empty search results */
+
 .empty-search-results {
     grid-column: 1 / -1;
+}
+
+/* Empty state for recommendations */
+
+.empty-recommendations {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1781,5 +1822,15 @@ feat/add-theme-toggle
 #clear-search-btn:hover {
     background: var(--accent-light);
     transform: translateY(-1px);
- main
+}
+
+.empty-recommendations .empty-icon {
+    font-size: 48px;
+    opacity: 0.7;
+}
+
+.empty-recommendations p {
+    font-size: 14px;
+    max-width: 280px;
+    line-height: 1.5;
 }

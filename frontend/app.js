@@ -47,6 +47,8 @@ const state = {
     allProducts: [],
     trending: [],
     page: 1,
+    currentPage: 0,
+    totalPages: 0,
     perPage: 20,
     totalProducts: 0,
     isLoading: false,
@@ -55,7 +57,7 @@ const state = {
     autocompleteResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
-    modelReady: false,
+    modelReady: true,
     scrollObserver: null,
     compareList: [],
     heatmapSelected: [],
@@ -93,6 +95,7 @@ const els = {
     productGrid: $('product-grid'),
     productsTitle: $('products-title'),
     productCount: $('product-count'),
+    paginationControls: $('pagination-controls'),
     trendingSection: $('trending-section'),
     trendingGrid: $('trending-grid'),
     skeletonLoader: $('skeleton-loader'),
@@ -561,7 +564,7 @@ function handleSearch(query) {
 // ── Product Loading ─────────────────────────────────────────────────
 // ── Product Loading (Infinite Scroll) ───────────────────────────────
 
-async function loadProducts(append = false) {
+async function loadProducts(append = false, requestedPage = null) {
     // Guard: prevent duplicate requests and loading past end
     if (state.isLoading) return;
     if (append && !state.hasMore) return;
@@ -579,7 +582,9 @@ async function loadProducts(append = false) {
         els.productGrid.innerHTML = '';
         els.skeletonLoader.hidden = false;
         els.infiniteEnd.hidden = true;
-        state.page = 1;
+        state.page = requestedPage ?? 1;
+        state.currentPage = state.page;
+        state.totalPages = 0;
         state.hasMore = true;
         state.products = [];
     } else {
@@ -588,11 +593,15 @@ async function loadProducts(append = false) {
 
     try {
         const data = await API.get(
-            `/api/items?page=${state.page}&limit=${state.perPage}`
+            `/api/items?page=${state.page}&per_page=${state.perPage}`
         );
         const products = data.items || [];
-        state.totalProducts = data.total || 0;
-        state.hasMore = data.has_more ?? products.length >= state.perPage;
+        state.totalProducts = data.total_count ?? data.total ?? 0;
+        state.currentPage = data.current_page ?? state.page;
+        state.totalPages = data.total_pages ?? Math.max(1, Math.ceil(state.totalProducts / state.perPage));
+        state.hasMore = (typeof data.current_page !== 'undefined' && typeof data.total_pages !== 'undefined')
+            ? data.current_page < data.total_pages
+            : (data.has_more ?? products.length >= state.perPage);
 
         if (!append) {
             state.allProducts = [...products];
@@ -602,6 +611,7 @@ async function loadProducts(append = false) {
         }
 
         renderProducts(products, append);
+        renderPaginationControls();
         els.productCount.textContent = `${state.products.length} of ${state.totalProducts} products`;
 
         if (!state.hasMore) {
@@ -609,7 +619,7 @@ async function loadProducts(append = false) {
         }
 
         // Advance page for next fetch
-        state.page++;
+        state.page = state.currentPage + 1;
     } catch (err) {
         els.skeletonLoader.hidden = true;
         toast('Failed to load products', 'error');
@@ -617,6 +627,35 @@ async function loadProducts(append = false) {
         state.isLoading = false;
         els.infiniteLoader.hidden = true;
     }
+}
+
+function renderPaginationControls() {
+    if (!els.paginationControls) return;
+
+    if (state.totalPages <= 1) {
+        els.paginationControls.innerHTML = '';
+        return;
+    }
+
+    const prevDisabled = state.currentPage <= 1;
+    const nextDisabled = !state.hasMore;
+
+    els.paginationControls.innerHTML = `
+        <div class="pagination-summary">Page ${state.currentPage} of ${state.totalPages}</div>
+        <div class="pagination-actions">
+            <button type="button" class="btn btn--outline btn--sm pagination-btn" ${prevDisabled ? 'disabled' : ''} data-page="${state.currentPage - 1}">Previous</button>
+            <button type="button" class="btn btn--primary btn--sm pagination-btn" ${nextDisabled ? 'disabled' : ''} data-page="${state.currentPage + 1}">Next</button>
+        </div>
+    `;
+
+    els.paginationControls.querySelectorAll('.pagination-btn').forEach((button) => {
+        button.addEventListener('click', (e) => {
+            const page = Number(e.currentTarget.dataset.page);
+            if (!page || page < 1 || page > state.totalPages) return;
+            loadProducts(false, page);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+    });
 }
 
 async function loadTrending(days = 7, limit = 10) {
@@ -702,8 +741,11 @@ async function loadSearchResults(query) {
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
         state.hasMore = false;
+        state.totalPages = 0;
+        state.currentPage = 0;
         state.allProducts = [...products];
         renderProducts(products, false);
+        renderPaginationControls();
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
@@ -847,15 +889,13 @@ function renderProducts(products, append) {
             const imgEl = createLazyImage(p.image, p.title);
             card.querySelector('.product-card__image').appendChild(imgEl);
         }
-
+        const wishlistBtn = card.querySelector('.wishlist-btn');
+        wishlistBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleWishlist(p);
+        });
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
-            const wishlistBtn = card.querySelector('.wishlist-btn');
-
-            wishlistBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            toggleWishlist(p);
-            });
     
             const title = e.target.dataset.title;
             loadRecommendations(title);
@@ -1105,7 +1145,7 @@ async function handleBuild() {
 async function checkStatus() {
     try {
         const data = await API.get('/api/status');
-        const count = data.product_count || 0;
+        const count = data.product_count ?? data.products ?? 0;
 
         if (data.model_ready) {
             state.modelReady = true;
@@ -1451,16 +1491,20 @@ function resetAllFiltersAndSearch() {
 
 document.addEventListener('DOMContentLoaded', init);
 async function sendFeedback(item, feedback, button) {
-
     const storageKey = `feedback_${item}`;
 
-  return function (...args) {
-    clearTimeout(timeout);
+    try {
+        localStorage.setItem(storageKey, feedback);
 
-    timeout = setTimeout(() => {
-      func.apply(this, args);
-    }, delay);
-  };
+        if (button) {
+            button.disabled = true;
+        }
+
+        toast('Feedback saved!', 'success');
+    } catch (err) {
+        console.error('Feedback failed:', err);
+        toast('Failed to save feedback', 'error');
+    }
 }
 // ── Product Comparison (Side by Side) ──────────────────────────────
 function toggleCompare(product, checked) {
