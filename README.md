@@ -1,13 +1,16 @@
 ```
+
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║    H Y B R I D R E C                                             ║
+║    H Y B R I D R E C                                  ║
 ║    ─────────────────────────────────────────────────────────     ║
 ║    Hybrid Recommender System · Leona Goel      
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
-
+[![CI](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml/badge.svg)](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/leonagoel/hybrid-recommender)](https://github.com/leonagoel/hybrid-recommender/blob/main/LICENSE)
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 <div align="center">
 
 [![Contributors](https://img.shields.io/github/contributors/leonagoel/hybrid-recommender.svg?style=flat-square)](https://github.com/leonagoel/hybrid-recommender/graphs/contributors)
