@@ -159,7 +159,7 @@ hybrid-recommender/
 
 ```bash
 # 1 — Clone & install
-git clone https://github.com/Bhumi1701/hybrid-recommender.git
+git clone https://github.com/leonagoel/hybrid-recommender.git
 cd hybrid-recommender
 pip install -r requirements.txt
 ```
@@ -252,5 +252,29 @@ National Finalist · Smart India Hackathon 2025 · Top 8% of 950+ Teams
 [![LinkedIn](https://img.shields.io/badge/Connect-LinkedIn-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/leona-goel)
 [![GitHub](https://img.shields.io/badge/Follow-GitHub-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/leonagoel)
 [![Email](https://img.shields.io/badge/Email-leona.goel23%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel23@gmail.com)
+
+## Contributors
+
+Thanks to all the amazing people who contribute to this project ❤️
+
+### Contributor Grid
+
+<a href="https://github.com/leonagoel/hybrid-recommender/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=leonagoel/hybrid-recommender" />
+</a>
+
+---
+
+### Top Contributors
+
+| Contributor | PRs Merged | Joined |
+|-------------|------------|---------|
+| @username1 | 15 | Jan 2026 |
+| @username2 | 12 | Feb 2026 |
+| @username3 | 10 | Mar 2026 |
+| @username4 | 8 | Apr 2026 |
+| @username5 | 6 | May 2026 |
+
+> This table is manually maintained and updated weekly.
 
 </div>
