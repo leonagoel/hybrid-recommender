@@ -1649,3 +1649,48 @@ main {
 .compare-label input {
     cursor: pointer;
 }
+/* Empty search results */
+.empty-search-results {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 60px 24px;
+    color: var(--text-muted);
+    gap: 16px;
+}
+
+.empty-search-illustration svg {
+    width: 100px;
+    height: 100px;
+    stroke: currentColor;
+    stroke-width: 1.2;
+    fill: none;
+    opacity: 0.6;
+}
+
+.empty-search-message {
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+#clear-search-btn {
+    margin-top: 8px;
+    padding: 8px 24px;
+    background: transparent;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    font-size: 14px;
+    transition: var(--transition);
+}
+
+#clear-search-btn:hover {
+    background: var(--accent-light);
+    transform: translateY(-1px);
+}
