@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
+from datetime import datetime
 
 load_dotenv()
 
@@ -87,6 +88,13 @@ def status():
         "build_time": models["build_time"],
     }
 
+@app.get("/api/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "model_loaded": models["ready"]
+    }
 
 # ── Search (PostgreSQL FTS) ─────────────────────────────────────────
 
