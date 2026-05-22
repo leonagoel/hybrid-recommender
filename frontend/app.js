@@ -29,17 +29,20 @@ const state = {
     products: [],
     trending: [],
     page: 1,
+    products: [],    trending: [],    page: 1,
     perPage: 20,
     totalProducts: 0,
     isLoading: false,
     hasMore: true,
     searchTimer: null,
     searchResults: [],
+    autocompleteResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
     heatmapSelected: [],
+    compareList: [],
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -86,8 +89,32 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    categoryFilter: $('category-filter'),
+    ratingFilter: $('rating-filter'),
+    sentimentFilter: $('sentiment-filter'),
+    clearFiltersBtn: $('clear-filters'),
 };
 
+function loadPreferences() {
+    const saved = localStorage.getItem('userPreferences');
+
+    if (!saved) return;
+
+    try {
+        const prefs = JSON.parse(saved);
+
+        state.filters.category = prefs.category || '';
+        state.filters.rating = prefs.rating || '';
+        state.filters.sentiment = prefs.sentiment || '';
+
+        els.categoryFilter.value = state.filters.category;
+        els.ratingFilter.value = state.filters.rating;
+        els.sentimentFilter.value = state.filters.sentiment;
+
+    } catch (err) {
+        console.warn('Failed to load preferences:', err);
+    }
+}
 // ── Utilities ───────────────────────────────────────────────────────
 function toast(message, type = 'info') {
     const el = document.createElement('div');
@@ -100,6 +127,32 @@ function toast(message, type = 'info') {
         el.style.transition = '300ms ease';
         setTimeout(() => el.remove(), 300);
     }, 3500);
+}
+
+function createSkeletonCard() {
+    return `
+        <div class="product-card skeleton-card">
+            <div class="skeleton skeleton-image"></div>
+
+            <div class="product-info">
+                <div class="skeleton skeleton-title"></div>
+                <div class="skeleton skeleton-text"></div>
+                <div class="skeleton skeleton-text short"></div>
+
+                <div class="skeleton-footer">
+                    <div class="skeleton skeleton-price"></div>
+                    <div class="skeleton skeleton-button"></div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function showSkeletons(container, count = 8) {
+    container.innerHTML = Array(count)
+        .fill("")
+        .map(() => createSkeletonCard())
+        .join("");
 }
 
 function renderStars(rating) {
@@ -118,6 +171,37 @@ function sentimentBadge(score) {
     if (score > 0.05) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
     if (score < -0.05) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
     return '<span class="product-card__sentiment sentiment-neutral">Neutral</span>';
+}
+
+function applyFilters(products) {
+    return products.filter((p) => {
+
+        const matchesCategory =
+            !state.filters.category ||
+            p.category === state.filters.category;
+
+        const matchesRating =
+            !state.filters.rating ||
+            (p.rating || 0) >= Number(state.filters.rating);
+
+        let sentiment = 'neutral';
+
+        if ((p.avg_sentiment || 0) > 0.05) {
+            sentiment = 'positive';
+        } else if ((p.avg_sentiment || 0) < -0.05) {
+            sentiment = 'negative';
+        }
+
+        const matchesSentiment =
+            !state.filters.sentiment ||
+            sentiment === state.filters.sentiment;
+
+        return (
+            matchesCategory &&
+            matchesRating &&
+            matchesSentiment
+        );
+    });
 }
 
 function categoryIcon(cat) {
@@ -146,6 +230,35 @@ class ApiError extends Error {
     get isNotFound()    { return this.status === 404; }
     get isServerError() { return this.status !== null && this.status >= 500; }
     get isNetworkError(){ return this.status === null; }
+// ── Wishlist ────────────────────────────────────────────────────────
+function getWishlist() {
+    return JSON.parse(localStorage.getItem('wishlist')) || [];
+}
+
+function saveWishlist(items) {
+    localStorage.setItem('wishlist', JSON.stringify(items));
+}
+
+function isWishlisted(title) {
+    return getWishlist().some(item => item.title === title);
+}
+
+function toggleWishlist(product) {
+    let wishlist = getWishlist();
+
+    const exists = wishlist.some(item => item.title === product.title);
+
+    if (exists) {
+        wishlist = wishlist.filter(item => item.title !== product.title);
+        toast('Removed from wishlist', 'info');
+    } else {
+        wishlist.push(product);
+        toast('Added to wishlist', 'success');
+    }
+
+    saveWishlist(wishlist);
+
+    renderProducts(state.allProducts, false);
 }
 
 // ── API Helpers ─────────────────────────────────────────────────────
@@ -312,29 +425,30 @@ async function handleSearch(query) {
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
-        els.searchDropdown.innerHTML = `
-            <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
-                No results for "${query}"
-            </div>`;
-        els.searchDropdown.classList.add('active');
+        closeSearchDropdown();
         return;
     }
 
-    els.searchDropdown.innerHTML = results.map((r, i) => `
-        <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
-             data-title="${r.title}" data-idx="${i}">
-            <span style="font-size:20px;">${categoryIcon(r.category)}</span>
-            <div class="search-result__info">
-                <div class="search-result__title">${highlightMatch(r.title, query)}</div>
-                <div class="search-result__meta">
-                    ★ ${(r.rating || 0).toFixed(1)}
-                    ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
+    els.searchDropdown.innerHTML = results
+        .map((title, index) => `
+            <div
+                class="search-result ${index === state.selectedSearchIdx ? 'active' : ''}"
+                data-title="${title}"
+                data-idx="${index}"
+            >
+                <span class="search-result__icon">🔍</span>
+                <div class="search-result__info">
+                    <div class="search-result__title">
+                        ${highlightMatch(title, query)}
+                    </div>
                 </div>
             </div>
-        </div>
-    `).join('');
+        `)
+        .join('');
+
     els.searchDropdown.classList.add('active');
 
+    // Click suggestion
     els.searchDropdown.querySelectorAll('.search-result').forEach((el) => {
         el.addEventListener('click', () => {
             const title = el.dataset.title;
@@ -351,44 +465,122 @@ function highlightMatch(text, query) {
 
 function selectSearchResult(title) {
     els.searchInput.value = title;
+
     closeSearchDropdown();
+
+    // Trigger actual search
     loadSearchResults(title);
+
+    // Optional recommendation refresh
     loadRecommendations(title);
 }
+
 
 function closeSearchDropdown() {
     els.searchDropdown.classList.remove('active');
     state.selectedSearchIdx = -1;
 }
 
+// Close dropdown when clicking outside
+window.addEventListener('click', (e) => {
+    const container = document.getElementById('search-container');
+
+    if (!container.contains(e.target)) {
+        closeSearchDropdown();
+    }
+});
+
 function handleSearchKeydown(e) {
-    const results = state.searchResults;
-    if (!results.length || !els.searchDropdown.classList.contains('active')) return;
+    const results = state.autocompleteResults;
+
+    if (!results.length || !els.searchDropdown.classList.contains('active')) {
+        return;
+    }
 
     if (e.key === 'ArrowDown') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.min(state.selectedSearchIdx + 1, results.length - 1);
+
+        state.selectedSearchIdx = Math.min(
+            state.selectedSearchIdx + 1,
+            results.length - 1
+        );
+
         renderSearchDropdown(results, els.searchInput.value);
-    } else if (e.key === 'ArrowUp') {
+    }
+
+    else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, -1);
+
+        state.selectedSearchIdx = Math.max(
+            state.selectedSearchIdx - 1,
+            0
+        );
+
         renderSearchDropdown(results, els.searchInput.value);
-    } else if (e.key === 'Enter' && state.selectedSearchIdx >= 0) {
+    }
+
+    else if (e.key === 'Enter') {
         e.preventDefault();
-        selectSearchResult(results[state.selectedSearchIdx].title);
-    } else if (e.key === 'Escape') {
+
+        if (state.selectedSearchIdx >= 0) {
+            const selected = results[state.selectedSearchIdx];
+            selectSearchResult(selected);
+        }
+    }
+
+    else if (e.key === 'Escape') {
         closeSearchDropdown();
     }
+}
+
+
+
+function handleSearch(query) {
+    if (!query || query.trim().length < 1) {
+        closeSearchDropdown();
+        return;
+    }
+
+    clearTimeout(state.searchTimer);
+
+    // 300ms debounce
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(
+                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=5`
+            );
+
+            state.autocompleteResults = data.suggestions || [];
+            state.selectedSearchIdx = -1;
+
+            renderSearchDropdown(state.autocompleteResults, query);
+        } catch (err) {
+            console.error('Autocomplete failed:', err);
+            closeSearchDropdown();
+        }
+    }, 300);
 }
 
 // ── Product Loading (Infinite Scroll) ───────────────────────────────
 // CONFLICT 1 RESOLVED: kept friendly error UI from feat/friendly-error-pages
 // + infinite scroll cleanup (finally block) from main
 async function loadProducts(append = false) {
+// ── Product Loading ─────────────────────────────────────────────────
+// ── Product Loading (Infinite Scroll) ───────────────────────────────
+
+async function loadProducts(append = false) {
+    // Guard: prevent duplicate requests and loading past end
     if (state.isLoading) return;
     if (append && !state.hasMore) return;
 
     state.isLoading = true;
+
+    if (!append) {
+        setPageMeta(
+            'All Products', 
+            'Browse all products on HybridRec — personalised recommendations just for you.'
+        );
+    }
 
     if (!append) {
         els.productGrid.innerHTML = '';
@@ -462,6 +654,41 @@ async function loadTrending(days = 7, limit = 10) {
     }
 }
 
+
+        if (!state.hasMore) {
+            els.infiniteEnd.hidden = state.products.length === 0;
+        }
+
+        // Advance page for next fetch
+        state.page++;
+    } catch (err) {
+        els.skeletonLoader.hidden = true;
+        toast('Failed to load products', 'error');
+    } finally {
+        state.isLoading = false;
+        els.infiniteLoader.hidden = true;
+    }
+}
+
+async function loadTrending(days = 7, limit = 10) {
+    els.trendingSection.hidden = true;
+    els.trendingGrid.innerHTML = '';
+
+    try {
+        const data = await API.get(`/api/trending?days=${days}&limit=${limit}`);
+        const items = data.results || [];
+        if (!items.length) {
+            return;
+        }
+
+        state.trending = items;
+        renderTrending(items);
+        els.trendingSection.hidden = false;
+    } catch (err) {
+        console.warn('Trending load failed:', err.message || err);
+    }
+}
+
 function renderTrending(items) {
     els.trendingGrid.innerHTML = '';
     const fragment = document.createDocumentFragment();
@@ -513,11 +740,14 @@ function renderTrending(items) {
 // CONFLICT 2 RESOLVED: kept (err) in catch so ApiError checks work,
 // kept friendly error pages from feat/friendly-error-pages
 async function loadSearchResults(query) {
+async function loadSearchResults(query) {
+    // Pause infinite scroll during search
     destroyScrollObserver();
 
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
+    setPageMeta(`Search: ${query}`, `Showing results for "${query}" on HybridRec.`);
     els.infiniteEnd.hidden = true;
 
     try {
@@ -529,6 +759,7 @@ async function loadSearchResults(query) {
         state.hasMore = false;
         renderProducts(products, false);
     } catch (err) {
+    } catch {
         els.skeletonLoader.hidden = true;
         if (err instanceof ApiError && err.isNotFound) {
             toast('🔍 Product not found. Try searching for something else.', 'error');
@@ -552,25 +783,75 @@ async function loadSearchResults(query) {
     }
 }
 
+// ── Lazy Loading ────────────────────────────────────────────────────
+const lazyObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const img = entry.target;
+        img.src = img.dataset.src;
+        img.onload = () => img.classList.add('loaded');
+        lazyObserver.unobserve(img);
+    });
+}, { rootMargin: '200px 0px', threshold: 0.01 });
+
+function createLazyImage(src, alt) {
+    const img = document.createElement('img');
+    img.alt = alt || '';
+    img.setAttribute('loading', 'lazy');
+
+    if ('IntersectionObserver' in window) {
+        img.dataset.src = src;
+        img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"%3E%3Crect width="400" height="300" fill="%23232f3e"/%3E%3C/svg%3E';
+        lazyObserver.observe(img);
+    } else {
+        img.src = src;
+        img.classList.add('loaded');
+    }
+
+    img.addEventListener('error', () => img.classList.add('error'));
+    return img;
+}
+
 function renderProducts(products, append) {
+    products = applyFilters(products);
+    els.productCount.textContent = `${products.length} products`;
+    if (!append) {
+    els.productGrid.innerHTML = '';
+}
     if (!append) state.products = [];
+    if (!products.length) {
+    els.productGrid.innerHTML = `
+        <div class="no-results">
+            <div class="no-results__icon">🔍</div>
+            <div>No matching results found</div>
+        </div>
+    `;
+    return;
+}
 
     const fragment = document.createDocumentFragment();
 
     products.forEach((p, i) => {
         state.products.push(p);
         const card = document.createElement('div');
-        card.className = 'product-card';
+        card.className = p.image ? 'product-card' : 'product-card product-card--skeleton';
         card.style.animationDelay = `${i * 50}ms`;
         const isChecked = state.heatmapSelected.includes(p.title);
         card.innerHTML = `
-            <div class="product-card__image">
-                ${categoryIcon(p.category)}
+           <div class="product-card__image">
+            <button class="wishlist-btn" data-title="${p.title}">
+                ${isWishlisted(p.title) ? '❤️' : '🤍'}
+            </button>
+
+            ${categoryIcon(p.category)}
             </div>
             <div class="product-card__body">
                 ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
                 <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
                 <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                <div class="product-card__price">
+                ₹${p.price || 0}
+                </div>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
@@ -582,6 +863,10 @@ function renderProducts(products, append) {
             <div class="product-card__actions">
                 <label class="compare-label">
                     <input type="checkbox" class="compare-checkbox" data-title="${p.title}" ${isChecked ? 'checked' : ''}>
+                    Heatmap
+                </label>
+                <label class="compare-label">
+                    <input type="checkbox" class="side-compare-checkbox" data-title="${p.title}">
                     Compare
                 </label>
                 <button class="btn--add-cart" data-title="${p.title}">
@@ -589,14 +874,25 @@ function renderProducts(products, append) {
                 </button>
             </div>
         `;
+        if (p.image) {
+            const imgEl = createLazyImage(p.image, p.title);
+            card.querySelector('.product-card__image').appendChild(imgEl);
+        }
 
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
+            const wishlistBtn = card.querySelector('.wishlist-btn');
+
+            wishlistBtn.addEventListener('click', (e) => {
             e.stopPropagation();
+            toggleWishlist(p);
+            });
+    
             const title = e.target.dataset.title;
             loadRecommendations(title);
             toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
         });
 
+        // Compare checkbox
         const checkbox = card.querySelector('.compare-checkbox');
         if (checkbox) {
             checkbox.addEventListener('change', (e) => {
@@ -618,6 +914,16 @@ function renderProducts(products, append) {
             });
         }
 
+        // Side-by-side compare checkbox
+        const sideCheckbox = card.querySelector('.side-compare-checkbox');
+        if (sideCheckbox) {
+            sideCheckbox.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const success = toggleCompare(p, sideCheckbox.checked);
+                if (!success) sideCheckbox.checked = false;
+            });
+        }
+
         card.addEventListener('click', () => {
             loadRecommendations(p.title);
         });
@@ -630,6 +936,113 @@ function renderProducts(products, append) {
 
 // ── Recommendations ─────────────────────────────────────────────────
 // CONFLICT 3 RESOLVED: kept clean indentation + feedback buttons from feat/friendly-error-pages
+function getRealtimeUrl() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/recommendations`;
+}
+
+function initRecommendationSocket() {
+    if (!('WebSocket' in window) || state.recommendationSocket) return;
+
+    const socket = new WebSocket(getRealtimeUrl());
+    state.recommendationSocket = socket;
+
+    socket.addEventListener('open', () => {
+        state.realtimeReady = true;
+    });
+
+    socket.addEventListener('message', (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'recommendations') {
+                renderRecommendations(data);
+            } else if (data.type === 'error') {
+                throw new Error(data.detail || 'Recommendation stream failed');
+            }
+        } catch (err) {
+            console.warn('Realtime recommendation update failed:', err.message);
+            fallbackRecommendationRequest(state.pendingRecommendationTitle);
+        }
+    });
+
+    socket.addEventListener('close', () => {
+        state.realtimeReady = false;
+        state.recommendationSocket = null;
+    });
+
+    socket.addEventListener('error', () => {
+        state.realtimeReady = false;
+    });
+}
+
+function requestRealtimeRecommendations(title) {
+    if (!state.realtimeReady || !state.recommendationSocket) return false;
+
+    state.pendingRecommendationTitle = title;
+    state.recommendationSocket.send(JSON.stringify({
+        item_title: title,
+        top_n: 12,
+    }));
+    return true;
+}
+
+async function fallbackRecommendationRequest(title) {
+    if (!title) return;
+
+    clearTimeout(state.realtimeFallbackTimer);
+    state.realtimeFallbackTimer = setTimeout(async () => {
+        try {
+            const data = await API.post('/api/realtime/behavior', {
+                item_title: title,
+                top_n: 12,
+            });
+            renderRecommendations(data);
+        } catch {
+            await loadRecommendationsOverHttp(title);
+        }
+    }, 250);
+}
+
+function renderRecommendations(data) {
+    const recs = data.recommendations || [];
+
+    els.recsLoader.hidden = true;
+    els.recsStrip.hidden = false;
+
+    if (!recs.length) {
+        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
+        return;
+    }
+
+    els.recsStrip.innerHTML = recs.map((r) => `
+        <div class="rec-card" data-title="${r.title}">
+            <div class="rec-card__title">${r.title}</div>
+            <div class="rec-card__rating">
+                <div class="star-rating">${renderStars(r.rating || 0)}</div>
+                <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
+            </div>
+            <div class="rec-card__score">
+                Score: ${(r.hybrid_score || 0).toFixed(3)}
+                · Content: ${(r.content_score || 0).toFixed(2)}
+                · Collab: ${(r.collab_score || 0).toFixed(2)}
+            </div>
+        </div>
+    `).join('');
+
+    els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
+        card.addEventListener('click', () => {
+            loadRecommendations(card.dataset.title);
+        });
+    });
+
+    els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadRecommendationsOverHttp(title) {
+    const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+    renderRecommendations(data);
+}
+
 async function loadRecommendations(title) {
     if (!state.modelReady) {
         toast('Build models first to get recommendations', 'info');
@@ -637,12 +1050,13 @@ async function loadRecommendations(title) {
     }
 
     els.recsSection.hidden = false;
+    setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
 
     try {
-        const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+        const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
         const recs = data.recommendations || [];
 
         els.recsLoader.hidden = true;
@@ -697,6 +1111,13 @@ async function loadRecommendations(title) {
                 </div>`;
         } else {
             els.recsStrip.innerHTML = `<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>`;
+    } catch {
+        try {
+            await loadRecommendationsOverHttp(title);
+        } catch {
+            els.recsLoader.hidden = true;
+            els.recsStrip.hidden = false;
+            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
         }
     }
 }
@@ -735,6 +1156,7 @@ async function handleBuild() {
         state.modelReady = true;
         toast(`Models built in ${data.build_time_seconds}s — ${data.items?.toLocaleString()} items`, 'success');
         updateStatus('ready', `Ready — ${data.items?.toLocaleString()} products`);
+        initRecommendationSocket();
         loadProducts();
         setupScrollObserver();
     } catch (err) {
@@ -762,6 +1184,7 @@ async function checkStatus() {
         if (data.model_ready) {
             state.modelReady = true;
             updateStatus('ready', `Ready — ${count.toLocaleString()} products`);
+            initRecommendationSocket();
             loadProducts();
             setupScrollObserver();
         } else if (count > 0) {
@@ -804,6 +1227,22 @@ async function handleWeightChange() {
     try {
         await API.put('/api/weights', { alpha: a / 100, beta: b / 100, gamma: g / 100 });
     } catch {}
+}
+
+function populateCategoryFilter(products) {
+
+    const categories = [...new Set(
+        products
+            .map(p => p.category)
+            .filter(Boolean)
+    )];
+
+    els.categoryFilter.innerHTML = `
+        <option value="">All Categories</option>
+        ${categories.map(cat =>
+            `<option value="${cat}">${cat}</option>`
+        ).join('')}
+    `;
 }
 
 // ── Event Listeners ─────────────────────────────────────────────────
@@ -874,11 +1313,17 @@ function bindEvents() {
         const width = (scrollY / (docHeight - windowHeight)) * 100;
         progressBar.style.width = width + '%';
     });
+
+    // Heatmap close
+    els.heatmapCloseBtn.addEventListener('click', () => {
+        els.heatmapSection.hidden = true;
+    });
 }
 
 // ── Similarity Heatmap ──────────────────────────────────────────────
 function updateCompareCount() {
     const count = state.heatmapSelected.length;
+    // Show/hide the floating compare button
     let fab = document.getElementById('compare-fab');
     if (count >= 2) {
         if (!fab) {
@@ -929,21 +1374,33 @@ async function loadHeatmap() {
 
 function renderHeatmap(labels, matrix) {
     const n = labels.length;
+    const gridSize = n + 1; // +1 for axis labels
+
+    // Truncate long labels for display
     const shortLabels = labels.map(l => l.length > 25 ? l.substring(0, 22) + '…' : l);
 
     let html = `<div class="heatmap-grid" style="grid-template-columns: 140px repeat(${n}, 1fr); grid-template-rows: auto repeat(${n}, 1fr);">`;
 
     html += '<div class="heatmap-cell heatmap-corner"></div>';
 
+    // Top-left empty corner cell
+    html += '<div class="heatmap-cell heatmap-corner"></div>';
+
+    // Top axis labels (column headers)
     for (let j = 0; j < n; j++) {
         html += `<div class="heatmap-cell heatmap-col-label" title="${labels[j]}">${shortLabels[j]}</div>`;
     }
 
     for (let i = 0; i < n; i++) {
+    // Rows
+    for (let i = 0; i < n; i++) {
+        // Row label
         html += `<div class="heatmap-cell heatmap-row-label" title="${labels[i]}">${shortLabels[i]}</div>`;
 
         for (let j = 0; j < n; j++) {
             const score = matrix[i][j];
+            const pct = Math.round(score * 100);
+            // Color: white (0) → green (1)
             const r = Math.round(255 - score * 200);
             const g = Math.round(255 - score * 55);
             const b = Math.round(255 - score * 200);
@@ -962,6 +1419,7 @@ function renderHeatmap(labels, matrix) {
 
 // ── Infinite Scroll (Intersection Observer) ─────────────────────────
 function setupScrollObserver() {
+    // Tear down any previous observer to avoid duplicates / leaks
     destroyScrollObserver();
 
     if (!els.scrollSentinel) return;
@@ -974,6 +1432,7 @@ function setupScrollObserver() {
             }
         },
         {
+            // Fire when sentinel is within 200px of the viewport bottom
             rootMargin: '0px 0px 200px 0px',
             threshold: 0,
         }
@@ -1047,6 +1506,7 @@ async function sendFeedback(item, feedback, button) {
 }
 
 // ── Init ────────────────────────────────────────────────────────────
+setPageMeta(null, 'A hybrid recommender fusing TF-IDF, SVD and VADER sentiment.');
 async function init() {
     bindEvents();
     initTypeToSearch();
@@ -1059,3 +1519,165 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+// Debounce helper
+function debounce(func, delay) {
+  let timeout;
+
+  return function (...args) {
+    clearTimeout(timeout);
+
+    timeout = setTimeout(() => {
+      func.apply(this, args);
+    }, delay);
+  };
+}
+
+els.categoryFilter.addEventListener('change', (e) => {
+    state.filters.category = e.target.value;
+
+    renderProducts(state.allProducts, false);
+
+    debouncedSavePreferences();
+});
+
+document.addEventListener('DOMContentLoaded', init);
+async function sendFeedback(item, feedback, button) {
+
+    const storageKey = `feedback_${item}`;
+
+  return function (...args) {
+    clearTimeout(timeout);
+
+    timeout = setTimeout(() => {
+      func.apply(this, args);
+    }, delay);
+  };
+}
+// ── Product Comparison (Side by Side) ──────────────────────────────
+function toggleCompare(product, checked) {
+    if (checked) {
+        if (state.compareList.length >= 3) {
+            toast('Maximum 3 products can be compared', 'error');
+            return false;
+        }
+        if (!state.compareList.find(p => p.title === product.title)) {
+            state.compareList.push(product);
+        }
+    } else {
+        state.compareList = state.compareList.filter(p => p.title !== product.title);
+    }
+    updateCompareBar();
+    return true;
+}
+
+function updateCompareBar() {
+    let bar = document.getElementById('compare-bar');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'compare-bar';
+        bar.className = 'compare-bar';
+        document.body.appendChild(bar);
+    }
+    if (state.compareList.length === 0) {
+        bar.hidden = true;
+        return;
+    }
+    bar.hidden = false;
+    bar.innerHTML = `
+        <div class="compare-bar__items">
+            ${state.compareList.map(p => `
+                <div class="compare-bar__item">
+                    <span>${p.title.substring(0, 25)}${p.title.length > 25 ? '...' : ''}</span>
+                    <button onclick="removeFromCompare('${p.title.replace(/'/g, "\\'")}')">✕</button>
+                </div>
+            `).join('')}
+        </div>
+        <div class="compare-bar__actions">
+            <span class="compare-bar__count">${state.compareList.length}/3 selected</span>
+            <button class="compare-bar__btn" onclick="openComparePage()"
+                ${state.compareList.length < 2 ? 'disabled' : ''}>
+                Compare Now
+            </button>
+            <button class="compare-bar__clear" onclick="clearCompare()">Clear</button>
+        </div>
+    `;
+}
+
+function removeFromCompare(title) {
+    state.compareList = state.compareList.filter(p => p.title !== title);
+    document.querySelectorAll('.side-compare-checkbox').forEach(cb => {
+        if (cb.dataset.title === title) cb.checked = false;
+    });
+    updateCompareBar();
+}
+
+function clearCompare() {
+    state.compareList = [];
+    document.querySelectorAll('.side-compare-checkbox').forEach(cb => {
+        cb.checked = false;
+    });
+    updateCompareBar();
+}
+
+function openComparePage() {
+    if (state.compareList.length < 2) {
+        toast('Select at least 2 products to compare', 'info');
+        return;
+    }
+
+    let modal = document.getElementById('compare-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'compare-modal';
+        modal.className = 'modal-overlay';
+        document.body.appendChild(modal);
+    }
+
+    const products = state.compareList;
+
+    modal.innerHTML = `
+        <div class="modal" style="max-width:900px;width:95%;">
+            <button class="modal__close" onclick="document.getElementById('compare-modal').hidden=true">&times;</button>
+            <h2 class="modal__title">Product Comparison</h2>
+            <div style="overflow-x:auto;margin-top:16px;">
+                <table class="compare-table">
+                    <thead>
+                        <tr>
+                            <th style="min-width:120px;">Attribute</th>
+                            ${products.map(p => `
+                                <th style="min-width:180px;">${p.title}</th>
+                            `).join('')}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Category</strong></td>
+                            ${products.map(p => `<td>${p.category || 'N/A'}</td>`).join('')}
+                        </tr>
+                        <tr>
+                            <td><strong>Rating</strong></td>
+                            ${products.map(p => `<td>⭐ ${(p.rating || 0).toFixed(1)}</td>`).join('')}
+                        </tr>
+                        <tr>
+                            <td><strong>Sentiment</strong></td>
+                            ${products.map(p => {
+                                const s = p.avg_sentiment || 0;
+                                const label = s > 0.05 ? '😊 Positive' : s < -0.05 ? '😞 Negative' : '😐 Neutral';
+                                return `<td>${label}</td>`;
+                            }).join('')}
+                        </tr>
+                        <tr>
+                            <td><strong>Description</strong></td>
+                            ${products.map(p => `<td style="font-size:12px;">${(p.description || 'N/A').substring(0, 100)}...</td>`).join('')}
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+
+    modal.hidden = false;
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.hidden = true;
+    });
+}

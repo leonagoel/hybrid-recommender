@@ -126,15 +126,19 @@ def preprocess_sentiment_data(df):
 
 
 def detect_column(columns, keywords):
-    """
-    Detect a column by matching against keywords.
-    """
-
-    for col in columns:
-        for key in keywords:
+    """Detect a column by matching against a list of keywords (case-insensitive)."""
+    # First pass: exact matches
+    for key in keywords:
+        for col in columns:
+            if col.lower() == key:
+                return col
+                
+    # Second pass: substring matches
+    for key in keywords:
+        for col in columns:
             if key in col.lower():
                 return col
-
+                
     return None
 
 
@@ -317,6 +321,9 @@ def adapt_data(df):
         rename_map[purchase_col] = 'purchases'
 
     df = df.rename(columns=rename_map)
+    # Safety net: drop duplicate columns that may arise when both an exact match
+    # (e.g. 'title') and a partial match (e.g. 'original_title') exist in the dataset.
+    df = df.loc[:, ~df.columns.duplicated()]
 
     # Fill missing safely
 
