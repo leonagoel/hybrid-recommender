@@ -912,7 +912,7 @@ function renderRecommendations(data) {
     if (!recs.length) {
     els.recsStrip.innerHTML = `
         <div class="empty-recommendations">
-            <span class="empty-icon">🔍</span>
+            <span class="empty-icon" aria-hidden="true">🔍</span>
             <p>No recommendations found. Try a different product!</p>
         </div>
     `;
@@ -968,9 +968,14 @@ async function loadRecommendations(title) {
         els.recsStrip.hidden = false;
 
         if (!recs.length) {
-            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
-            return;
-        }
+    els.recsStrip.innerHTML = `
+        <div class="empty-recommendations">
+            <span class="empty-icon" aria-hidden="true">🔍</span>
+            <p>No recommendations found. Try a different product!</p>
+        </div>
+    `;
+    return;
+}
     } catch {
         try {
             await loadRecommendationsOverHttp(title);

@@ -1627,7 +1627,7 @@ main {
     gap: 12px;
 }
 
-.empty-icon {
+.empty-recommendations .empty-icon {
     font-size: 48px;
     opacity: 0.7;
 }
