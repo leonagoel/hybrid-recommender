@@ -738,11 +738,27 @@ function renderProducts(products, append) {
     if (!append) state.products = [];
     if (!products.length) {
     els.productGrid.innerHTML = `
-        <div class="no-results">
-            <div class="no-results__icon">🔍</div>
-            <div>No matching results found</div>
+        <div class="empty-search-results">
+            <div class="empty-search-illustration">
+                <svg width="120" height="120" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M15.5 15.5L19 19M5 11C5 14.866 8.13401 18 12 18C13.2862 18 14.4834 17.6482 15.5 17.0522M5 11C5 7.13401 8.13401 4 12 4C15.866 4 19 7.13401 19 11C19 13.0712 18.0735 14.9284 16.592 16.2077M5 11L2 11M5 11L8 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    <circle cx="12" cy="11" r="3" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+            </div>
+            <p class="empty-search-message">No products found. Try a different search.</p>
+            <button id="clear-search-btn" class="btn--outline">Clear Search</button>
         </div>
     `;
+
+    // Add event listener to clear search button
+    const clearBtn = document.getElementById('clear-search-btn');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            els.searchInput.value = '';
+            handleSearch('');   // trigger empty search to reset
+            loadProducts();     // reload all products
+        });
+    }
     return;
 }
 
@@ -927,9 +943,14 @@ function renderRecommendations(data) {
     els.recsStrip.hidden = false;
 
     if (!recs.length) {
-        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
-        return;
-    }
+    els.recsStrip.innerHTML = `
+        <div class="empty-recommendations">
+            <span class="empty-icon" aria-hidden="true">🔍</span>
+            <p>No recommendations found. Try a different product!</p>
+        </div>
+    `;
+    return;
+}
 
     els.recsStrip.innerHTML = recs.map((r) => `
         <div class="rec-card" data-title="${r.title}">
@@ -980,9 +1001,14 @@ async function loadRecommendations(title) {
         els.recsStrip.hidden = false;
 
         if (!recs.length) {
-            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
-            return;
-        }
+    els.recsStrip.innerHTML = `
+        <div class="empty-recommendations">
+            <span class="empty-icon" aria-hidden="true">🔍</span>
+            <p>No recommendations found. Try a different product!</p>
+        </div>
+    `;
+    return;
+}
     } catch {
         try {
             await loadRecommendationsOverHttp(title);

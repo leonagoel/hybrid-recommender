@@ -205,10 +205,6 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
         Returns:
             List of recommendations with added 'llm_explanation' field
         """
-        if not self.client:
-            logger.warning("LLM client not initialized. Returning recommendations without explanations.")
-            return recommendations
-
         results = []
         for rec in recommendations:
             scores = {
