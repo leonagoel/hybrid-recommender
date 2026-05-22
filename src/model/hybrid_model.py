@@ -99,7 +99,7 @@ class HybridRecommender:
             return [0.5] * len(scores)
         return [(v - mn) / (mx - mn) for v in scores]
 
-    def recommend(self, title, top_n=10, explain=False):
+    def recommend(self, title, user_id=None, top_n=10, explain=False):
         """
         Get hybrid recommendations for a given item title.
         Returns list of dicts sorted by hybrid_score.
@@ -145,18 +145,24 @@ class HybridRecommender:
         collab_scores = self._normalize([it['raw_collab'] for it in items])
         sentiment_scores = [(it['raw_sentiment'] + 1) / 2 for it in items]
 
-        # 5. Determine active weights
+        # 5. Determine active weights dynamically
         a, b, g = self.alpha, self.beta, self.gamma
+        
+        if user_id and self.collab_model and user_id in self.collab_model._user_to_idx:
+            user_interacts = len(self.collab_model.df[self.collab_model.df['user_id'] == user_id])
+            if user_interacts > 10:
+                b += 0.2  # high confidence in collaborative
+            elif user_interacts < 3:
+                a += 0.2  # fallback to content for cold users
+                
         if self.collab_model is None:
-            total = a + g
-            if total > 0:
-                a, g = a / total, g / total
             b = 0
         if not self._sentiment_map:
-            total = a + b
-            if total > 0:
-                a, b = a / total, b / total
             g = 0
+            
+        total = a + b + g
+        if total > 0:
+            a, b, g = a / total, b / total, g / total
 
         # 6. Compute hybrid score with popularity boost
         results = []
