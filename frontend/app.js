@@ -732,7 +732,7 @@ async function loadSearchResults(query) {
         state.products = [];
         state.hasMore = false;
         state.allProducts = [...products];
-        renderProducts(products, false);
+        renderProducts(products, false, true);
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
@@ -768,8 +768,10 @@ function createLazyImage(src, alt) {
     return img;
 }
 
-function renderProducts(products, append) {
-    products = applyFilters(products);
+function renderProducts(products, append, ignoreFilters = false) {
+    if (!ignoreFilters) {
+        products = applyFilters(products);
+    }
     els.productCount.textContent = `${products.length} products`;
     if (!append) {
     els.productGrid.innerHTML = '';
@@ -1533,7 +1535,7 @@ async function loadSearchResults(query) {
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
-        renderProducts(products, false);
+        renderProducts(products, false, true);
         els.loadMoreContainer.hidden = true;
     } catch {
         els.skeletonLoader.hidden = true;
@@ -1541,12 +1543,12 @@ async function loadSearchResults(query) {
     }
 }
 
-function renderProducts(products, append) {
+function renderProducts(products, append, ignoreFilters = false) {
     if (!append) state.products = [];
 
     const fragment = document.createDocumentFragment();
     const filteredProducts =
-    state.selectedCategory === 'All Categories'
+    (ignoreFilters || state.selectedCategory === 'All Categories')
         ? products
         : products.filter(
             p => p.category === state.selectedCategory
