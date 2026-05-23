@@ -234,6 +234,57 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 ```
 
 ---
+## 09 — FAQ
+
+<details>
+<summary><strong>How do I set up the project locally?</strong></summary>
+
+Clone the repository and install the required dependencies using the package manager mentioned in the project documentation. After that, configure the environment variables if needed and start both the frontend and backend servers. Make sure your database or dataset files are also available before running the app.
+
+</details>
+
+<details>
+<summary><strong>What datasets does this project use?</strong></summary>
+
+This project uses datasets related to user interactions, ratings, and item metadata to generate recommendations. The exact dataset files are usually stored inside the data or datasets directory. You can check the project documentation for download links and formatting details.
+
+</details>
+
+<details>
+<summary><strong>How do the alpha/beta/gamma weights affect recommendations?</strong></summary>
+
+The alpha, beta, and gamma weights control how much influence different recommendation factors have in the final score. Changing these values can prioritize popularity, similarity, or personalized behavior differently. Experimenting with the weights helps fine-tune recommendation quality for your use case.
+
+</details>
+
+<details>
+<summary><strong>What is Bayesian rating and why is it used?</strong></summary>
+
+Bayesian rating is a method used to balance average ratings with the number of votes an item has received. It prevents items with very few ratings from unfairly appearing at the top of recommendations. This makes the ranking system more stable and reliable.
+
+</details>
+
+<details>
+<summary><strong>How do I run the tests?</strong></summary>
+
+Run the test command provided in the project, usually through a package manager like npm or a testing framework command. Make sure all dependencies are installed before running tests. The test results will help verify that the application works correctly after changes.
+
+</details>
+
+<details>
+<summary><strong>The backend shows "Backend offline" — what do I do?</strong></summary>
+
+First, check whether the backend server is running on the correct port. Verify that your environment variables and database connections are configured properly. If the issue continues, restart the backend server and review the console logs for errors.
+
+</details>
+
+<details>
+<summary><strong>Can I use my own dataset with this project?</strong></summary>
+
+Yes, you can use your own dataset as long as it follows the expected format used by the project. You may need to update file paths or preprocessing steps depending on your data structure. Testing with smaller datasets first is recommended to ensure compatibility.
+
+</details>
+---
 
 ## License
 
