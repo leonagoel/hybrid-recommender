@@ -1,0 +1,22 @@
+frontend:
+- "frontend/**"
+- "frontend/styles.css"
+
+backend:
+- "backend/**"
+
+ml/ai:
+- "src/model/hybrid_model.py"
+- "src/model/content_model.py"
+- "src/model/collaborative_model.py"
+
+type:docs:
+- "**/*.md"
+
+type:testing:
+- "tests/**"
+
+type:devops:
+- "Dockerfile"
+- "docker-compose.yml"
+- ".github/workflows/**"
