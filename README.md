@@ -242,19 +242,64 @@ Upload any CSV file, click **Build Models**, then enter an item name or User ID 
 
 ## 06 — API Reference
 
+**Retrieve frontend configuration (Supabase URL + anon key):**
 ```http
-GET    /api/config
-GET    /api/status
-GET    /api/search?q=...&limit=20
-POST   /api/upload
-POST   /api/build
-GET    /api/recommend/{title}
-GET    /api/items?page=1&per_page=50
-GET    /api/categories
-GET    /api/weights
-PUT    /api/weights
-GET    /api/purchases/{user_id}
-POST   /api/purchases
+GET /api/config
+```
+
+**Check if the API server is running:**
+```http
+GET /api/status
+```
+
+**Full-text search across items (PostgreSQL FTS):**
+```http
+GET /api/search?q=...&limit=20
+```
+
+**Upload a CSV or JSON dataset:**
+```http
+POST /api/upload
+```
+
+**Build / rebuild the ML models from uploaded data:**
+```http
+POST /api/build
+```
+
+**Get hybrid recommendations for a given item title:**
+```http
+GET /api/recommend/{title}
+```
+
+**Paginated list of all items:**
+```http
+GET /api/items?page=1&per_page=50
+```
+
+**List all distinct product categories:**
+```http
+GET /api/categories
+```
+
+**Read the current α / β / γ blending weights:**
+```http
+GET /api/weights
+```
+
+**Update the α / β / γ blending weights:**
+```http
+PUT /api/weights
+```
+
+**Get purchase history for a specific user:**
+```http
+GET /api/purchases/{user_id}
+```
+
+**Record a new purchase event:**
+```http
+POST /api/purchases
 ```
 
 ---
