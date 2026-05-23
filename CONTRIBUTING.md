@@ -237,4 +237,4 @@ def get_recommendations(title, k=10):
 
 ---
 
-_Happy contributing! Every PR — big or small — makes this project better._ 🚀
+_Happy Contributing! Every PR — big or small — makes this project better._ 🚀
