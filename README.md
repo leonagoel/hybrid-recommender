@@ -11,6 +11,7 @@
 <div align="center">
 
 [![CI](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml/badge.svg)](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml)
+[![Docker Compose](https://img.shields.io/badge/Docker_Compose-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](#run-with-docker-compose-recommended-for-contributors)
 [![License](https://img.shields.io/github/license/leonagoel/hybrid-recommender)](https://github.com/leonagoel/hybrid-recommender/blob/main/LICENSE)
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 [![Contributors](https://img.shields.io/github/contributors/leonagoel/hybrid-recommender.svg?style=flat-square)](https://github.com/leonagoel/hybrid-recommender/graphs/contributors)
@@ -239,6 +240,58 @@ streamlit run app.py
 Upload any CSV file, click **Build Models**, then enter an item name or User ID to get recommendations directly in your browser — no database or server setup needed.
 
 ---
+
+### Run with Docker Compose (Recommended for Contributors)
+
+Docker Compose starts the full stack — backend API **and** static frontend —
+with a single command. No manual port juggling, no missing env vars.
+
+#### Prerequisites
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Compose)
+
+#### Steps
+
+**1. Copy and fill in your environment file**
+
+```bash
+cp .env.example .env
+# Edit .env with your Supabase credentials
+```
+
+**2. Start the stack**
+
+```bash
+docker-compose up --build
+```
+
+- `--build` forces a fresh image build. Omit it on subsequent runs when
+  code hasn't changed.
+
+**3. Access the app**
+
+| Service  | URL                        |
+|----------|----------------------------|
+| Frontend | http://localhost:3000       |
+| Backend  | http://localhost:8000       |
+| API docs | http://localhost:8000/docs  |
+| Health   | http://localhost:8000/health|
+
+**4. Stop the stack**
+
+```bash
+docker-compose down
+```
+
+Add `-v` to also remove named volumes if you want a completely clean state.
+
+#### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `Error: .env file not found` | Run `cp .env.example .env` and fill in credentials |
+| Backend unhealthy / frontend won't start | Check `docker-compose logs backend` |
+| Port 8000 already in use | Stop other services on 8000, or change `"8000:8000"` to `"8001:8000"` |
+| Dataset not found at runtime | Make sure `datasets/` folder exists in project root |
 
 ## 06 — API Reference
 
