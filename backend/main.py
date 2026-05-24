@@ -159,7 +159,7 @@ def search_items(
             logger.warning("Full-text search failed for query '%s': %s", q.strip(), e)
             # Fallback: do a LIKE search if FTS parsing fails
             result = sb.table('products') \
-                .select('id, title, description, category, rating, avg_sentiment, review_count') \
+                .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
                 .ilike('title', f'%{q.strip()}%') \
                 .order('rating', desc=True) \
                 .limit(limit) \
@@ -169,7 +169,7 @@ def search_items(
                 p['rank'] = 0.0
     else:
         result = sb.table('products') \
-            .select('id, title, description, category, rating, avg_sentiment, review_count') \
+            .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
             .order('rating', desc=True) \
             .order('review_count', desc=True) \
             .limit(limit) \
@@ -179,18 +179,48 @@ def search_items(
 
     # Format response
     results = []
+    
     for p in products:
+    
+        raw_sentiment = p.get('avg_sentiment', 0.0)
+        reviews = p.get('reviews', [])
+    
+        # Newly added products may still have the default
+        # sentiment value before the NLP batch pipeline runs.
+        # Recompute dynamically so the UI never shows misleading 0.0.
+        if raw_sentiment == 0.0 and reviews:
+            try:
+                from nlp_engine import compute_product_sentiment
+    
+                computed_sentiment = compute_product_sentiment(reviews)
+    
+                sentiment_value = (
+                    computed_sentiment
+                    if computed_sentiment is not None
+                    else "N/A"
+                )
+    
+            except Exception:
+                sentiment_value = "N/A"
+    
+        else:
+            sentiment_value = (
+                raw_sentiment
+                if raw_sentiment != 0.0
+                else "N/A"
+            )
+    
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
             'description': str(p.get('description', ''))[:200],
             'category': p.get('category', ''),
             'rating': p.get('rating', 0.0),
-            'avg_sentiment': p.get('avg_sentiment', 0.0),
+            'avg_sentiment': sentiment_value,
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-
+    
     return {
         "results": results,
         "total": len(results),
@@ -470,7 +500,7 @@ def list_items(page: int = 1, per_page: int = 50):
     sb = get_supabase()
     offset = (page - 1) * per_page
     result = sb.table('products') \
-        .select('id, title, description, category, rating, avg_sentiment, review_count') \
+        .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
         .order('rating', desc=True) \
         .range(offset, offset + per_page - 1) \
         .execute()
