@@ -1,141 +1,102 @@
-// =============================================================================
-// auth.js — Authentication Logic
-// Supabase guest (anonymous) + email/password flows.
-// =============================================================================
+import { state, els } from './state.js';
+import { toast } from './ui.js';
 
-import { state, setState } from './state.js';
-import { showToast, showModal, hideModal, setLoadingState } from './ui.js';
+// ── Supabase Client ─────────────────────────────────────────────────
+export let sbClient = null;
 
-let _supabase = null;
-
-/** Called once from app.js after Supabase client is created. */
-export function initAuth(supabaseClient) {
-  _supabase = supabaseClient;
-
-  _supabase.auth.onAuthStateChange((event, session) => {
-    const user = session?.user ?? null;
-    setState({ user, session, isGuest: user?.is_anonymous ?? false });
-    _syncAuthUI(user);
-  });
+export async function initSupabase() {
+    try {
+        const resp = await fetch('/api/config');
+        if (!resp.ok) return null;
+        const config = await resp.json();
+        const { createClient } = window.supabase || {};
+        if (createClient && config.supabase_url && config.supabase_anon_key) {
+            sbClient = createClient(config.supabase_url, config.supabase_anon_key);
+        }
+    } catch (e) {
+        console.warn('Supabase init skipped:', e.message);
+    }
+    return sbClient;
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Auth ────────────────────────────────────────────────────────────
+export async function initAuth() {
+    if (!sbClient) {
+        console.warn('Supabase client unavailable — auth disabled');
+        els.authLabel.textContent = 'Sign In';
+        return;
+    }
+    try {
+        const { data: { session } } = await sbClient.auth.getSession();
 
-export async function signInAsGuest() {
-  try {
-    setLoadingState('auth', true);
-    const { data, error } = await _supabase.auth.signInAnonymously();
-    if (error) throw error;
-    showToast('Browsing as guest', 'info');
-    return data;
-  } catch (err) {
-    showToast(`Guest sign-in failed: ${err.message}`, 'error');
-  } finally {
-    setLoadingState('auth', false);
-  }
+        if (session) {
+            setUser(session.user);
+        } else {
+            const { data, error } = await sbClient.auth.signInAnonymously();
+            if (error) {
+                console.warn('Guest login failed:', error.message);
+                els.authLabel.textContent = 'Sign In';
+            } else {
+                setUser(data.user);
+            }
+        }
+    } catch (err) {
+        console.warn('Auth init failed:', err.message);
+        els.authLabel.textContent = 'Sign In';
+    }
 }
 
-export async function signInWithEmail(email, password) {
-  try {
-    setLoadingState('auth', true);
-    const { data, error } = await _supabase.auth.signInWithPassword({ email, password });
-    if (error) throw error;
-    hideModal('auth-modal');
-    showToast(`Welcome back, ${data.user.email}!`, 'success');
-    return data;
-  } catch (err) {
-    showToast(`Sign-in failed: ${err.message}`, 'error');
-  } finally {
-    setLoadingState('auth', false);
-  }
+export function setUser(user) {
+    state.user = user;
+    state.isGuest = user?.is_anonymous || !user?.email;
+
+    if (state.isGuest) {
+        els.authLabel.textContent = 'Guest';
+    } else {
+        els.authLabel.textContent = user.email?.split('@')[0] || 'User';
+    }
 }
 
-export async function signUpWithEmail(email, password) {
-  try {
-    setLoadingState('auth', true);
-    const { data, error } = await _supabase.auth.signUp({ email, password });
-    if (error) throw error;
-    hideModal('auth-modal');
-    showToast('Account created! Check your email to confirm.', 'success');
-    return data;
-  } catch (err) {
-    showToast(`Sign-up failed: ${err.message}`, 'error');
-  } finally {
-    setLoadingState('auth', false);
-  }
+export async function handleAuth(e) {
+    e.preventDefault();
+    els.authError.hidden = true;
+    els.authSubmit.disabled = true;
+    els.authSubmit.textContent = 'Please wait...';
+
+    const email = els.authEmail.value.trim();
+    const password = els.authPassword.value;
+
+    try {
+        let result;
+        if (state.isAuthSignUp) {
+            result = await sbClient.auth.signUp({
+                email,
+                password,
+                options: { data: { display_name: email.split('@')[0] } },
+            });
+        } else {
+            result = await sbClient.auth.signInWithPassword({ email, password });
+        }
+
+        if (result.error) throw result.error;
+
+        setUser(result.data.user);
+        els.authModal.hidden = true;
+        toast(state.isAuthSignUp ? 'Account created!' : 'Signed in!', 'success');
+    } catch (err) {
+        els.authError.textContent = err.message;
+        els.authError.hidden = false;
+    } finally {
+        els.authSubmit.disabled = false;
+        els.authSubmit.textContent = state.isAuthSignUp ? 'Sign Up' : 'Sign In';
+    }
 }
 
-export async function signOut() {
-  try {
-    const { error } = await _supabase.auth.signOut();
-    if (error) throw error;
-    showToast('Signed out successfully.', 'info');
-  } catch (err) {
-    showToast(`Sign-out failed: ${err.message}`, 'error');
-  }
-}
-
-export function isAuthenticated() {
-  return !!state.user && !state.isGuest;
-}
-
-// ── Internal ──────────────────────────────────────────────────────────────────
-
-function _syncAuthUI(user) {
-  const authBtn    = document.getElementById('auth-btn');
-  const signOutBtn = document.getElementById('signout-btn');
-  const userLabel  = document.getElementById('user-label');
-  if (!authBtn) return;
-
-  if (user && !state.isGuest) {
-    // Fully logged in
-    authBtn.style.display    = 'none';
-    signOutBtn.style.display = 'inline-flex';
-    if (userLabel) userLabel.textContent = user.email;
-  } else if (user && state.isGuest) {
-    // Guest session
-    authBtn.style.display    = 'inline-flex';
-    authBtn.textContent      = 'Sign In';
-    signOutBtn.style.display = 'none';
-    if (userLabel) userLabel.textContent = 'Guest';
-  } else {
-    // Logged out
-    authBtn.style.display    = 'inline-flex';
-    authBtn.textContent      = 'Sign In';
-    signOutBtn.style.display = 'none';
-    if (userLabel) userLabel.textContent = '';
-  }
-}
-
-/** Bind all auth-related DOM events. Called once from app.js. */
-export function bindAuthEvents() {
-  document.getElementById('auth-btn')
-    ?.addEventListener('click', () => showModal('auth-modal'));
-
-  document.getElementById('signout-btn')
-    ?.addEventListener('click', signOut);
-
-  document.getElementById('auth-form')
-    ?.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const email    = document.getElementById('auth-email')?.value.trim();
-      const password = document.getElementById('auth-password')?.value;
-      const isSignUp = document.getElementById('auth-mode')?.dataset.mode === 'signup';
-      isSignUp
-        ? await signUpWithEmail(email, password)
-        : await signInWithEmail(email, password);
-    });
-
-  document.getElementById('auth-toggle')
-    ?.addEventListener('click', () => {
-      const modeEl = document.getElementById('auth-mode');
-      if (!modeEl) return;
-      const next = modeEl.dataset.mode === 'signin' ? 'signup' : 'signin';
-      modeEl.dataset.mode = next;
-      modeEl.textContent  = next === 'signup' ? 'Create Account' : 'Sign In';
-      const toggle = document.getElementById('auth-toggle');
-      if (toggle) toggle.textContent = next === 'signup'
-        ? 'Already have an account? Sign in'
-        : "Don't have an account? Sign up";
-    });
+export function toggleAuthMode() {
+    state.isAuthSignUp = !state.isAuthSignUp;
+    els.modalTitle.textContent = state.isAuthSignUp ? 'Create Account' : 'Sign In';
+    els.authSubmit.textContent = state.isAuthSignUp ? 'Sign Up' : 'Sign In';
+    els.authToggleText.textContent = state.isAuthSignUp ? 'Already have an account?' : "Don't have an account?";
+    els.authToggleBtn.textContent = state.isAuthSignUp ? 'Sign In' : 'Sign Up';
+    els.authError.hidden = true;
 }

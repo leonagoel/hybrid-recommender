@@ -1,73 +1,80 @@
-// =============================================================================
-// state.js — Global State Management
-// Single source of truth. All modules read/write state only through here.
-// =============================================================================
-
+// ── State ───────────────────────────────────────────────────────────
 export const state = {
-  // Auth
-  user: null,
-  session: null,
-  isGuest: false,
-
-  // Dataset
-  datasetLoaded: false,
-  modelsBuilt: false,
-  productCount: 0,
-  categories: [],
-
-  // Hybrid weights (alpha=content, beta=collab, gamma=sentiment)
-  weights: { alpha: 0.4, beta: 0.4, gamma: 0.2 },
-
-  // Search
-  lastQuery: '',
-  searchResults: [],
-  isSearching: false,
-
-  // Recommendations
-  currentItem: null,
-  recommendations: [],
-  isLoadingRecs: false,
-
-  // UI / Pagination
-  currentPage: 1,
-  perPage: 50,
-  activeCategory: null,
-  recentlyViewed: [],   // max 10 items
+    user: null,
+    isGuest: true,
+    products: [],
+    allProducts: [],
+    trending: [],
+    page: 1,
+    perPage: 20,
+    totalProducts: 0,
+    isLoading: false,
+    hasMore: true,
+    searchTimer: null,
+    autocompleteResults: [],
+    selectedSearchIdx: -1,
+    isAuthSignUp: false,
+    modelReady: false,
+    scrollObserver: null,
+    compareList: [],
+    heatmapSelected: [],
+    filters: {
+        category: '',
+        rating: '',
+        sentiment: '',
+    },
+    recommendationSocket: null,
+    realtimeReady: false,
+    pendingRecommendationTitle: null,
+    realtimeFallbackTimer: null,
 };
 
-// ── Pub/Sub ──────────────────────────────────────────────────────────────────
-const _listeners = {};
+// ── DOM Element References ──────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
 
-/**
- * Subscribe to changes on a top-level state key.
- * @param {string} key
- * @param {Function} cb  called with (newValue, oldValue)
- * @returns {Function}   unsubscribe
- */
-export function subscribe(key, cb) {
-  if (!_listeners[key]) _listeners[key] = new Set();
-  _listeners[key].add(cb);
-  return () => _listeners[key].delete(cb);
-}
-
-/**
- * Update state keys and notify subscribers.
- * @param {Partial<typeof state>} patch
- */
-export function setState(patch) {
-  for (const [key, newVal] of Object.entries(patch)) {
-    const old = state[key];
-    state[key] = newVal;
-    _listeners[key]?.forEach(cb => cb(newVal, old));
-  }
-}
-
-/**
- * Add a title to recently viewed (no duplicates, max 10).
- * @param {string} title
- */
-export function addRecentlyViewed(title) {
-  const list = state.recentlyViewed.filter(t => t !== title);
-  list.unshift(title);
-  setState({ recentlyViewed: list.slice(0, 10) });
-}
+export const els = {
+    searchInput: $('search-input'),
+    searchDropdown: $('search-dropdown'),
+    searchShortcut: $('search-shortcut'),
+    authBtn: $('auth-btn'),
+    authLabel: $('auth-label'),
+    authModal: $('auth-modal'),
+    authForm: $('auth-form'),
+    authEmail: $('auth-email'),
+    authPassword: $('auth-password'),
+    authSubmit: $('auth-submit'),
+    authError: $('auth-error'),
+    authToggleBtn: $('auth-toggle-btn'),
+    authToggleText: $('auth-toggle-text'),
+    modalTitle: $('modal-title'),
+    modalClose: $('modal-close'),
+    statusDot: $('status-dot'),
+    statusText: $('status-text'),
+    uploadBtn: $('upload-btn'),
+    buildBtn: $('build-btn'),
+    fileInput: $('file-input'),
+    productGrid: $('product-grid'),
+    productsTitle: $('products-title'),
+    productCount: $('product-count'),
+    trendingSection: $('trending-section'),
+    trendingGrid: $('trending-grid'),
+    skeletonLoader: $('skeleton-loader'),
+    scrollSentinel: $('scroll-sentinel'),
+    infiniteLoader: $('infinite-scroll-loader'),
+    infiniteEnd: $('infinite-scroll-end'),
+    recsSection: $('recs-section'),
+    recsLoader: $('recs-loader'),
+    recsStrip: $('recs-strip'),
+    heatmapSection: $('heatmap-section'),
+    heatmapLoader: $('heatmap-loader'),
+    heatmapContainer: $('heatmap-container'),
+    heatmapCloseBtn: $('heatmap-close-btn'),
+    toastContainer: $('toast-container'),
+    weightAlpha: $('weight-alpha'),
+    weightBeta: $('weight-beta'),
+    weightGamma: $('weight-gamma'),
+    categoryFilter: $('category-filter'),
+    ratingFilter: $('rating-filter'),
+    sentimentFilter: $('sentiment-filter'),
+    clearFiltersBtn: $('clear-filters'),
+};
