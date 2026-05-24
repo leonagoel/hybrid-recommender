@@ -14,6 +14,7 @@ from data_adapter import adapt_data, read_file
 from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
+from llm_explainer import get_explainer
 
 
 # ── Page configuration ───────────────────────────────────────────────────────
@@ -27,9 +28,13 @@ st.title("🎯 Hybrid Recommender System")
 st.caption("Content-Based · Collaborative · Sentiment — all in one engine")
 
 # ── Session state initialisation ─────────────────────────────────────────────
-for key in ("content_model", "collab_model", "hybrid_model", "adapted_df", "meta", "uploaded_file_name"):
+for key in ("content_model", "collab_model", "hybrid_model", "adapted_df", "meta", "uploaded_file_name", "explainer"):
     if key not in st.session_state:
         st.session_state[key] = None
+
+# Initialize LLM explainer once
+if st.session_state.explainer is None:
+    st.session_state.explainer = get_explainer()
 
 # ── Sidebar — settings ───────────────────────────────────────────────────────
 with st.sidebar:
@@ -40,7 +45,13 @@ with st.sidebar:
         min_value=5, max_value=20, value=10, step=1,
     )
 
-    st.markdown("---")
+    
+    enable_llm_explanations = st.checkbox(
+        "🤖 Enable LLM Explanations",
+        value=True,
+        help="Generate AI-powered explanations for recommendations"
+    )
+
     st.subheader("⚖️ Hybrid Weights")
     st.caption("Weights are auto-normalised to sum to 1 by the model.")
 
@@ -181,9 +192,13 @@ else:
                             "sentiment_score": "—",
                             "rating":        "—",
                             "category":      "",
+                            "description":   "",
+                            "top_reviews":   [],
                         }
                         for r in recs_raw
                     ]
+                    
+                    query_item_for_explanation = f"User {query}"
 
                 else:
                     # ── Item name path: hybrid / content recommendations ───
@@ -216,6 +231,32 @@ else:
                     else:
                         badge       = "🔀 HYBRID"
                         badge_color = "violet"
+                    
+                    query_item_for_explanation = item_title
+
+                # ── Generate LLM explanations if enabled ──────────────────
+                if enable_llm_explanations and st.session_state.explainer and recs:
+                    for rec in recs:
+                        try:
+                            explanation = st.session_state.explainer.explain_recommendation(
+                                recommended_item=rec.get("title", "Unknown"),
+                                query_item=query_item_for_explanation,
+                                scores={
+                                    "hybrid": rec.get("hybrid_score"),
+                                    "content": rec.get("content_score"),
+                                    "collab": rec.get("collab_score"),
+                                    "sentiment": rec.get("sentiment_score"),
+                                },
+                                description=rec.get("description", ""),
+                                top_reviews=rec.get("top_reviews", []),
+                                category=rec.get("category", ""),
+                            )
+                            rec["llm_explanation"] = explanation
+                        except Exception as e:
+                            rec["llm_explanation"] = f"Error: {str(e)}"
+                else:
+                    for rec in recs:
+                        rec["llm_explanation"] = None
 
                 # ── Render results ────────────────────────────────────────
                 if not recs:
@@ -233,7 +274,7 @@ else:
                         category = rec.get("category", "")
 
                         col_rank, col_title, col_hybrid, col_content, col_collab, col_rating = st.columns(
-                            [0.4, 3.5, 1.2, 1.2, 1.2, 1.2]
+                            [0.4, 2.5, 1.0, 1.0, 1.0, 1.0]
                         )
 
                         col_rank.markdown(f"**#{i}**")
@@ -247,6 +288,13 @@ else:
                         col_content.metric("Content", rec.get("content_score",  "—"))
                         col_collab.metric("Collab",  rec.get("collab_score",   "—"))
                         col_rating.metric("Rating",  rec.get("rating",         "—"))
+
+                        # Display LLM explanation in a new row
+                        explanation = rec.get("llm_explanation")
+                        if explanation and explanation != "None":
+                            st.write(f"**💡 Why this match:** {explanation}")
+                        else:
+                            st.write("*Explanation not available*")
 
                         st.divider()
 

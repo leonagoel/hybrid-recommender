@@ -269,3 +269,13 @@ National Finalist · Smart India Hackathon 2025 · Top 8% of 950+ Teams
 [![Email](https://img.shields.io/badge/Email-leona.goel123%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel123@gmail.com)
 
 </div>
+## 09 — Screenshots
+
+### Home Page
+![Home Page](assets/homepage.png)
+
+### Recommendation Results
+![Recommendations](assets/recommendations.png)
+
+### API Documentation
+![Swagger Docs](assets/swagger.png)
