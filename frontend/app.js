@@ -618,6 +618,7 @@ async function loadProducts(append = false) {
 
     if (!append) {
         els.productGrid.innerHTML = '';
+        showSkeletons(els.productGrid, 8);
         els.skeletonLoader.hidden = false;
         els.infiniteEnd.hidden = true;
         state.page = 1;
