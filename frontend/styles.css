@@ -165,7 +165,7 @@ body {
     z-index: 2;
 }
 
-#search-input {
+#searchInput {
     width: 100%;
     height: 42px;
     padding: 0 44px;
@@ -179,11 +179,11 @@ body {
     transition: var(--transition);
 }
 
-#search-input::placeholder {
+#searchInput::placeholder {
     color: rgba(255,255,255,0.45);
 }
 
-#search-input:focus {
+#searchInput:focus {
     background: rgba(255,255,255,0.18);
     border-color: var(--accent);
 }
@@ -202,7 +202,7 @@ body {
     transition: var(--transition);
 }
 
-#search-input:focus ~ .search-shortcut {
+#searchInput:focus ~ .search-shortcut {
     opacity: 0;
 }
 
