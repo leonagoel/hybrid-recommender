@@ -8,6 +8,11 @@ import io
 import time
 import logging
 from collections import Counter
+import math
+import secrets
+from collections import deque, Counter
+from threading import Lock
+
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -18,6 +23,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, ConfigDict
+from typing import Any, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,7 +35,6 @@ logging.basicConfig(
     format="[%(levelname)s] %(asctime)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
 from db import get_supabase, get_supabase_admin
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
@@ -35,12 +42,32 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender, bayesian_rating
 from llm_explainer import get_explainer
+from src.data.db import get_supabase, get_supabase_admin
+from src.data.data_adapter import adapt_data, read_file
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender
+
+from functools import lru_cache
+
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 logger = logging.getLogger("hybrid_recommender.api")
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
+
+
+CACHE_TTL_SECONDS = 300
+CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
+MAX_SEARCH_QUERY_LENGTH = 120
+_response_cache: dict = {}
+ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
+_rate_limit_buckets: dict = {}
+_rate_limit_lock = Lock()
+_cache_lock = Lock()
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -57,6 +84,147 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+
+def _cache_key(*parts: Any) -> str:
+    return ":".join(str(part).strip().lower() for part in parts)
+
+
+def _get_cached_response(key: str):
+    with _cache_lock:
+        cached = _response_cache.get(key)
+        if not cached:
+            return None
+        expires_at, value = cached
+        if expires_at <= time.time():
+            _response_cache.pop(key, None)
+            return None
+        return value
+
+
+def _set_cached_response(key: str, value: Any) -> None:
+    with _cache_lock:
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+
+
+def _clear_response_cache() -> None:
+    with _cache_lock:
+        _response_cache.clear()
+
+
+def _normalize_search_query(query: str) -> str:
+    normalized = " ".join((query or "").split())
+    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.",
+        )
+    return normalized
+
+
+def _escape_like_pattern(value: str) -> str:
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+def _set_cache_headers(response: Response, status: str) -> None:
+    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
+    response.headers["X-Cache"] = status
+
+
+def _extract_bearer_token(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def _require_admin_access(request: Request) -> None:
+    expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
+    if not expected_token:
+        return
+
+    provided_token = (
+        request.headers.get("x-admin-token", "").strip()
+        or _extract_bearer_token(request.headers.get("authorization"))
+    )
+    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
+        raise HTTPException(status_code=401, detail="Admin token required.")
+
+
+# CORS
+allowed_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
+allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Response Time Monitoring ─────────────────────────────────────────
+SLOW_RESPONSE_THRESHOLD_MS = 500.0
+METRICS_SAMPLE_SIZE = 1000
+response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
+response_metrics = {
+    "total_requests": 0,
+    "error_requests": 0,
+}
+response_metrics_lock = Lock()
+
+
+def _percentile(values, percentile):
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    index = math.ceil((percentile / 100) * len(sorted_values)) - 1
+    index = max(0, min(index, len(sorted_values) - 1))
+    return sorted_values[index]
+
+
+def record_response_metric(endpoint, method, status_code, response_time_ms):
+    with response_metrics_lock:
+        response_metrics["total_requests"] += 1
+        if status_code >= 400:
+            response_metrics["error_requests"] += 1
+        response_time_samples.append(response_time_ms)
+    log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
+    if log_level == logging.WARNING:
+        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
+                       endpoint, method, status_code, response_time_ms, response_time_ms, endpoint)
+    else:
+        logger.info("API request endpoint=%s method=%s status=%s time=%.2fms",
+                    endpoint, method, status_code, response_time_ms)
+
+
+def reset_response_metrics():
+    with response_metrics_lock:
+        response_metrics["total_requests"] = 0
+        response_metrics["error_requests"] = 0
+        response_time_samples.clear()
+
+
+def get_response_metrics_snapshot():
+    with response_metrics_lock:
+        samples = list(response_time_samples)
+        total_requests = response_metrics["total_requests"]
+        error_requests = response_metrics["error_requests"]
+    avg_response_time = sum(samples) / len(samples) if samples else 0.0
+    error_rate = (error_requests / total_requests) * 100 if total_requests else 0.0
+    return {
+        "avg_response_time": round(avg_response_time, 2),
+        "p95_response_time": round(_percentile(samples, 95), 2),
+        "total_requests": total_requests,
+        "error_rate": round(error_rate, 2),
+    }
 
 
 @app.middleware("http")
@@ -101,25 +269,57 @@ trending_cache = {}
 TRENDING_CACHE_TTL = 60 * 60  # 1 hour
 
 
+class RealtimeConnectionHub:
+    def __init__(self):
+        self.active_connections = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            await connection.send_json(message)
+
+realtime_hub = RealtimeConnectionHub()
+
+
 class WeightsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     alpha: float = 0.4
     beta: float = 0.35
     gamma: float = 0.25
 
 
 class PurchaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     product_id: int
     rating: float = 0.0
     review_text: str = ""
 
 class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     item: str
     feedback: str
 
 
 # ── Config (for frontend — serves only public keys) ─────────────────
+class RealtimeRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_title: str
+    top_n: int = 10
+    explain: bool = False
+
 
 @app.get("/api/config")
 def get_config():
@@ -147,6 +347,8 @@ def status():
 @app.get("/api/dashboard")
 def dashboard():
     """Aggregate metrics for the admin dashboard."""
+def dashboard(request: Request):
+    _require_admin_access(request)
     sb = get_supabase()
 
     try:
@@ -264,6 +466,7 @@ def dashboard():
 
 # ── Search (PostgreSQL FTS) ─────────────────────────────────────────
 @app.get("/api/search")
+
 def search_items(q: str = "", limit: int = 8):
 
     mock_items = [
@@ -299,6 +502,64 @@ def search_items(q: str = "", limit: int = 8):
                 .order('rating', desc=True) \
                 .limit(limit) \
                 .execute()
+def search_items(
+    request: Request,
+    response: Response,
+    q: str = "",
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    # ── Rate Limiting ──
+    try:
+        rate_limit = int(os.environ.get("RATE_LIMIT_SEARCH_PER_MIN", "60"))
+    except ValueError:
+        rate_limit = 60
+
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    now = time.time()
+
+    with _rate_limit_lock:
+        bucket = _rate_limit_buckets.setdefault(client_ip, {"timestamps": []})
+        bucket["timestamps"] = [t for t in bucket["timestamps"] if now - t < 60]
+
+        if len(bucket["timestamps"]) >= rate_limit:
+            reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
+            reset_time = max(0, reset_time)
+            response.status_code = 429
+            response.headers["x-ratelimit-limit"] = str(rate_limit)
+            response.headers["x-ratelimit-remaining"] = "0"
+            response.headers["x-ratelimit-reset"] = str(reset_time)
+            return {
+                "error": "Rate limit exceeded",
+                "message": "Too many requests. Please try again later.",
+            }
+
+        bucket["timestamps"].append(now)
+        remaining = rate_limit - len(bucket["timestamps"])
+        reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
+        reset_time = max(0, reset_time)
+        response.headers["x-ratelimit-limit"] = str(rate_limit)
+        response.headers["x-ratelimit-remaining"] = str(remaining)
+        response.headers["x-ratelimit-reset"] = str(reset_time)
+
+    cache_key = _cache_key("search", q, limit, offset)
+    cached = _get_cached_response(cache_key)
+    if cached is not None:
+        _set_cache_headers(response, "HIT")
+        return cached
+
+    sb = get_supabase()
+    if query:
+        try:
+            result = sb.rpc('search_products', {
+                'query_text': query, 'match_count': limit, 'offset_val': offset,
+            }).execute()
+            products = result.data or []
+        except Exception as e:
+            logger.warning("FTS failed for '%s': %s", query, e)
+            escaped_query = _escape_like_pattern(query)
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{escaped_query}%').order('rating', desc=True).limit(limit).execute()
+
             products = result.data or []
             for p in products:
                 p['rank'] = 0.0
@@ -367,6 +628,10 @@ def search_items(q: str = "", limit: int = 8):
     return {
         "items": filtered[:limit]
     }
+    payload = {"results": results, "total": len(results), "query": query, "is_fallback": not query}
+    _set_cached_response(cache_key, payload)
+    _set_cache_headers(response, "MISS")
+    return payload
 
 
 @app.get("/api/autocomplete")
@@ -381,6 +646,8 @@ def autocomplete_products(
     sb = get_supabase()
     query = q.strip()
 
+
+    query = _normalize_search_query(q)
     if not query:
         return {"suggestions": []}
 
@@ -393,6 +660,8 @@ def autocomplete_products(
             .execute()
         )
 
+        escaped_query = _escape_like_pattern(query)
+        result = sb.table('products').select('title').ilike('title', f'%{escaped_query}%').limit(limit).execute()
         suggestions = []
         seen = set()
 
@@ -426,6 +695,7 @@ async def upload_dataset(file: UploadFile = File(...)):
 
     try:
         contents = await file.read()
+        _validate_upload_bytes(filename, ext, contents)
         buf = io.BytesIO(contents)
         raw_df = read_file(buf, file_format=ext.replace('.', ''))
         adapted_df, meta = adapt_data(raw_df)
@@ -627,10 +897,75 @@ def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(
     }
 
 
+
 @app.get("/api/explain")
 def explain_recommendation(item: str, user: str):
     """Explain WHY an item was recommended to a specific user."""
     if not models["ready"]:
+
+@app.websocket("/ws/recommendations")
+async def websocket_recommendations(websocket: WebSocket):
+    await realtime_hub.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            item_title = data.get("item_title")
+            top_n = data.get("top_n", 10)
+            explain = data.get("explain", False)
+            user_id = data.get("user_id")
+
+            if not models.get("ready") or not models.get("hybrid"):
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Models not built yet."
+                })
+                continue
+
+            recs = models["hybrid"].recommend(item_title, user_id=user_id, top_n=top_n, explain=explain)
+            await websocket.send_json({
+                "type": "recommendations",
+                "query_item": item_title,
+                "recommendations": recs
+            })
+    except WebSocketDisconnect:
+        realtime_hub.disconnect(websocket)
+    except Exception as e:
+        logger.error("WebSocket error: %s", e)
+        try:
+            realtime_hub.disconnect(websocket)
+        except Exception:
+            pass
+
+
+@app.post("/api/realtime/behavior")
+def realtime_behavior(req: RealtimeRecommendationRequest):
+    if not models.get("ready") or not models.get("hybrid"):
+        raise HTTPException(status_code=400, detail="Models not built yet. Train the models first.")
+
+    recs = models["hybrid"].recommend(req.item_title, top_n=req.top_n, explain=req.explain)
+    return {
+        "type": "recommendations",
+        "query_item": req.item_title,
+        "recommendations": recs
+    }
+
+
+def _json_scalar(value):
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+# ── Similar Items ─────────────────────────────────────────────────────
+@app.get("/api/similar/{item_id}")
+def get_similar_items(
+    item_id: str,
+    top_n: int = Query(10, ge=1, le=100),
+    category: Optional[str] = Query(None),
+    explain: bool = Query(False),
+):
+    if not models["ready"] or models["item_df"] is None:
+
         raise HTTPException(400, "Models not built. Build first via /api/build.")
         
     hybrid = models["hybrid"]
@@ -861,9 +1196,132 @@ def create_purchase(data: PurchaseCreate):
         'review_text': data.review_text[:1000],
     }).execute()
     return {"purchase": result.data}
+
 # ── Dashboard ───────────────────────────────────────────────────────
 
 # ── Feedback ────────────────────────────────────────────────────────
+
+# ── Trending Products ───────────────────────────────────────────────
+
+TRENDING_CACHE = {
+    "data": None,
+    "timestamp": None,
+}
+
+
+@app.get("/api/trending")
+def get_trending_products(days: int = 7, limit: int = 10):
+    """
+    Get trending products based on recent interactions.
+    """
+
+    # Cache for 1 hour
+    now = datetime.utcnow()
+
+    if (
+        TRENDING_CACHE["data"] is not None and
+        TRENDING_CACHE["timestamp"] is not None and
+        (now - TRENDING_CACHE["timestamp"]).seconds < 3600
+    ):
+        return TRENDING_CACHE["data"]
+
+    sb = get_supabase()
+
+    cutoff_date = (now - timedelta(days=days)).isoformat()
+
+    result = sb.table("purchases") \
+        .select("""
+            product_id,
+            rating,
+            purchased_at,
+            products (
+                id,
+                title,
+                category,
+                rating,
+                avg_sentiment,
+                review_count
+            )
+        """) \
+        .gte("purchased_at", cutoff_date) \
+        .execute()
+
+    rows = result.data or []
+
+    if not rows:
+        return {"results": []}
+
+    from collections import defaultdict
+
+    stats = defaultdict(lambda: {
+        "count": 0,
+        "ratings": [],
+        "product": None,
+    })
+
+    for row in rows:
+        product = row.get("products")
+
+        if not product:
+            continue
+
+        pid = product["id"]
+
+        stats[pid]["count"] += 1
+        stats[pid]["ratings"].append(row.get("rating", 0))
+        stats[pid]["product"] = product
+
+    # Bayesian ranking
+    ranked = []
+
+    global_avg = sum(
+        sum(v["ratings"]) / max(len(v["ratings"]), 1)
+        for v in stats.values()
+    ) / max(len(stats), 1)
+
+    m = 5  # minimum votes threshold
+
+    for pid, data in stats.items():
+        count = data["count"]
+        avg_rating = (
+            sum(data["ratings"]) / max(len(data["ratings"]), 1)
+        )
+
+        bayesian_rating = (
+            (count / (count + m)) * avg_rating
+            + (m / (count + m)) * global_avg
+        )
+
+        score = bayesian_rating * count
+
+        ranked.append({
+            "id": data["product"]["id"],
+            "title": data["product"]["title"],
+            "category": data["product"].get("category", ""),
+            "rating": data["product"].get("rating", 0),
+            "avg_sentiment": data["product"].get("avg_sentiment", 0),
+            "review_count": data["product"].get("review_count", 0),
+            "interaction_count": count,
+            "bayesian_rating": round(bayesian_rating, 3),
+            "trending_score": round(score, 3),
+        })
+
+    ranked.sort(
+        key=lambda x: x["trending_score"],
+        reverse=True
+    )
+
+    response = {
+        "results": ranked[:limit],
+        "days": days,
+        "limit": limit,
+    }
+
+    TRENDING_CACHE["data"] = response
+    TRENDING_CACHE["timestamp"] = now
+
+    return response
+
 
 @app.post("/api/feedback")
 def submit_feedback(data: FeedbackCreate):

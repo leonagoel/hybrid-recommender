@@ -23,6 +23,7 @@ import argparse
 import json
 import math
 import os
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -36,6 +37,7 @@ Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
 
 MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
 ResultsDict = dict[str, MetricsDict]    # {"content": {...}, "hybrid": {...}, ...}
+UNSAFE_CACHE_SUFFIXES = {".pkl", ".pickle"}
 
 
 # ---------------------------------------------------------------------------
@@ -115,11 +117,12 @@ def _get_sentiment_recs(title: str, df: pd.DataFrame, k: int) -> list[str]:
     except IndexError:
         return []
 
-    item_sentiment = df.at[idx, "sentiment_score"] if "sentiment_score" in df.columns else 0.0
     df_copy = df.copy()
-    df_copy["_sent_diff"] = (df_copy.get("sentiment_score", 0) - item_sentiment).abs()
+    if "sentiment_score" not in df_copy.columns:
+        df_copy["sentiment_score"] = 0.0
+
     df_copy = df_copy.drop(index=idx, errors="ignore")
-    top = df_copy.nsmallest(k, "_sent_diff")
+    top = df_copy.sort_values(by="sentiment_score", ascending=False).head(k)
     return top["title"].tolist()
 
 
@@ -213,6 +216,12 @@ def run_evaluation(
 
     df = df.dropna(subset=["title"]).reset_index(drop=True)
 
+    # --- auto-analyze sentiment if missing ---
+    if "sentiment_score" not in df.columns:
+        from nlp_engine import batch_analyze
+        text_col = "description" if "description" in df.columns else ("review_text" if "review_text" in df.columns else "title")
+        df = batch_analyze(df, text_col=text_col)
+
     # --- build/load matrices ---
     # Try to load pre-built matrices from disk; fall back to building on-the-fly
     tfidf_matrix = _load_or_build_tfidf(df)
@@ -287,12 +296,13 @@ def run_evaluation(
 
 def _load_or_build_tfidf(df: pd.DataFrame):
     """Load TF-IDF matrix from disk if available, else build from scratch."""
-    import pickle
-
-    cache_path = os.getenv("TFIDF_CACHE", "models/tfidf_matrix.pkl")
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
+    cache_path = Path(os.getenv("TFIDF_CACHE", "models/tfidf_matrix.npz"))
+    if cache_path.exists():
+        _reject_unsafe_cache(cache_path)
+        if cache_path.suffix != ".npz":
+            raise RuntimeError("TF-IDF cache must use the safe .npz sparse matrix format.")
+        from scipy import sparse
+        return sparse.load_npz(cache_path)
 
     # Build on-the-fly using title + category as text
     text_col = "title"
@@ -308,12 +318,12 @@ def _load_or_build_tfidf(df: pd.DataFrame):
 
 def _load_or_build_svd(df: pd.DataFrame):
     """Load SVD matrix from disk if available, else build from scratch."""
-    import pickle
-
-    cache_path = os.getenv("SVD_CACHE", "models/svd_matrix.pkl")
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
+    cache_path = Path(os.getenv("SVD_CACHE", "models/svd_matrix.npy"))
+    if cache_path.exists():
+        _reject_unsafe_cache(cache_path)
+        if cache_path.suffix != ".npy":
+            raise RuntimeError("SVD cache must use the safe .npy array format.")
+        return np.load(cache_path, allow_pickle=False)
 
     # Build rating matrix and decompose
     from sklearn.decomposition import TruncatedSVD
@@ -321,6 +331,14 @@ def _load_or_build_svd(df: pd.DataFrame):
     tfidf = _load_or_build_tfidf(df)
     svd = TruncatedSVD(n_components=min(50, tfidf.shape[1] - 1), random_state=42)
     return svd.fit_transform(tfidf)
+
+
+def _reject_unsafe_cache(cache_path: Path) -> None:
+    if cache_path.suffix.lower() in UNSAFE_CACHE_SUFFIXES:
+        raise RuntimeError(
+            f"Refusing to load unsafe pickle model cache '{cache_path}'. "
+            "Use .npz for TF-IDF caches or .npy for SVD caches."
+        )
 
 
 # ---------------------------------------------------------------------------

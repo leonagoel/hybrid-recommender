@@ -10,9 +10,9 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from hybrid_model import HybridRecommender, bayesian_rating
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender, bayesian_rating
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────

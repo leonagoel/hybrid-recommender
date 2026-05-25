@@ -32,9 +32,9 @@ class LLMExplainer:
             raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
 
         self.model_name = model_name
-        self.api_key = api_key or GOOGLE_API_KEY
+        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or GOOGLE_API_KEY
 
-        if not self.api_key:
+        if not self.api_key or self.api_key == "Your_API_KEY":
             logger.warning(
                 "GOOGLE_API_KEY not found. Set it as an environment variable to enable LLM explanations."
             )
@@ -167,8 +167,9 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
     ) -> str:
         """Generate a detailed text-based explanation when LLM is unavailable."""
         # Find the highest scoring component
-        max_score_name = max(scores, key=scores.get) if scores else "hybrid"
-        max_score_value = scores.get(max_score_name, 0) if scores else 0
+        valid_scores = {k: v for k, v in scores.items() if v is not None and isinstance(v, (int, float))}
+        max_score_name = max(valid_scores, key=valid_scores.get) if valid_scores else "hybrid"
+        max_score_value = valid_scores.get(max_score_name, 0) if valid_scores else 0
         
         explanations = {
             "hybrid": f"This {category if category else 'item'} matches your interests across multiple recommendation factors including content similarity, user preferences, and sentiment analysis.",
