@@ -3,228 +3,373 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+
+    <link rel="icon" type="image/x-icon" href="./newfavicon.ico?v=5">
+    <link rel="icon" type="image/png" sizes="32x32" href="./newfavicon-32.png?v=5">
+    <link rel="icon" type="image/png" sizes="16x16" href="./newfavicon-16.png?v=5">
+
+    <link rel="manifest" href="./site.webmanifest">
+
     <meta name="description" content="HybridRec — AI-powered product recommendations using content, collaborative, and sentiment analysis.">
+
+    <meta property="og:title" content="HybridRec — Hybrid Recommender System" />
+    <meta property="og:description" content="A hybrid recommender fusing TF-IDF, SVD, and VADER sentiment analysis to deliver personalised product recommendations." />
+    <meta property="og:type" content="website" />
+
     <title>HybridRec — Smart Recommendations</title>
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css">
+
+    <link rel="stylesheet" href="styles.css">
+
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
+
 <body>
+
     <!-- Scroll Bar -->
     <div id="scroll-progress"></div>
+
     <!-- Header -->
     <header class="header" id="header">
         <div class="header__inner">
+
             <a href="/" class="header__logo" id="logo-link">
                 <span class="logo-icon">◆</span>
                 <span class="logo-text">HybridRec</span>
             </a>
+
             <div class="header__search" id="search-container">
+
                 <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
-                <input type="text" id="search-input" placeholder="Search products..." autocomplete="off" spellcheck="false">
-                <span class="search-shortcut" id="search-shortcut">Press / to search</span>
+
+                <input
+                    type="text"
+                    id="search-input"
+                    placeholder="Search products..."
+                    autocomplete="off"
+                    spellcheck="false"
+                >
+
+                <!-- Language toggle -->
+                <button id="lang-toggle" class="btn btn--ghost" onclick="toggleLanguage()">
+                    EN
+                </button>
+
+                <span id="hindi-indicator" style="display:none; color: #888; font-size: 12px;">
+                    Searching in Hindi
+                </span>
+
+                <span class="search-shortcut" id="search-shortcut">
+                    Press / to search
+                </span>
+
                 <div class="search-dropdown" id="search-dropdown"></div>
+                <div class="search-history" id="search-history"></div>
             </div>
+
             <div class="header__actions">
+
+                <a href="/static/wishlist.html" class="btn btn--outline btn--sm wishlist-btn">
+                    ❤️ Wishlist
+                </a>
+
+                <!-- Theme toggle -->
+                <button id="theme-toggle" title="Toggle dark/light mode" aria-label="Toggle theme">
+                    🌙
+                </button>
+
                 <button class="btn btn--ghost" id="auth-btn">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
                         <circle cx="12" cy="7" r="4"/>
                     </svg>
+
                     <span id="auth-label">Guest</span>
                 </button>
+
             </div>
         </div>
     </header>
 
     <!-- Auth Modal -->
     <div class="modal-overlay" id="auth-modal" hidden>
+
         <div class="modal" role="dialog" aria-modal="true">
+
             <button class="modal__close" id="modal-close">&times;</button>
+
             <h2 class="modal__title" id="modal-title">Sign In</h2>
-            <p class="modal__subtitle">Access your personalized recommendations</p>
+
+            <p class="modal__subtitle">
+                Access your personalized recommendations
+            </p>
+
             <form id="auth-form" class="auth-form">
+
                 <div class="form-group">
                     <label for="auth-email">Email</label>
-                    <input type="email" id="auth-email" placeholder="you@example.com" required>
+
+                    <input
+                        type="email"
+                        id="auth-email"
+                        placeholder="you@example.com"
+                        required
+                    >
                 </div>
+
                 <div class="form-group">
                     <label for="auth-password">Password</label>
-                    <input type="password" id="auth-password" placeholder="Min 6 characters" required minlength="6">
+
+                    <input
+                        type="password"
+                        id="auth-password"
+                        placeholder="Min 6 characters"
+                        required
+                        minlength="6"
+                    >
                 </div>
-                <button type="submit" class="btn btn--primary btn--full" id="auth-submit">Sign In</button>
+
+                <button
+                    type="submit"
+                    class="btn btn--primary btn--full"
+                    id="auth-submit"
+                >
+                    Sign In
+                </button>
             </form>
+
             <div class="auth-toggle">
-                <span id="auth-toggle-text">Don't have an account?</span>
-                <button class="btn btn--link" id="auth-toggle-btn">Sign Up</button>
+                <span id="auth-toggle-text">
+                    Don't have an account?
+                </span>
+
+                <button class="btn btn--link" id="auth-toggle-btn">
+                    Sign Up
+                </button>
             </div>
+
             <div class="auth-error" id="auth-error" hidden></div>
+
         </div>
     </div>
 
-    <!-- Hero Section -->
+    <!-- Hero -->
     <section class="hero" id="hero-section">
+
         <div class="hero__content">
-            <h1 class="hero__title">Discover products you'll <span class="gradient-text">love</span></h1>
-            <p class="hero__subtitle">AI-powered recommendations using content analysis, collaborative filtering, and sentiment intelligence.</p>
+            <h1 class="hero__title">
+                Discover products you'll
+                <span class="gradient-text">love</span>
+            </h1>
+
+            <p class="hero__subtitle">
+                AI-powered recommendations using content analysis,
+                collaborative filtering, and sentiment intelligence.
+            </p>
         </div>
+
         <div class="hero__status" id="hero-status">
+
             <div class="status-card" id="status-card">
                 <div class="status-dot" id="status-dot"></div>
+
                 <span id="status-text">Connecting...</span>
             </div>
+
         </div>
     </section>
 
-    <!-- Controls Bar -->
+    <!-- Controls -->
     <section class="controls" id="controls-section">
+
         <div class="controls__inner">
+
             <div class="controls__left">
+
                 <button class="btn btn--outline btn--sm" id="upload-btn">
+
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
                     </svg>
+
                     Upload Dataset
                 </button>
+
                 <button class="btn btn--primary btn--sm" id="build-btn">
+
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
                     </svg>
+
                     Build Models
                 </button>
+
                 <input type="file" id="file-input" accept=".csv,.json" hidden>
             </div>
-            <div class="controls__right" style="display: flex; align-items: center; gap: 16px;">
+
+            <div class="controls__right">
+
+                <select id="category-filter" class="category-filter">
+                    <option value="All Categories">All Categories</option>
+                </select>
+
                 <div class="weight-control" id="weight-controls">
+
                     <span class="weight-label">Content</span>
-                    <input type="range" id="weight-alpha" min="0" max="100" value="40" class="weight-slider">
+
+                    <input
+                        type="range"
+                        id="weight-alpha"
+                        min="0"
+                        max="100"
+                        value="40"
+                        class="weight-slider"
+                    >
+
                     <span class="weight-label">Collab</span>
-                    <input type="range" id="weight-beta" min="0" max="100" value="35" class="weight-slider">
+
+                    <input
+                        type="range"
+                        id="weight-beta"
+                        min="0"
+                        max="100"
+                        value="35"
+                        class="weight-slider"
+                    >
+
                     <span class="weight-label">Sentiment</span>
-                    <input type="range" id="weight-gamma" min="0" max="100" value="25" class="weight-slider">
+
+                    <input
+                        type="range"
+                        id="weight-gamma"
+                        min="0"
+                        max="100"
+                        value="25"
+                        class="weight-slider"
+                    >
                 </div>
+
+                <!-- Diversify Toggle -->
                 <div class="diversify-control" style="display: flex; align-items: center; gap: 8px;">
                     <input type="checkbox" id="diversify-toggle" style="accent-color: var(--primary);">
-                    <label for="diversify-toggle" class="weight-label" style="margin: 0; cursor: pointer;">Diversify</label>
+
+                    <label
+                        for="diversify-toggle"
+                        class="weight-label"
+                        style="margin: 0; cursor: pointer;"
+                    >
+                        Diversify
+                    </label>
                 </div>
+
             </div>
         </div>
     </section>
 
-    <!-- Main Content -->
+    <!-- Main -->
     <main class="main" id="main-content">
-        <!-- Recommendations Strip -->
+
+        <!-- Recommendations -->
         <section class="recs-section" id="recs-section" hidden>
+
             <h2 class="section-title">
+
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
                 </svg>
+
                 Recommended for you
             </h2>
-            <div class="recs-loader" id="recs-loader" hidden aria-live="polite" aria-label="Loading recommendations">
+
+            <div
+                class="recs-loader"
+                id="recs-loader"
+                hidden
+                aria-live="polite"
+                aria-label="Loading recommendations"
+            >
                 <div class="spinner" role="status"></div>
-                <span class="recs-loader__text">Loading recommendations...</span>
+
+                <span class="recs-loader__text">
+                    Loading recommendations...
+                </span>
             </div>
-            <div id="diversity-metrics" hidden style="margin-bottom: 16px; padding: 12px; background: var(--bg-surface); border-radius: 8px; font-size: 14px; border: 1px solid var(--border-color); color: var(--text-secondary);">
-                Diversity Score: <strong id="diversity-score-value" style="color: var(--text-primary);"></strong>%
+
+            <!-- Diversity Metrics -->
+            <div
+                id="diversity-metrics"
+                hidden
+                style="margin-bottom: 16px; padding: 12px; background: var(--bg-surface); border-radius: 8px; font-size: 14px; border: 1px solid var(--border-color); color: var(--text-secondary);"
+            >
+                Diversity Score:
+                <strong id="diversity-score-value" style="color: var(--text-primary);"></strong>%
             </div>
+
             <div class="recs-strip" id="recs-strip"></div>
         </section>
 
-        <!-- Similarity Heatmap -->
-        <section class="heatmap-section" id="heatmap-section" hidden>
-            <div class="section-header">
-                <h2 class="section-title">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
-                        <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
-                    </svg>
-                    Similarity Heatmap
-                </h2>
-                <button class="btn btn--outline btn--sm" id="heatmap-close-btn">✕ Close</button>
-            </div>
-            <div class="heatmap-loader" id="heatmap-loader" hidden>
-                <div class="spinner" role="status"></div>
-                <span class="heatmap-loader__text">Computing similarities…</span>
-            </div>
-            <div class="heatmap-container" id="heatmap-container"></div>
-        </section>
-
-        <!-- Product Grid -->
-        <section class="products-section" id="products-section">
-            <div class="section-header">
-                <h2 class="section-title" id="products-title">Top Products</h2>
-                <span class="product-count" id="product-count"></span>
-            </div>
-            <div class="product-grid" id="product-grid"></div>
-            <!-- Infinite-scroll sentinel (observed by IntersectionObserver) -->
-            <div id="scroll-sentinel" aria-hidden="true"></div>
-            <div class="infinite-scroll-loader" id="infinite-scroll-loader" hidden>
-                <div class="spinner" role="status"></div>
-                <span class="infinite-scroll-loader__text">Loading more products…</span>
-            </div>
-            <div class="infinite-scroll-end" id="infinite-scroll-end" hidden>
-                <span class="infinite-scroll-end__icon">✓</span>
-                <span class="infinite-scroll-end__text">No more products</span>
-            </div>
-        </section>
-
-        <!-- Skeleton Loader -->
-        <div class="skeleton-grid" id="skeleton-loader">
-            <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
-            <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
-            <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
-            <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
-            <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
-            <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
-            <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
-            <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
-        </div>
     </main>
-    <div id="compare-panel" class="compare-panel">
-    <div id="compare-content"></div>
-</div>
 
-    <!-- Toast Container -->
+    <!-- Compare Panel -->
+    <div id="compare-panel" class="compare-panel">
+        <div id="compare-content"></div>
+    </div>
+
+    <!-- Toast -->
     <div class="toast-container" id="toast-container"></div>
 
+    <div id="saveToast" class="save-toast">
+        Preferences saved
+    </div>
+
+    <!-- Footer -->
     <footer class="footer">
-        <p>&copy; 2026 HybridRec — Powered by TF-IDF, SVD, VADER &amp; PostgreSQL FTS</p>
-        <p><a href="/dashboard.html" class="footer__link">Admin Dashboard</a></p>
+
+        <div class="footer-left">
+            <h3>Hybrid Recommender System</h3>
+
+            <p>Smart product recommendations powered by AI</p>
+        </div>
+
+        <div class="footer-right">
+
+            <a
+                href="https://github.com/your-username/hybrid-recommender"
+                target="_blank"
+            >
+                GitHub Repository
+            </a>
+
+            <img
+                src="https://gssoc.girlscript.tech/badges/postman.png"
+                alt="GSSoC Badge"
+                class="gssoc-badge"
+            >
+
+        </div>
+
     </footer>
-    <footer style="text-align:center; margin-top:40px;">
-    <a href="/dashboard.html">Admin Dashboard</a>
-    </footer>
 
-    <div class="footer-left">
-      <h3>Hybrid Recommender System</h3>
-      <p>Smart product recommendations powered by AI</p>
-    </div>
+    <script src="app.js"></script>
 
-    <div class="footer-right">
-      <a
-        href="https://github.com/your-username/hybrid-recommender"
-        target="_blank"
-      >
-        GitHub Repository
-      </a>
+    <button
+        id="backToTop"
+        class="back-to-top"
+        style="display: none;"
+    >
+        ↑ Top
+    </button>
 
-      <img
-        src="https://gssoc.girlscript.tech/badges/postman.png"
-        alt="GSSoC Badge"
-        class="gssoc-badge"
-      />
-    </div>
-
-  </div>
-</footer>
-</div>
-    <script src="/static/app.js"></script>
-    <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
 </body>
 </html>
-

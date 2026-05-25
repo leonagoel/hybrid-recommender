@@ -6,16 +6,34 @@ import logging
 import math
 import pandas as pd
 
+from collections import deque, Counter
+from threading import Lock
+from datetime import datetime, timezone
+from functools import lru_cache
+from typing import Optional, Any
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
 from dotenv import load_dotenv
-from backend.diversity import calculate_diversity_score, diversify_results
+
+from backend.diversity import (
+    calculate_diversity_score,
+    diversify_results,
+)
 
 load_dotenv()
 
@@ -23,9 +41,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="[%(levelname)s] %(asctime)s - %(message)s",
 )
-logger = logging.getLogger(__name__)
 
-from db import get_supabase, get_supabase_admin
+logger = logging.getLogger("hybrid_recommender.api")
+
+from src.data.db import get_supabase, get_supabase_admin
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
@@ -33,50 +52,208 @@ from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
-logger = logging.getLogger("hybrid_recommender.api")
+
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
 
+CACHE_TTL_SECONDS = 300
+CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 
-def _get_slow_response_threshold_ms() -> float:
-    try:
-        return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
-    except ValueError:
-        return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
+_response_cache = {}
 
-allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
+# ─────────────────────────────────────────────────────────────
+# CACHE HELPERS
+# ─────────────────────────────────────────────────────────────
+
+def _cache_key(*parts: Any) -> str:
+    return ":".join(str(part).strip().lower() for part in parts)
+
+
+def _get_cached_response(key: str):
+    cached = _response_cache.get(key)
+
+    if not cached:
+        return None
+
+    expires_at, value = cached
+
+    if expires_at <= time.time():
+        _response_cache.pop(key, None)
+        return None
+
+    return value
+
+
+def _set_cached_response(key: str, value: Any) -> None:
+    _response_cache[key] = (
+        time.time() + CACHE_TTL_SECONDS,
+        value,
+    )
+
+
+def _clear_response_cache() -> None:
+    _response_cache.clear()
+
+
+def _set_cache_headers(response: Response, status: str) -> None:
+    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
+    response.headers["X-Cache"] = status
+
+
+# ─────────────────────────────────────────────────────────────
+# CORS
+# ─────────────────────────────────────────────────────────────
+
+allowed_origins = os.environ.get("CORS_ORIGINS", "*").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_methods=["GET", "POST", "PUT"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+# ─────────────────────────────────────────────────────────────
+# RESPONSE METRICS
+# ─────────────────────────────────────────────────────────────
+
+SLOW_RESPONSE_THRESHOLD_MS = 500.0
+METRICS_SAMPLE_SIZE = 1000
+
+response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
+
+response_metrics = {
+    "total_requests": 0,
+    "error_requests": 0,
+}
+
+response_metrics_lock = Lock()
+
+
+def _percentile(values, percentile):
+    if not values:
+        return 0.0
+
+    sorted_values = sorted(values)
+
+    index = math.ceil(
+        (percentile / 100) * len(sorted_values)
+    ) - 1
+
+    index = max(
+        0,
+        min(index, len(sorted_values) - 1)
+    )
+
+    return sorted_values[index]
+
+
+def record_response_metric(
+    endpoint,
+    method,
+    status_code,
+    response_time_ms,
+):
+    with response_metrics_lock:
+        response_metrics["total_requests"] += 1
+
+        if status_code >= 400:
+            response_metrics["error_requests"] += 1
+
+        response_time_samples.append(response_time_ms)
+
+    log_level = (
+        logging.WARNING
+        if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS
+        else logging.INFO
+    )
+
+    logger.log(
+        log_level,
+        "API request endpoint=%s method=%s status=%s time=%.2fms",
+        endpoint,
+        method,
+        status_code,
+        response_time_ms,
+    )
+
+
+def get_response_metrics_snapshot():
+    with response_metrics_lock:
+        samples = list(response_time_samples)
+
+        total_requests = response_metrics["total_requests"]
+
+        error_requests = response_metrics["error_requests"]
+
+    avg_response_time = (
+        sum(samples) / len(samples)
+        if samples
+        else 0.0
+    )
+
+    error_rate = (
+        (error_requests / total_requests) * 100
+        if total_requests
+        else 0.0
+    )
+
+    return {
+        "avg_response_time": round(avg_response_time, 2),
+        "p95_response_time": round(
+            _percentile(samples, 95),
+            2,
+        ),
+        "total_requests": total_requests,
+        "error_rate": round(error_rate, 2),
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# MIDDLEWARE
+# ─────────────────────────────────────────────────────────────
+
 @app.middleware("http")
-async def response_time_middleware(request: Request, call_next):
+async def response_time_middleware(
+    request: Request,
+    call_next,
+):
     started_at = time.perf_counter()
+
     response = None
 
     try:
         response = await call_next(request)
+
         return response
+
     finally:
-        duration_ms = (time.perf_counter() - started_at) * 1000
-        status_code = response.status_code if response is not None else 500
+        duration_ms = (
+            time.perf_counter() - started_at
+        ) * 1000
+
+        status_code = (
+            response.status_code
+            if response is not None
+            else 500
+        )
 
         if response is not None:
-            response.headers[RESPONSE_TIME_HEADER] = f"{duration_ms:.2f}"
+            response.headers["X-Response-Time"] = (
+                f"{duration_ms:.2f}ms"
+            )
 
-        log_fn = logger.warning if duration_ms >= _get_slow_response_threshold_ms() else logger.info
-        log_fn(
-            "request_completed",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": status_code,
-                "duration_ms": round(duration_ms, 2),
-            },
+        record_response_metric(
+            request.url.path,
+            request.method,
+            status_code,
+            duration_ms,
         )
+
+
+# ─────────────────────────────────────────────────────────────
+# STATE
+# ─────────────────────────────────────────────────────────────
 
 models = {
     "content": None,
@@ -87,10 +264,16 @@ models = {
     "build_time": None,
 }
 
+
+# ─────────────────────────────────────────────────────────────
+# MODELS
+# ─────────────────────────────────────────────────────────────
+
 class WeightsUpdate(BaseModel):
     alpha: float = 0.4
     beta: float = 0.35
     gamma: float = 0.25
+
 
 class PurchaseCreate(BaseModel):
     user_id: str
@@ -99,370 +282,13 @@ class PurchaseCreate(BaseModel):
     review_text: str = ""
 
 
-@app.get("/api/config")
-def get_config():
-    return {
-        "supabase_url": os.environ.get("SUPABASE_URL", ""),
-        "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
-    }
+class FeedbackCreate(BaseModel):
+    user_id: str
+    item: str
+    feedback: str
 
 
-@app.get("/api/status")
-def status():
-    sb = get_supabase()
-    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
-    product_count = count_result.count or 0
-    return {
-        "status": "ready" if models["ready"] else ("has_data" if product_count > 0 else "no_data"),
-        "product_count": product_count,
-        "model_ready": models["ready"],
-        "build_time": models["build_time"],
-    }
-
-
-@app.get("/api/search")
-def search_items(
-    q: str = "",
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
-    sb = get_supabase()
-
-    if q.strip():
-        try:
-            result = sb.rpc('search_products', {
-                'query_text': q.strip(),
-                'match_count': limit,
-                'offset_val': offset,
-            }).execute()
-            products = result.data or []
-        except Exception as e:
-            logger.warning("Full-text search failed for query '%s': %s", q.strip(), e)
-            result = sb.table('products') \
-                .select('id, title, description, category, rating, avg_sentiment, review_count') \
-                .ilike('title', f'%{q.strip()}%') \
-                .order('rating', desc=True) \
-                .limit(limit) \
-                .execute()
-            products = result.data or []
-            for p in products:
-                p['rank'] = 0.0
-    else:
-        result = sb.table('products') \
-            .select('id, title, description, category, rating, avg_sentiment, review_count') \
-            .order('rating', desc=True) \
-            .order('review_count', desc=True) \
-            .limit(limit) \
-            .offset(offset) \
-            .execute()
-        products = result.data or []
-
-    results = []
-    for p in products:
-        results.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''),
-            'rating': p.get('rating', 0.0),
-            'avg_sentiment': p.get('avg_sentiment', 0.0),
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0),
-        })
-
-    return {
-        "results": results,
-        "total": len(results),
-        "query": q,
-        "is_fallback": not q.strip(),
-    }
-
-
-@app.post("/api/upload")
-async def upload_dataset(file: UploadFile = File(...)):
-    filename = file.filename or "data.csv"
-    ext = os.path.splitext(filename)[1].lower()
-
-    if ext not in ('.csv', '.json'):
-        raise HTTPException(400, "Only CSV and JSON files are supported.")
-
-    try:
-        contents = await file.read()
-        buf = io.BytesIO(contents)
-        raw_df = read_file(buf, file_format=ext.replace('.', ''))
-        adapted_df, meta = adapt_data(raw_df)
-        adapted_df = adapted_df.drop_duplicates(subset='title', keep='first')
-
-        try:
-            sb = get_supabase_admin()
-        except RuntimeError:
-            sb = get_supabase()
-
-        batch_size = 500
-        total = len(adapted_df)
-        imported = 0
-        errors = []
-
-        for start in range(0, total, batch_size):
-            chunk = adapted_df.iloc[start:start + batch_size]
-            rows = []
-            for _, row in chunk.iterrows():
-                raw_rating = row.get('rating', 0)
-                try:
-                    rating_val = float(raw_rating)
-                    if math.isnan(rating_val) or math.isinf(rating_val):
-                        rating_val = 0.0
-                except (ValueError, TypeError):
-                    rating_val = 0.0
-
-                title = str(row.get('title', 'Unknown')).strip()
-                if not title or title == 'nan' or title == 'Unknown':
-                    continue
-
-                rows.append({
-                    'title': title[:500],
-                    'description': str(row.get('description', ''))[:2000],
-                    'category': str(row.get('category', ''))[:200],
-                    'rating': round(rating_val, 2),
-                    'metadata': {},
-                })
-
-            if not rows:
-                continue
-
-            try:
-                sb.table('products').upsert(
-                    rows, on_conflict='title', ignore_duplicates=True
-                ).execute()
-                imported += len(rows)
-            except Exception as e:
-                errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
-
-        models["ready"] = False
-
-        result = {
-            "message": f"Imported {imported:,} products from {filename}",
-            "imported": imported,
-            "total_rows": total,
-            "meta": {
-                "has_user_data": meta['has_user_data'],
-                "has_reviews": meta['has_reviews'],
-            },
-        }
-        if errors:
-            result["warnings"] = errors[:5]
-            logger.warning("Imported dataset with %d batch warnings", len(errors))
-
-        logger.info("Imported %d products from %s", imported, filename)
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Upload failed for %s: %s", filename, e, exc_info=True)
-        raise HTTPException(400, "Upload failed. Check file format and try again.")
-
-
-@app.post("/api/build")
-def build_models():
-    sb = get_supabase()
-
-    all_products = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = sb.table('products') \
-            .select('id, title, description, category, rating, avg_sentiment, review_count') \
-            .range(offset, offset + page_size - 1) \
-            .execute()
-        batch = result.data or []
-        all_products.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-
-    if not all_products:
-        logger.warning("Model build requested with no products in database")
-        raise HTTPException(400, "No products in database. Upload data first.")
-
-    item_df = pd.DataFrame(all_products)
-    item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
-    )
-    item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
-
-    start_time = time.time()
-
-    content_model = ContentRecommender(item_df)
-
-    collab_model = None
-    try:
-        purchases_result = sb.table('purchases') \
-            .select('user_id, product_id, rating') \
-            .limit(50000) \
-            .execute()
-        purchases = purchases_result.data or []
-
-        if len(purchases) > 10:
-            product_title_map = {p['id']: p['title'] for p in all_products}
-            interaction_rows = []
-            for p in purchases:
-                title = product_title_map.get(p['product_id'])
-                if title:
-                    interaction_rows.append({
-                        'user_id': p['user_id'],
-                        'title': title,
-                        'rating': p.get('rating', 3.0),
-                    })
-
-            if len(interaction_rows) > 10:
-                interaction_df = pd.DataFrame(interaction_rows)
-                if interaction_df['user_id'].nunique() > 1:
-                    collab_model = CollaborativeRecommender(interaction_df)
-    except Exception as e:
-        logger.warning("Collaborative model data load failed: %s", e)
-
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
-
-    build_time = round(time.time() - start_time, 2)
-
-    models["content"] = content_model
-    models["collab"] = collab_model
-    models["hybrid"] = hybrid_model
-    models["item_df"] = item_df
-    models["ready"] = True
-    models["build_time"] = build_time
-
-    logger.info(
-        "Built recommendation models for %d items in %.2f seconds",
-        len(item_df),
-        build_time,
-    )
-
-    return {
-        "message": "Models built successfully!",
-        "items": len(item_df),
-        "has_collaborative": collab_model is not None,
-        "build_time_seconds": build_time,
-    }
-
-
-@app.get("/api/recommend/{item_title}")
-def get_recommendations(item_title: str, top_n: int = 10, explain: bool = Query(False), diversify: bool = False):
-    if not models["ready"]:
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
-        
-    fetch_limit = top_n * 3 if diversify else top_n
-    recs = models["hybrid"].recommend(item_title, top_n=fetch_limit, explain=explain)
-    
-    if not recs:
-        raise HTTPException(404, "Item not found or no recommendations.")
-        
-    if diversify:
-        recs = diversify_results(recs, top_n=top_n)
-    else:
-        recs = recs[:top_n]
-        
-    diversity_score = calculate_diversity_score(recs)
-        
-    return {
-        "query_item": item_title,
-        "recommendations": recs,
-        "diversity_score": diversity_score,
-        "weights": models["hybrid"].get_weights(),
-        "explain": explain,
-    }
-
-
-@app.get("/api/weights")
-def get_weights():
-    if not models["ready"]:
-        return {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}
-    return models["hybrid"].get_weights()
-
-
-@app.put("/api/weights")
-def update_weights(w: WeightsUpdate):
-    if not models["ready"]:
-        raise HTTPException(400, "Models not built.")
-    models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
-    return {"message": "Weights updated", "weights": models["hybrid"].get_weights()}
-
-
-@app.get("/api/items")
-def list_items(page: int = 1, per_page: int = 50):
-    sb = get_supabase()
-    offset = (page - 1) * per_page
-    result = sb.table('products') \
-        .select('id, title, description, category, rating, avg_sentiment, review_count') \
-        .order('rating', desc=True) \
-        .range(offset, offset + per_page - 1) \
-        .execute()
-
-    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
-
-    items = []
-    for p in (result.data or []):
-        items.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'category': p.get('category', ''),
-            'rating': round(float(p.get('rating', 0)), 2),
-            'avg_sentiment': round(float(p.get('avg_sentiment', 0)), 4),
-            'description': str(p.get('description', ''))[:200],
-        })
-
-    return {
-        "items": items,
-        "total": count_result.count or 0,
-        "page": page,
-        "per_page": per_page,
-    }
-
-
-@app.get("/api/categories")
-def get_categories():
-    sb = get_supabase()
-    result = sb.rpc('get_categories', {}).execute()
-    if result.data:
-        return {"categories": result.data}
-
-    result = sb.table('products').select('category').limit(5000).execute()
-    cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
-    cats.sort()
-    return {"categories": cats}
-
-
-@app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = 50):
-    sb = get_supabase()
-    result = sb.table('purchases') \
-        .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)') \
-        .eq('user_id', user_id) \
-        .order('purchased_at', desc=True) \
-        .limit(limit) \
-        .execute()
-    return {"purchases": result.data or []}
-
-
-@app.post("/api/purchases")
-def create_purchase(data: PurchaseCreate):
-    sb = get_supabase()
-    result = sb.table('purchases').insert({
-        'user_id': data.user_id,
-        'product_id': data.product_id,
-        'rating': max(0, min(5, data.rating)),
-        'review_text': data.review_text[:1000],
-    }).execute()
-    return {"purchase": result.data}
-
-
-frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
-
-if os.path.isdir(frontend_dir):
-    app.mount("/static", StaticFiles(directory=frontend_dir), name="frontend")
-
-    @app.get("/")
-    def serve_frontend():
-        return FileResponse(os.path.join(frontend_dir, "index.html"))
+class RealtimeRecommendationRequest(BaseModel):
+    item_title: str
+    top_n: int = 10
+    explain: bool = False

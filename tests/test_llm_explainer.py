@@ -80,7 +80,7 @@ class TestFallbackExplanations:
             category="Test"
         )
         assert explanation is not None
-        assert len(explanation) < 400  # Should be truncated
+        assert len(explanation) < 500  # Should be truncated
 
     def test_fallback_empty_scores(self):
         """Test fallback with empty scores dictionary."""

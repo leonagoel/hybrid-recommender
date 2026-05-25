@@ -1,3 +1,50 @@
+import { initBenchmarkingDashboard } from './js/benchmarking.js';
+
+// ===== THEME TOGGLE =====
+const themeToggle = document.getElementById('theme-toggle');
+const root = document.documentElement;
+
+function initThemeToggle() {
+  if (!themeToggle) return;
+
+  const savedTheme = localStorage.getItem('theme') || 'dark';
+
+  root.setAttribute('data-theme', savedTheme);
+  themeToggle.textContent = savedTheme === 'dark' ? '🌙' : '☀️';
+
+  themeToggle.setAttribute(
+    'aria-label',
+    savedTheme === 'dark'
+      ? 'Switch to light mode'
+      : 'Switch to dark mode'
+  );
+
+  themeToggle.addEventListener('click', () => {
+    const current = root.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+
+    root.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+    themeToggle.textContent = next === 'dark' ? '🌙' : '☀️';
+
+    themeToggle.setAttribute(
+      'aria-label',
+      next === 'dark'
+        ? 'Switch to light mode'
+        : 'Switch to dark mode'
+    );
+  });
+
+  themeToggle.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      themeToggle.click();
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', initThemeToggle);
+
 /**
  * HybridRec — Frontend Application v3
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
@@ -22,19 +69,39 @@ async function initSupabase() {
     return sbClient;
 }
 
+
 // ── State ───────────────────────────────────────────────────────────
 const state = {
     user: null,
     isGuest: true,
     products: [],
+    allProducts: [],
+    trending: [],
     page: 1,
     perPage: 20,
     totalProducts: 0,
     searchTimer: null,
     searchResults: [],
+    autocompleteResults: [],
+    searchHistory: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
+    scrollObserver: null,
+    hasMore: true,
+    isLoading: false,
+    compareList: [],
+    heatmapSelected: [],
+    realtimeReady: false,
+    recommendationSocket: null,
+    pendingRecommendationTitle: null,
+    realtimeFallbackTimer: null,
+    selectedCategory: 'All Categories',
+    filters: {
+        category: '',
+        rating: '',
+        sentiment: '',
+    },
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -43,6 +110,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
     searchInput: $('search-input'),
     searchDropdown: $('search-dropdown'),
+    searchHistory: $('search-history'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
@@ -67,6 +135,9 @@ const els = {
     skeletonLoader: $('skeleton-loader'),
     loadMoreBtn: $('load-more-btn'),
     loadMoreContainer: $('load-more-container'),
+    infiniteLoader: $('infinite-loader'),
+    infiniteEnd: $('infinite-end'),
+    scrollSentinel: $('scroll-sentinel'),
     recsSection: $('recs-section'),
     recsLoader: $('recs-loader'),
     recsStrip: $('recs-strip'),
@@ -77,10 +148,62 @@ const els = {
     diversifyToggle: $('diversify-toggle'),
     diversityMetrics: $('diversity-metrics'),
     diversityScoreValue: $('diversity-score-value'),
+    categoryFilter: $('category-filter'),
+    ratingFilter: $('rating-filter'),
+    sentimentFilter: $('sentiment-filter'),
+    clearFiltersBtn: $('clear-filters'),
+    heatmapSection: $('heatmap-section'),
+    heatmapLoader: $('heatmap-loader'),
+    heatmapContainer: $('heatmap-container'),
 };
 
+// ===== CONFIG=====
+const CONFIG = {
+  TOAST_DURATION_MS: 3500,
+  TOAST_EXIT_MS: 300,
+  SEARCH_DEBOUNCE_MS: 300,
+  SENTIMENT_POSITIVE: 0.05,
+  SENTIMENT_NEGATIVE: -0.05,
+  SEARCH_LIMIT: 5,
+  MAX_COMPARE_ITEMS: 20
+};
+
+function loadPreferences() {
+    const saved = localStorage.getItem('userPreferences');
+
+    if (!saved) return;
+
+    try {
+        const prefs = JSON.parse(saved);
+
+        state.filters.category = prefs.category || '';
+        state.filters.rating = prefs.rating || '';
+        state.filters.sentiment = prefs.sentiment || '';
+
+        if(els.categoryFilter) els.categoryFilter.value = state.filters.category;
+        if(els.ratingFilter) els.ratingFilter.value = state.filters.rating;
+        if(els.sentimentFilter) els.sentimentFilter.value = state.filters.sentiment;
+
+    } catch (err) {
+        console.warn('Failed to load preferences:', err);
+    }
+}
+
 // ── Utilities ───────────────────────────────────────────────────────
+function setPageMeta(title, description) {
+    if (title) {
+        document.title = `${title} — HybridRec`;
+    } else {
+        document.title = 'HybridRec — Smart Recommendations';
+    }
+    const metaDesc = document.querySelector('meta[name="description"]');
+    if (metaDesc && description) {
+        metaDesc.setAttribute('content', description);
+    }
+}
+
 function toast(message, type = 'info') {
+    if (!els.toastContainer) return;
     const el = document.createElement('div');
     el.className = `toast ${type}`;
     el.textContent = message;
@@ -88,9 +211,9 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = '300ms ease';
-        setTimeout(() => el.remove(), 300);
-    }, 3500);
+        el.style.transition = `${CONFIG.TOAST_EXIT_MS}ms ease`;
+        setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
+    }, CONFIG.TOAST_DURATION_MS);
 }
 
 function renderStars(rating) {
@@ -106,9 +229,40 @@ function renderStars(rating) {
 }
 
 function sentimentBadge(score) {
-    if (score > 0.05) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
-    if (score < -0.05) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
+    if (score > CONFIG.SENTIMENT_POSITIVE) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
+    if (score < CONFIG.SENTIMENT_NEGATIVE) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
     return '<span class="product-card__sentiment sentiment-neutral">Neutral</span>';
+}
+
+function applyFilters(products) {
+    return products.filter((p) => {
+
+        const matchesCategory =
+            !state.filters.category ||
+            p.category === state.filters.category;
+
+        const matchesRating =
+            !state.filters.rating ||
+            (p.rating || 0) >= Number(state.filters.rating);
+
+        let sentiment = 'neutral';
+
+        if ((p.avg_sentiment || 0) > CONFIG.SENTIMENT_POSITIVE) {
+            sentiment = 'positive';
+        } else if ((p.avg_sentiment || 0) < CONFIG.SENTIMENT_NEGATIVE) {
+            sentiment = 'negative';
+        }
+
+        const matchesSentiment =
+            !state.filters.sentiment ||
+            sentiment === state.filters.sentiment;
+
+        return (
+            matchesCategory &&
+            matchesRating &&
+            matchesSentiment
+        );
+    });
 }
 
 function categoryIcon(cat) {
@@ -124,6 +278,51 @@ function categoryIcon(cat) {
     if (c.includes('cloth') || c.includes('fashion')) return '👕';
     if (c.includes('home') || c.includes('garden')) return '🏡';
     return '📦';
+}
+
+// ── Wishlist ────────────────────────────────────────────────────────
+function getWishlist() {
+    return JSON.parse(localStorage.getItem('wishlist')) || [];
+}
+
+function saveWishlist(items) {
+    localStorage.setItem('wishlist', JSON.stringify(items));
+}
+
+function isWishlisted(title) {
+    return getWishlist().some(item => item.title === title);
+}
+
+function toggleWishlist(product) {
+    let wishlist = getWishlist();
+
+    const exists = wishlist.some(item => item.title === product.title);
+
+    if (exists) {
+        wishlist = wishlist.filter(item => item.title !== product.title);
+        toast('Removed from wishlist', 'info');
+    } else {
+        wishlist.push(product);
+        toast('Added to wishlist', 'success');
+    }
+
+    saveWishlist(wishlist);
+
+    renderProducts(state.allProducts, { append: false });
+}
+
+function toggleCompare(product, isChecked) {
+    if (isChecked) {
+        if (state.compareList.length >= 2) {
+            toast('Maximum 2 items for side-by-side comparison', 'error');
+            return false;
+        }
+        state.compareList.push(product);
+        toast(`Added to compare`, 'success');
+    } else {
+        state.compareList = state.compareList.filter(p => p.title !== product.title);
+    }
+    return true;
 }
 
 // ── API Helpers ─────────────────────────────────────────────────────
@@ -157,7 +356,7 @@ const API = {
 async function initAuth() {
     if (!sbClient) {
         console.warn('Supabase client unavailable — auth disabled');
-        els.authLabel.textContent = 'Sign In';
+        if(els.authLabel) els.authLabel.textContent = 'Sign In';
         return;
     }
     try {
@@ -177,7 +376,7 @@ async function initAuth() {
         }
     } catch (err) {
         console.warn('Auth init failed:', err.message);
-        els.authLabel.textContent = 'Sign In';
+        if(els.authLabel) els.authLabel.textContent = 'Sign In';
     }
 }
 
@@ -186,9 +385,9 @@ function setUser(user) {
     state.isGuest = user?.is_anonymous || !user?.email;
 
     if (state.isGuest) {
-        els.authLabel.textContent = 'Guest';
+        if(els.authLabel) els.authLabel.textContent = 'Guest';
     } else {
-        els.authLabel.textContent = user.email?.split('@')[0] || 'User';
+        if(els.authLabel) els.authLabel.textContent = user.email?.split('@')[0] || 'User';
     }
 }
 
@@ -250,29 +449,85 @@ function initTypeToSearch() {
 
         if (e.key.length === 1) {
             els.searchInput.focus();
-            // The character will naturally be typed into the input
         }
     });
 }
 
-// ── Search ──────────────────────────────────────────────────────────
-async function handleSearch(query) {
-    if (!query || query.length < 1) {
+// ── Search Dropdown ──────────────────────────────────────────────────
+function addToSearchHistory(query) {
+    if (!state.searchHistory) state.searchHistory = [];
+    state.searchHistory = [query, ...state.searchHistory.filter(q => q !== query)].slice(0, 10);
+    renderSearchHistory();
+}
+
+function renderSearchHistory() {
+    if (!els.searchHistory) return;
+    if (!state.searchHistory || !state.searchHistory.length) {
+        els.searchHistory.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">No search history</div>';
+        return;
+    }
+
+    els.searchHistory.innerHTML = `
+        <div class="search-history__list">
+            ${state.searchHistory.map(query => `
+                <div class="search-history__item" data-query="${query}">
+                    <span style="font-size:14px;">🕐</span>
+                    <span>${query}</span>
+                </div>
+            `).join('')}
+        </div>
+        <button id="clear-history-btn" class="btn btn--link" style="width:100%;padding:12px;border-top:1px solid var(--border);border-radius:0;font-size:12px;">
+            Clear History
+        </button>
+    `;
+    
+    els.searchHistory.classList.add('active');
+
+    // Click history item
+    els.searchHistory.querySelectorAll('.search-history__item')
+        .forEach((el) => {
+            el.addEventListener('click', () => {
+                const query = el.dataset.query;
+                els.searchInput.value = query;
+                loadSearchResults(query);
+                handleSearch(query);
+            });
+        });
+
+    // Clear history
+    const clearBtn = document.getElementById('clear-history-btn');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            state.searchHistory = [];
+            renderSearchHistory();
+        });
+    }
+}
+
+function handleSearch(query) {
+    if (!query || query.trim().length < 1) {
         closeSearchDropdown();
         return;
     }
 
     clearTimeout(state.searchTimer);
+
+    // 300ms debounce
     state.searchTimer = setTimeout(async () => {
         try {
-            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
-            state.searchResults = data.results || [];
+            const data = await API.get(
+                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=${CONFIG.SEARCH_LIMIT}`
+            );
+
+            state.autocompleteResults = data.suggestions || [];
             state.selectedSearchIdx = -1;
-            renderSearchDropdown(state.searchResults, query);
-        } catch {
+
+            renderSearchDropdown(state.autocompleteResults, query);
+        } catch (err) {
+            console.error('Autocomplete failed:', err);
             closeSearchDropdown();
         }
-    }, 200);
+    }, CONFIG.SEARCH_DEBOUNCE_MS);
 }
 
 function renderSearchDropdown(results, query) {
@@ -316,6 +571,7 @@ function highlightMatch(text, query) {
 }
 
 function selectSearchResult(title) {
+    addToSearchHistory(title);
     els.searchInput.value = title;
     closeSearchDropdown();
     loadSearchResults(title);
@@ -328,8 +584,28 @@ function closeSearchDropdown() {
 }
 
 function handleSearchKeydown(e) {
-    const results = state.searchResults;
-    if (!results.length || !els.searchDropdown.classList.contains('active')) return;
+    const results = state.autocompleteResults;
+
+    if (e.key === 'Enter') {
+        e.preventDefault();
+
+        if (state.selectedSearchIdx >= 0 && results.length && els.searchDropdown.classList.contains('active')) {
+            const selected = results[state.selectedSearchIdx];
+            selectSearchResult(selected.title || selected);
+        } else if (els.searchInput.value.trim().length > 0) {
+            selectSearchResult(els.searchInput.value.trim());
+        }
+        return;
+    }
+
+    if (e.key === 'Escape') {
+        closeSearchDropdown();
+        return;
+    }
+
+    if (!results.length || !els.searchDropdown.classList.contains('active')) {
+        return;
+    }
 
     if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -339,20 +615,53 @@ function handleSearchKeydown(e) {
         e.preventDefault();
         state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, -1);
         renderSearchDropdown(results, els.searchInput.value);
-    } else if (e.key === 'Enter' && state.selectedSearchIdx >= 0) {
-        e.preventDefault();
-        selectSearchResult(results[state.selectedSearchIdx].title);
-    } else if (e.key === 'Escape') {
-        closeSearchDropdown();
     }
+}
+
+// ── Lazy Loading ────────────────────────────────────────────────────
+const lazyObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const img = entry.target;
+        img.src = img.dataset.src;
+        img.onload = () => img.classList.add('loaded');
+        lazyObserver.unobserve(img);
+    });
+}, { rootMargin: '200px 0px', threshold: 0.01 });
+
+function createLazyImage(src, alt) {
+    const img = document.createElement('img');
+    img.alt = alt || '';
+    img.setAttribute('loading', 'lazy');
+
+    if ('IntersectionObserver' in window) {
+        img.dataset.src = src;
+        img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"%3E%3Crect width="400" height="300" fill="%23232f3e"/%3E%3C/svg%3E';
+        lazyObserver.observe(img);
+    } else {
+        img.src = src;
+        img.classList.add('loaded');
+    }
+
+    img.addEventListener('error', () => img.classList.add('error'));
+    return img;
 }
 
 // ── Product Loading ─────────────────────────────────────────────────
 async function loadProducts(append = false) {
     if (!append) {
+        setPageMeta(
+            'All Products', 
+            'Browse all products on HybridRec — personalised recommendations just for you.'
+        );
         els.productGrid.innerHTML = '';
         els.skeletonLoader.hidden = false;
+        if(els.infiniteEnd) els.infiniteEnd.hidden = true;
         state.page = 1;
+        state.hasMore = true;
+        state.products = [];
+    } else {
+        if(els.infiniteLoader) els.infiniteLoader.hidden = false;
     }
 
     try {
@@ -361,14 +670,21 @@ async function loadProducts(append = false) {
         state.totalProducts = data.total || products.length;
 
         if (!append) {
+            state.allProducts = [...products];
             els.skeletonLoader.hidden = true;
+        } else {
+            state.allProducts = [...(state.allProducts || []), ...products];
         }
 
-        renderProducts(products, append);
-        els.productCount.textContent = `${state.products.length} products loaded`;
+        renderProducts(products, { append });
+        
+        const visibleCount = state.selectedCategory === 'All Categories'
+            ? products.length
+            : products.filter(p => p.category === state.selectedCategory).length;
+            
+        els.productCount.textContent = `${visibleCount} of ${state.totalProducts} products`;
 
-        // Show load more if there might be more
-        els.loadMoreContainer.hidden = products.length < state.perPage;
+        if(els.loadMoreContainer) els.loadMoreContainer.hidden = products.length < state.perPage;
     } catch (err) {
         els.skeletonLoader.hidden = true;
         toast('Failed to load products', 'error');
@@ -379,39 +695,126 @@ async function loadSearchResults(query) {
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
+    setPageMeta(`Search: ${query}`, `Showing results for "${query}" on HybridRec.`);
+    if(els.infiniteEnd) els.infiniteEnd.hidden = true;
 
     try {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
-        const products = data.results || [];
+        const products = data.results || data.items || [];
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
-        renderProducts(products, false);
-        els.loadMoreContainer.hidden = true;
+        state.hasMore = false;
+        state.allProducts = [...products];
+        renderProducts(products, { append: false, ignoreFilters: true });
+        
+        els.productGrid.classList.remove('fade-in');
+        requestAnimationFrame(() => {
+            els.productGrid.classList.add('fade-in');
+        });
+        
+        if(els.loadMoreContainer) els.loadMoreContainer.hidden = true;
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
     }
 }
 
-function renderProducts(products, append) {
-    if (!append) state.products = [];
+function renderProducts(products, options = {}) {
+    const append = options.append || false;
+    const ignoreFilters = options.ignoreFilters || false;
+
+    if (!ignoreFilters) {
+        products = applyFilters(products);
+    }
+
+    const filteredProducts = state.selectedCategory && state.selectedCategory !== 'All Categories'
+        ? products.filter(p => p.category === state.selectedCategory)
+        : products;
+
+    els.productCount.textContent = `${filteredProducts.length} products`;
+    if (!append) {
+        els.productGrid.innerHTML = '';
+        state.products = [];
+    }
+
+    if (!filteredProducts.length) {
+        els.productGrid.innerHTML = `
+            <div class="no-results animate-fade-in">
+                <svg class="no-results-svg" width="180" height="180" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="blue-grad" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+                            <stop offset="0%" stop-color="var(--primary)" stop-opacity="0.8"/>
+                            <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.1"/>
+                        </linearGradient>
+                        <linearGradient id="amber-grad" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+                            <stop offset="0%" stop-color="var(--accent)"/>
+                            <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.3"/>
+                        </linearGradient>
+                    </defs>
+                    <circle cx="100" cy="100" r="70" fill="url(#blue-grad)" filter="blur(8px)" opacity="0.15" />
+                    <circle cx="120" cy="80" r="40" fill="url(#amber-grad)" filter="blur(6px)" opacity="0.1" />
+                    
+                    <path d="M50 80 L65 140 H135 L150 80" stroke="var(--text-muted)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M40 80 H160" stroke="var(--text-muted)" stroke-width="4" stroke-linecap="round" />
+                    
+                    <circle cx="130" cy="65" r="28" stroke="var(--primary)" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
+                    
+                    <g class="search-glass">
+                        <circle cx="130" cy="65" r="16" stroke="var(--accent)" stroke-width="3.5" fill="var(--bg-card)"/>
+                        <path d="M142 77 L158 93" stroke="var(--accent)" stroke-width="3.5" stroke-linecap="round"/>
+                    </g>
+
+                    <path d="M129 60 C129 57.5, 131 56, 133 57.5 C135 59, 132 62, 132 64 M132 67 H132.01" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+                    <circle cx="65" cy="105" r="2.5" fill="var(--accent)" opacity="0.6"/>
+                    <circle cx="85" cy="105" r="3.5" fill="var(--primary)" opacity="0.5"/>
+                    <circle cx="145" cy="125" r="2" fill="var(--text-muted)" opacity="0.4"/>
+                </svg>
+                <h3 class="no-results__title">No products found</h3>
+                <p class="no-results__subtitle">Try adjusting your search keywords or clearing active filters to find what you're looking for.</p>
+                <button class="btn btn--primary btn--clear-search" id="empty-state-clear-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px; display:inline-block; vertical-align:middle;">
+                        <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+                        <polyline points="21 3 21 8 16 8"/>
+                    </svg>
+                    Clear Search & Filters
+                </button>
+            </div>
+        `;
+        
+        const clearBtn = document.getElementById('empty-state-clear-btn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', resetAllFiltersAndSearch);
+        }
+        return;
+    }
 
     const fragment = document.createDocumentFragment();
 
-    products.forEach((p, i) => {
+    filteredProducts.forEach((p, i) => {
         state.products.push(p);
         const card = document.createElement('div');
         card.className = 'product-card';
         card.style.animationDelay = `${i * 50}ms`;
+        const isChecked = state.heatmapSelected.includes(p.title);
+
         card.innerHTML = `
-            <div class="product-card__image">
-                ${categoryIcon(p.category)}
+           <div class="product-card__image">
+            <button class="wishlist-btn" data-title="${p.title}">
+                ${isWishlisted(p.title) ? '❤️' : '🤍'}
+            </button>
+            ${categoryIcon(p.category)}
             </div>
             <div class="product-card__body">
                 ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
+                <h3 class="product-card__title" title="${p.title || 'Untitled'}">
+                ${p.title || 'Untitled'}
+                </h3>
                 <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                <div class="product-card__price">
+                ₹${p.price || 0}
+                </div>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
@@ -421,11 +824,62 @@ function renderProducts(products, append) {
                 </div>
             </div>
             <div class="product-card__actions">
+                <label class="compare-label">
+                    <input type="checkbox" class="compare-checkbox" data-title="${p.title}" ${isChecked ? 'checked' : ''}>
+                    Heatmap
+                </label>
+                <label class="compare-label">
+                    <input type="checkbox" class="side-compare-checkbox" data-title="${p.title}">
+                    Compare
+                </label>
                 <button class="btn--add-cart" data-title="${p.title}">
                     Get Recommendations
                 </button>
             </div>
         `;
+
+        // Wishlist button
+        const wishlistBtn = card.querySelector('.wishlist-btn');
+        if (wishlistBtn) {
+            wishlistBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleWishlist(p);
+            });
+        }
+
+        // Compare checkbox
+        const checkbox = card.querySelector('.compare-checkbox');
+        if (checkbox) {
+            checkbox.addEventListener('click', e => e.stopPropagation());
+            checkbox.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const title = checkbox.dataset.title;
+                if (checkbox.checked) {
+                    if (state.heatmapSelected.length >= CONFIG.MAX_COMPARE_ITEMS) {
+                        checkbox.checked = false;
+                        toast('Maximum 20 items for comparison', 'error');
+                        return;
+                    }
+                    if (!state.heatmapSelected.includes(title)) {
+                        state.heatmapSelected.push(title);
+                    }
+                } else {
+                    state.heatmapSelected = state.heatmapSelected.filter(t => t !== title);
+                }
+                updateCompareCount();
+            });
+        }
+
+        // Side-by-side compare checkbox
+        const sideCheckbox = card.querySelector('.side-compare-checkbox');
+        if (sideCheckbox) {
+            sideCheckbox.addEventListener('click', e => e.stopPropagation());
+            sideCheckbox.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const success = toggleCompare(p, sideCheckbox.checked);
+                if (!success) sideCheckbox.checked = false;
+            });
+        }
 
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
@@ -445,7 +899,137 @@ function renderProducts(products, append) {
     els.productGrid.appendChild(fragment);
 }
 
+function resetAllFiltersAndSearch() {
+    els.searchInput.value = '';
+    state.filters = { category: '', rating: '', sentiment: '' };
+    if(els.categoryFilter) els.categoryFilter.value = '';
+    if(els.ratingFilter) els.ratingFilter.value = '';
+    if(els.sentimentFilter) els.sentimentFilter.value = '';
+    state.selectedCategory = 'All Categories';
+    loadProducts();
+}
+
 // ── Recommendations ─────────────────────────────────────────────────
+function getRealtimeUrl() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/recommendations`;
+}
+
+function initRecommendationSocket() {
+    if (!('WebSocket' in window) || state.recommendationSocket) return;
+
+    const socket = new WebSocket(getRealtimeUrl());
+    state.recommendationSocket = socket;
+
+    socket.addEventListener('open', () => {
+        state.realtimeReady = true;
+    });
+
+    socket.addEventListener('message', (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'recommendations') {
+                renderRecommendations(data);
+            } else if (data.type === 'error') {
+                throw new Error(data.detail || 'Recommendation stream failed');
+            }
+        } catch (err) {
+            console.warn('Realtime recommendation update failed:', err.message);
+            fallbackRecommendationRequest(state.pendingRecommendationTitle);
+        }
+    });
+
+    socket.addEventListener('close', () => {
+        state.realtimeReady = false;
+        state.recommendationSocket = null;
+    });
+
+    socket.addEventListener('error', () => {
+        state.realtimeReady = false;
+    });
+}
+
+function requestRealtimeRecommendations(title) {
+    if (!state.realtimeReady || !state.recommendationSocket) return false;
+
+    state.pendingRecommendationTitle = title;
+    state.recommendationSocket.send(JSON.stringify({
+        item_title: title,
+        top_n: 12,
+    }));
+    return true;
+}
+
+async function fallbackRecommendationRequest(title) {
+    if (!title) return;
+
+    clearTimeout(state.realtimeFallbackTimer);
+    state.realtimeFallbackTimer = setTimeout(async () => {
+        try {
+            const data = await API.post('/api/realtime/behavior', {
+                item_title: title,
+                top_n: 12,
+            });
+            renderRecommendations(data);
+        } catch {
+            await loadRecommendationsOverHttp(title);
+        }
+    }, 250);
+}
+
+function renderRecommendations(data) {
+    const recs = data.recommendations || [];
+
+    els.recsLoader.hidden = true;
+    els.recsStrip.hidden = false;
+
+    if (data.diversity_score !== undefined && els.diversityMetrics) {
+        els.diversityMetrics.hidden = false;
+        els.diversityScoreValue.textContent = (data.diversity_score * 100).toFixed(2);
+    } else if (els.diversityMetrics) {
+        els.diversityMetrics.hidden = true;
+    }
+
+    if (!recs.length) {
+        els.recsStrip.innerHTML = `
+            <div class="empty-recommendations">
+                <span class="empty-icon" aria-hidden="true">🔍</span>
+                <p>No recommendations found. Try a different product!</p>
+            </div>
+        `;
+        return;
+    }
+
+    els.recsStrip.innerHTML = recs.map((r) => `
+        <div class="rec-card" data-title="${r.title}">
+            <div class="rec-card__title">${r.title}</div>
+            <div class="rec-card__rating">
+                <div class="star-rating">${renderStars(r.rating || 0)}</div>
+                <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
+            </div>
+            <div class="rec-card__score">
+                Score: ${(r.hybrid_score || 0).toFixed(3)}
+                · Content: ${(r.content_score || 0).toFixed(2)}
+                · Collab: ${(r.collab_score || 0).toFixed(2)}
+            </div>
+        </div>
+    `).join('');
+
+    els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
+        card.addEventListener('click', () => {
+            loadRecommendations(card.dataset.title);
+        });
+    });
+
+    els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadRecommendationsOverHttp(title) {
+    const isDiversified = els.diversifyToggle ? els.diversifyToggle.checked : false;
+    const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12&diversify=${isDiversified}`);
+    renderRecommendations(data);
+}
+
 async function loadRecommendations(title) {
     if (!state.modelReady) {
         toast('Build models first to get recommendations', 'info');
@@ -453,59 +1037,25 @@ async function loadRecommendations(title) {
     }
 
     els.recsSection.hidden = false;
+    setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
-    els.diversityMetrics.hidden = true;
+    if(els.diversityMetrics) els.diversityMetrics.hidden = true;
+
+    els.recsSection.classList.remove('slide-up');
+    requestAnimationFrame(() => {
+        els.recsSection.classList.add('slide-up');
+    });
 
     try {
         const isDiversified = els.diversifyToggle ? els.diversifyToggle.checked : false;
         const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12&diversify=${isDiversified}`);
-        const recs = data.recommendations || [];
-
-        els.recsLoader.hidden = true;
-        els.recsStrip.hidden = false;
-
-        if (data.diversity_score !== undefined) {
-            els.diversityMetrics.hidden = false;
-            els.diversityScoreValue.textContent = (data.diversity_score * 100).toFixed(2);
-        } else {
-            els.diversityMetrics.hidden = true;
-        }
-
-        if (!recs.length) {
-            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
-            return;
-        }
-
-        els.recsStrip.innerHTML = recs.map((r) => `
-            <div class="rec-card" data-title="${r.title}">
-                <div class="rec-card__title">${r.title}</div>
-                <div class="rec-card__rating">
-                    <div class="star-rating">${renderStars(r.rating || 0)}</div>
-                    <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
-                </div>
-                <div class="rec-card__score">
-                    Score: ${(r.hybrid_score || 0).toFixed(3)}
-                    · Content: ${(r.content_score || 0).toFixed(2)}
-                    · Collab: ${(r.collab_score || 0).toFixed(2)}
-                </div>
-            </div>
-        `).join('');
-
-        // Click to chain recommendations
-        els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
-            card.addEventListener('click', () => {
-                loadRecommendations(card.dataset.title);
-            });
-        });
-
-        // Scroll to recs
-        els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        renderRecommendations(data);
     } catch {
         els.recsLoader.hidden = true;
         els.recsStrip.hidden = false;
-        els.diversityMetrics.hidden = true;
+        if(els.diversityMetrics) els.diversityMetrics.hidden = true;
         els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
     }
 }
@@ -597,18 +1147,157 @@ async function handleWeightChange() {
     } catch {}
 }
 
+// ── Similarity Heatmap ──────────────────────────────────────────────
+function updateCompareCount() {
+    const count = state.heatmapSelected.length;
+    let fab = document.getElementById('compare-fab');
+    if (count >= 2) {
+        if (!fab) {
+            fab = document.createElement('button');
+            fab.id = 'compare-fab';
+            fab.className = 'compare-fab';
+            fab.addEventListener('click', loadHeatmap);
+            document.body.appendChild(fab);
+        }
+        fab.textContent = `Compare ${count} Products`;
+        fab.hidden = false;
+    } else if (fab) {
+        fab.hidden = true;
+    }
+}
+
+async function loadHeatmap() {
+    if (state.heatmapSelected.length < 2) {
+        toast('Select at least 2 products to compare', 'info');
+        return;
+    }
+    if (!state.modelReady) {
+        toast('Build models first to compare products', 'info');
+        return;
+    }
+
+    if(els.heatmapSection) els.heatmapSection.hidden = false;
+    if(els.heatmapLoader) els.heatmapLoader.hidden = false;
+    if(els.heatmapContainer) els.heatmapContainer.innerHTML = '';
+
+    try {
+        const itemsParam = state.heatmapSelected.map(t => encodeURIComponent(t)).join(',');
+        const data = await API.get(`/api/similarity-matrix?items=${itemsParam}`);
+        if(els.heatmapLoader) els.heatmapLoader.hidden = true;
+
+        if (data.not_found && data.not_found.length) {
+            toast(`${data.not_found.length} item(s) not found in model`, 'info');
+        }
+
+        renderHeatmap(data.labels, data.matrix);
+        if(els.heatmapSection) els.heatmapSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+        if(els.heatmapLoader) els.heatmapLoader.hidden = true;
+        if(els.heatmapContainer) els.heatmapContainer.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not compute similarity matrix.</div>';
+        toast('Heatmap failed: ' + err.message, 'error');
+    }
+}
+
+function renderHeatmap(labels, matrix) {
+    if(!els.heatmapContainer) return;
+    const n = labels.length;
+    const gridSize = n + 1;
+
+    const shortLabels = labels.map(l => l.length > 25 ? l.substring(0, 22) + '…' : l);
+
+    let html = `<div class="heatmap-grid" style="grid-template-columns: 140px repeat(${n}, 1fr); grid-template-rows: auto repeat(${n}, 1fr);">`;
+
+    html += '<div class="heatmap-cell heatmap-corner"></div>';
+
+    for (let j = 0; j < n; j++) {
+        html += `<div class="heatmap-cell heatmap-col-label" title="${labels[j]}">${shortLabels[j]}</div>`;
+    }
+
+    for (let i = 0; i < n; i++) {
+        html += `<div class="heatmap-cell heatmap-row-label" title="${labels[i]}">${shortLabels[i]}</div>`;
+
+        for (let j = 0; j < n; j++) {
+            const score = matrix[i][j];
+            const pct = Math.round(score * 100);
+            const r = Math.round(255 - score * 200);
+            const g = Math.round(255 - score * 55);
+            const b = Math.round(255 - score * 200);
+            const bg = `rgb(${r}, ${g}, ${b})`;
+            const textColor = score > 0.6 ? '#fff' : 'var(--text)';
+
+            html += `<div class="heatmap-cell heatmap-value" style="background:${bg};color:${textColor};" title="${labels[i]} × ${labels[j]}: ${score.toFixed(4)}">
+                ${score === 1 ? '1.0' : score.toFixed(2)}
+            </div>`;
+        }
+    }
+
+    html += '</div>';
+    els.heatmapContainer.innerHTML = html;
+}
+
+// ── Infinite Scroll (Intersection Observer) ─────────────────────────
+function setupScrollObserver() {
+    try {
+        destroyScrollObserver();
+
+        if (!els.scrollSentinel) return;
+
+        state.scrollObserver = new IntersectionObserver(
+            (entries) => {
+                const entry = entries[0];
+                if (entry.isIntersecting && !state.isLoading && state.hasMore) {
+                    loadProducts(true);
+                }
+            },
+            {
+                rootMargin: '0px 0px 200px 0px',
+                threshold: 0,
+            }
+        );
+        
+        state.scrollObserver.observe(els.scrollSentinel);
+    } catch(err) {
+        console.warn("Could not setup scroll observer", err);
+    }
+}
+
+function destroyScrollObserver() {
+    if (state.scrollObserver) {
+        state.scrollObserver.disconnect();
+        state.scrollObserver = null;
+    }
+}
+
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
     els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
     els.searchInput.addEventListener('keydown', handleSearchKeydown);
     els.searchInput.addEventListener('focus', () => {
-        if (els.searchInput.value) handleSearch(els.searchInput.value);
+        if (els.searchInput.value) {
+            handleSearch(els.searchInput.value);
+        } else {
+            renderSearchHistory();
+        }
     });
+
+    if (els.categoryFilter) {
+        els.categoryFilter.addEventListener('change', (e) => {
+            state.selectedCategory = e.target.value;
+            if (els.searchInput.value.trim()) {
+                loadSearchResults(els.searchInput.value);
+            } else {
+                loadProducts();
+            }
+        });
+    }
 
     // Close dropdown on outside click
     document.addEventListener('click', (e) => {
-        if (!e.target.closest('.header__search')) closeSearchDropdown();
+        if (!e.target.closest('.header__search')) {
+            closeSearchDropdown();
+            if (els.searchHistory) els.searchHistory.classList.remove('active');
+        }
     });
 
     // Auth
@@ -644,19 +1333,17 @@ function bindEvents() {
     // Build
     els.buildBtn.addEventListener('click', handleBuild);
 
-    // Load more
-    els.loadMoreBtn.addEventListener('click', () => {
-        state.page++;
-        loadProducts(true);
-    });
+    // Load more (fallback for infinite scroll)
+    if (els.loadMoreBtn) {
+        els.loadMoreBtn.addEventListener('click', () => {
+            state.page++;
+            loadProducts(true);
+        });
+    }
 
     // Weights
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
-        slider.addEventListener('change', handleWeightChange);
-    });
-    // Weights
-    [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
-        slider.addEventListener('change', handleWeightChange);
+        if (slider) slider.addEventListener('change', handleWeightChange);
     });
 
     // Scroll Progress Bar
@@ -672,40 +1359,70 @@ function bindEvents() {
         progressBar.style.width = width + "%";
     });
 }
+
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
 spinStyle.textContent = `@keyframes spin { to { transform: rotate(360deg); } } .spin { animation: spin 1s linear infinite; }`;
 document.head.appendChild(spinStyle);
 
-// ── Back To Top ─────────────────────────────────────────────────────
-function initBackToTop() {
-    const backToTop = document.getElementById('backToTop');
-
-    if (!backToTop) return;
-
-    
-    backToTop.style.display = 'none';
-
-    window.addEventListener('scroll', () => {
-        backToTop.style.display =
-            window.scrollY > 700 ? 'block' : 'none';
-    });
-
-    backToTop.addEventListener('click', () => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    });
-}
 // ── Init ────────────────────────────────────────────────────────────
+async function loadCategories() {
+    try {
+        const data = await API.get('/api/categories');
+        const categories = data.categories || [];
+
+        if(els.categoryFilter) {
+            els.categoryFilter.innerHTML = `
+                <option value="All Categories">All Categories</option>
+                ${categories.map(cat => `
+                    <option value="${cat}">${cat}</option>
+                `).join('')}
+            `;
+        }
+    } catch (err) {
+        console.error('Failed to load categories', err);
+    }
+}
+
 async function init() {
     bindEvents();
     initTypeToSearch();
-    initBackToTop();
+    setupScrollObserver();
+    initRecommendationSocket();
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
-
+    loadCategories();
+    
     // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
+
+    // Benchmarking dashboard
+    initBenchmarkingDashboard();
 }
+
 document.addEventListener('DOMContentLoaded', init);
+
+// ── Language Toggle ─────────────────────────────────────────────────
+let currentLang = 'EN';
+
+function toggleLanguage() {
+    currentLang = currentLang === 'EN' ? 'HI' : 'EN';
+    const toggleBtn = document.getElementById('lang-toggle');
+    if(toggleBtn) toggleBtn.textContent = currentLang;
+    
+    const searchInput = document.getElementById('search-input');
+    const hindiInd = document.getElementById('hindi-indicator');
+    const shortcut = document.getElementById('search-shortcut');
+
+    if (currentLang === 'HI') {
+        if(searchInput) searchInput.placeholder = 'हिंदी में खोजें...';
+        if(hindiInd) hindiInd.style.display = 'inline';
+        if(shortcut) shortcut.style.display = 'none';
+    } else {
+        if(searchInput) searchInput.placeholder = 'Search products...';
+        if(hindiInd) hindiInd.style.display = 'none';
+        if(shortcut) shortcut.style.display = 'block';
+    }
+}
