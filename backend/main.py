@@ -177,6 +177,25 @@ models = {
 }
 
 
+class RealtimeConnectionHub:
+    def __init__(self):
+        self.active_connections = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            await connection.send_json(message)
+
+realtime_hub = RealtimeConnectionHub()
+
+
 class WeightsUpdate(BaseModel):
     alpha: float = 0.4
     beta: float = 0.35
@@ -565,6 +584,53 @@ def get_recommendations(
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
+
+
+@app.websocket("/ws/recommendations")
+async def websocket_recommendations(websocket: WebSocket):
+    await realtime_hub.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            item_title = data.get("item_title")
+            top_n = data.get("top_n", 10)
+            explain = data.get("explain", False)
+            user_id = data.get("user_id")
+
+            if not models.get("ready") or not models.get("hybrid"):
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Models not built yet."
+                })
+                continue
+
+            recs = models["hybrid"].recommend(item_title, user_id=user_id, top_n=top_n, explain=explain)
+            await websocket.send_json({
+                "type": "recommendations",
+                "query_item": item_title,
+                "recommendations": recs
+            })
+    except WebSocketDisconnect:
+        realtime_hub.disconnect(websocket)
+    except Exception as e:
+        logger.error("WebSocket error: %s", e)
+        try:
+            realtime_hub.disconnect(websocket)
+        except Exception:
+            pass
+
+
+@app.post("/api/realtime/behavior")
+def realtime_behavior(req: RealtimeRecommendationRequest):
+    if not models.get("ready") or not models.get("hybrid"):
+        raise HTTPException(status_code=400, detail="Models not built yet. Train the models first.")
+
+    recs = models["hybrid"].recommend(req.item_title, top_n=req.top_n, explain=req.explain)
+    return {
+        "type": "recommendations",
+        "query_item": req.item_title,
+        "recommendations": recs
+    }
 
 
 def _json_scalar(value):
