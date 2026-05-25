@@ -11,7 +11,9 @@ import math
 import secrets
 from collections import deque, Counter
 from threading import Lock
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -466,7 +468,8 @@ def search_items(
         response.headers["x-ratelimit-remaining"] = str(remaining)
         response.headers["x-ratelimit-reset"] = str(reset_time)
 
-    cache_key = _cache_key("search", q, limit, offset)
+    query = _normalize_search_query(q)
+    cache_key = _cache_key("search", query, limit, offset)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
@@ -660,16 +663,49 @@ def build_models():
     }
 
 
-# ── Recommendations ───────────────────────────────────────────────────
+# ── Recommendations (with rate limiting) ──────────────────────────────────
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(
+    request: Request,               # added for rate limiting
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
     top_n: int = 10,
     explain: bool = Query(False),
 ):
+    # ---- Rate limiting (60 requests per minute per IP) ----
+    try:
+        rate_limit = int(os.environ.get("RATE_LIMIT_RECOMMEND_PER_MIN", "60"))
+    except ValueError:
+        rate_limit = 60
+
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    now = time.time()
+
+    with _rate_limit_lock:
+        bucket = _rate_limit_buckets.setdefault(client_ip, {"timestamps": []})
+        bucket["timestamps"] = [t for t in bucket["timestamps"] if now - t < 60]
+
+        if len(bucket["timestamps"]) >= rate_limit:
+            reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
+            reset_time = max(0, reset_time)
+            response.headers["Retry-After"] = str(reset_time)
+            raise HTTPException(
+                status_code=429,
+                detail="Too Many Requests. Please try again later.",
+                headers={"Retry-After": str(reset_time)}
+            )
+
+        bucket["timestamps"].append(now)
+        remaining = rate_limit - len(bucket["timestamps"])
+        reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
+        reset_time = max(0, reset_time)
+        response.headers["x-ratelimit-limit"] = str(rate_limit)
+        response.headers["x-ratelimit-remaining"] = str(remaining)
+        response.headers["x-ratelimit-reset"] = str(reset_time)
+
+    # ---- Original logic ----
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     query_title = title or item_title
