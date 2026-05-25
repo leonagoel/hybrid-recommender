@@ -99,7 +99,7 @@ class HybridRecommender:
             return [0.5] * len(scores)
         return [(v - mn) / (mx - mn) for v in scores]
 
-    def recommend(self, title, user_id=None, top_n=10, explain=False):
+    def recommend(self, title, user_id=None, top_n=10, explain=False, weights=None):
         """
         Get hybrid recommendations for a given item title.
         Returns list of dicts sorted by hybrid_score.
@@ -146,7 +146,12 @@ class HybridRecommender:
         sentiment_scores = [(it['raw_sentiment'] + 1) / 2 for it in items]
 
         # 5. Determine active weights dynamically
-        a, b, g = self.alpha, self.beta, self.gamma
+        if weights is not None:
+            a = weights.get("alpha", self.alpha)
+            b = weights.get("beta", self.beta)
+            g = weights.get("gamma", self.gamma)
+        else:
+            a, b, g = self.alpha, self.beta, self.gamma
         
         if user_id and self.collab_model and user_id in self.collab_model._user_to_idx:
             user_interacts = len(self.collab_model.df[self.collab_model.df['user_id'] == user_id])
