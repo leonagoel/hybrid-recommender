@@ -280,4 +280,27 @@ export function hideLoadingBar() {
       if (bar) bar.style.display = 'none';
     }, 200);
   }, 200);
+// ── Skeleton Loading Cards ────────────────────────────────────────────────────
+
+export function showSkeletonCards(count = 8) {
+    const grid = document.getElementById('product-grid');
+    if (!grid) return;
+    grid.innerHTML = Array.from({ length: count }, () => `
+        <div class="product-card skeleton-card">
+            <div class="skeleton skeleton-image"></div>
+            <div class="product-info">
+                <div class="skeleton skeleton-title"></div>
+                <div class="skeleton skeleton-text"></div>
+                <div class="skeleton skeleton-text short"></div>
+                <div class="skeleton-footer">
+                    <div class="skeleton skeleton-price"></div>
+                    <div class="skeleton skeleton-button"></div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+export function hideSkeletonCards() {
+    document.querySelectorAll('.skeleton-card').forEach(el => el.remove());
 }
