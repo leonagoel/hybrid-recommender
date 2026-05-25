@@ -52,6 +52,22 @@ python scripts/seed_mock_data.py --users 50 --purchases 2000  # Custom amounts
 ```bash
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+## Windows Local Setup (Recommended)
+
+If you encounter dependency issues on Windows, it is recommended to create a clean conda environment.
+
+### Create Environment
+
+```bash
+conda create -n hybridrec python=3.10 -y
+conda activate hybridrec
+
+pip install -r requirements.txt
+pip install sentence-transformers
+
+## Run your streamlit app easy way to run the app 
+$env:PYTHONPATH="."
+streamlit run src/api/app.py
 
 ### 6. Run with Docker
 Build the container image from the repository root:
@@ -101,4 +117,4 @@ hybrid-recommender/
 - **Recommendations:** Hybrid (Content + Collaborative + Sentiment)
 - **Upload:** CSV and JSON format support
 - **UI:** Amazon-like modern design with animations
-- **Streamlit UI:** Upload a CSV locally, build models, and get recommendations — no Supabase or server setup needed (`streamlit run app.py`)
+- **Streamlit UI:** Upload a CSV locally, build models, and get recommendations — no Supabase or server setup needed (`streamlit run src/api/app.py`)

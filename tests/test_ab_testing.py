@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from ab_testing import (
+from src.evaluation.ab_testing import (
     DEFAULT_EXPERIMENT_ID,
     DEFAULT_VARIANTS,
     ExperimentVariant,
@@ -17,9 +17,9 @@ from ab_testing import (
     run_recommendation_experiment,
     summarize_variant_metrics,
 )
-from collaborative_model import CollaborativeRecommender
-from content_model import ContentRecommender
-from hybrid_model import HybridRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender
 
 
 @pytest.fixture

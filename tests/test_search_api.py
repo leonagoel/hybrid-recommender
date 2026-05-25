@@ -132,3 +132,38 @@ def test_search_query_falls_back_to_title_match_when_rpc_fails(monkeypatch):
     assert payload["results"][0]["title"] == "Laptop Stand"
     assert payload["results"][0]["rank"] == 0.0
     assert ("ilike", ("title", "%stand%"), {}) in fake_supabase.table_query.calls
+
+
+def test_search_rejects_oversized_query(monkeypatch):
+    fake_supabase = FakeSupabase()
+    monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
+    client = TestClient(main.app)
+
+    response = client.get("/api/search", params={"q": "a" * (main.MAX_SEARCH_QUERY_LENGTH + 1)})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Search query must be 120 characters or fewer."
+    assert fake_supabase.rpc_calls == []
+
+
+def test_search_normalizes_query_before_cache_and_rpc(monkeypatch):
+    fake_supabase = FakeSupabase(rpc_data=PRODUCTS[:1])
+    monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
+    client = TestClient(main.app)
+
+    response = client.get("/api/search", params={"q": "  wireless   headphones  "})
+
+    assert response.status_code == 200
+    assert response.json()["query"] == "wireless headphones"
+    assert fake_supabase.rpc_calls[0][1]["query_text"] == "wireless headphones"
+
+
+def test_search_fallback_escapes_like_wildcards(monkeypatch):
+    fake_supabase = FakeSupabase(table_data=PRODUCTS[1:], rpc_error=RuntimeError("rpc unavailable"))
+    monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
+    client = TestClient(main.app)
+
+    response = client.get("/api/search", params={"q": r"50%_off\sale"})
+
+    assert response.status_code == 200
+    assert ("ilike", ("title", r"%50\%\_off\\sale%"), {}) in fake_supabase.table_query.calls

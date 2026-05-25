@@ -10,12 +10,13 @@ import os
 import sys
 import random
 import argparse
+import secrets
 import string
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from tqdm import tqdm
-from db import get_supabase_admin
+from src.data.db import get_supabase_admin
 
 
 FIRST_NAMES = [
@@ -45,6 +46,24 @@ REVIEW_TEMPLATES = [
 ]
 
 
+def generate_mock_password(length=24):
+    """Generate a high-entropy password for throwaway mock accounts."""
+    if length < 16:
+        raise ValueError("Mock user passwords must be at least 16 characters.")
+
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
+    required = [
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%^&*()-_=+"),
+    ]
+    remaining = [secrets.choice(alphabet) for _ in range(length - len(required))]
+    chars = required + remaining
+    secrets.SystemRandom().shuffle(chars)
+    return ''.join(chars)
+
+
 def seed_mock_data(num_users=100, num_purchases=5000):
     sb = get_supabase_admin()
 
@@ -72,7 +91,7 @@ def seed_mock_data(num_users=100, num_purchases=5000):
         name = random.choice(FIRST_NAMES)
         suffix = ''.join(random.choices(string.digits, k=4))
         email = f"mock_{name.lower()}_{suffix}@demo.hybridrec.test"
-        password = f"MockUser{suffix}!{random.randint(100,999)}"
+        password = generate_mock_password()
         try:
             user_resp = sb.auth.admin.create_user({
                 "email": email,

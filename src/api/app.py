@@ -68,7 +68,7 @@ weights = {
 
 total_weight = sum(weights.values())
 
-st.markdown("###Live Normalized Weight Preview")
+st.markdown("### Live Normalized Weight Preview")
 
 if total_weight <= 0:
     st.warning("All weights are set to zero. Please increase at least one weight to see the normalized distribution.")
