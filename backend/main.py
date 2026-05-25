@@ -8,6 +8,7 @@ import io
 import time
 import logging
 import math
+import secrets
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone
@@ -28,7 +29,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Any, Optional
 from dotenv import load_dotenv
 
@@ -56,6 +57,8 @@ RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
 CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
+MAX_SEARCH_QUERY_LENGTH = 120
 _response_cache: dict = {}
 
 
@@ -89,9 +92,50 @@ def _clear_response_cache() -> None:
     _response_cache.clear()
 
 
+def _normalize_search_query(query: str) -> str:
+    normalized = " ".join((query or "").split())
+    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.",
+        )
+    return normalized
+
+
+def _escape_like_pattern(value: str) -> str:
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
 def _set_cache_headers(response: Response, status: str) -> None:
     response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
     response.headers["X-Cache"] = status
+
+
+def _extract_bearer_token(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def _require_admin_access(request: Request) -> None:
+    expected_token = os.environ.get("ADMIN_API_TOKEN", "").strip()
+    if not expected_token:
+        return
+
+    provided_token = (
+        request.headers.get("x-admin-token", "").strip()
+        or _extract_bearer_token(request.headers.get("authorization"))
+    )
+    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
+        raise HTTPException(status_code=401, detail="Admin token required.")
 
 
 # CORS
@@ -178,12 +222,16 @@ models = {
 
 
 class WeightsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     alpha: float = 0.4
     beta: float = 0.35
     gamma: float = 0.25
 
 
 class PurchaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     product_id: int
     rating: float = 0.0
@@ -191,12 +239,16 @@ class PurchaseCreate(BaseModel):
 
 
 class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     item: str
     feedback: str
 
 
 class RealtimeRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     item_title: str
     top_n: int = 10
     explain: bool = False
@@ -240,7 +292,8 @@ def status():
 
 # ── Dashboard ─────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
-def dashboard():
+def dashboard(request: Request):
+    _require_admin_access(request)
     sb = get_supabase()
     try:
         product_count = sb.table('products').select('id', count='exact').limit(0).execute().count or 0
@@ -257,9 +310,26 @@ def dashboard():
     total_users = 0
     purchase_counts = Counter()
     try:
-        purchase_rows = sb.table('purchases').select('user_id, product_id').limit(50000).execute().data or []
-        total_users = len({r['user_id'] for r in purchase_rows if r.get('user_id')})
-        purchase_counts = Counter(r['product_id'] for r in purchase_rows if r.get('product_id') is not None)
+
+        user_rows = sb.table('purchases') \
+          .select('user_id') \
+          .execute().data or []
+
+        total_users = len({
+          row['user_id']
+          for row in user_rows
+          if row.get('user_id')
+        })
+
+        purchase_rows = sb.table('purchases') \
+          .select('product_id') \
+          .limit(50000).execute().data or []
+
+        purchase_counts = Counter(
+          r['product_id']
+          for r in purchase_rows
+          if r.get('product_id') is not None
+        )
     except Exception as e:
         logger.warning("Dashboard: purchases scan failed: %s", e)
 
@@ -322,22 +392,24 @@ def search_items(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    cache_key = _cache_key("search", q, limit, offset)
+    query = _normalize_search_query(q)
+    cache_key = _cache_key("search", query, limit, offset)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
     sb = get_supabase()
-    if q.strip():
+    if query:
         try:
             result = sb.rpc('search_products', {
-                'query_text': q.strip(), 'match_count': limit, 'offset_val': offset,
+                'query_text': query, 'match_count': limit, 'offset_val': offset,
             }).execute()
             products = result.data or []
         except Exception as e:
-            logger.warning("FTS failed for '%s': %s", q.strip(), e)
-            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{q.strip()}%').order('rating', desc=True).limit(limit).execute()
+            logger.warning("FTS failed for '%s': %s", query, e)
+            escaped_query = _escape_like_pattern(query)
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{escaped_query}%').order('rating', desc=True).limit(limit).execute()
             products = result.data or []
             for p in products:
                 p['rank'] = 0.0
@@ -355,7 +427,7 @@ def search_items(
             'review_count': p.get('review_count', 0), 'rank': p.get('rank', 0.0),
         })
 
-    payload = {"results": results, "total": len(results), "query": q, "is_fallback": not q.strip()}
+    payload = {"results": results, "total": len(results), "query": query, "is_fallback": not query}
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
@@ -368,11 +440,12 @@ def autocomplete_products(
     limit: int = Query(5, ge=1, le=10),
 ):
     sb = get_supabase()
-    query = q.strip()
+    query = _normalize_search_query(q)
     if not query:
         return {"suggestions": []}
     try:
-        result = sb.table('products').select('title').ilike('title', f'%{query}%').limit(limit).execute()
+        escaped_query = _escape_like_pattern(query)
+        result = sb.table('products').select('title').ilike('title', f'%{escaped_query}%').limit(limit).execute()
         suggestions = []
         seen = set()
         for item in result.data or []:
@@ -395,6 +468,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         raise HTTPException(400, "Only CSV and JSON files are supported.")
     try:
         contents = await file.read()
+        _validate_upload_bytes(filename, ext, contents)
         buf = io.BytesIO(contents)
         raw_df = read_file(buf, file_format=ext.replace('.', ''))
         adapted_df, meta = adapt_data(raw_df)
@@ -701,7 +775,126 @@ def create_purchase(data: PurchaseCreate):
     }).execute()
     _clear_response_cache()
     return {"purchase": result.data}
+# ── Trending Products ───────────────────────────────────────────────
 
+TRENDING_CACHE = {
+    "data": None,
+    "timestamp": None,
+}
+
+
+@app.get("/api/trending")
+def get_trending_products(days: int = 7, limit: int = 10):
+    """
+    Get trending products based on recent interactions.
+    """
+
+    # Cache for 1 hour
+    now = datetime.utcnow()
+
+    if (
+        TRENDING_CACHE["data"] is not None and
+        TRENDING_CACHE["timestamp"] is not None and
+        (now - TRENDING_CACHE["timestamp"]).seconds < 3600
+    ):
+        return TRENDING_CACHE["data"]
+
+    sb = get_supabase()
+
+    cutoff_date = (now - timedelta(days=days)).isoformat()
+
+    result = sb.table("purchases") \
+        .select("""
+            product_id,
+            rating,
+            purchased_at,
+            products (
+                id,
+                title,
+                category,
+                rating,
+                avg_sentiment,
+                review_count
+            )
+        """) \
+        .gte("purchased_at", cutoff_date) \
+        .execute()
+
+    rows = result.data or []
+
+    if not rows:
+        return {"results": []}
+
+    from collections import defaultdict
+
+    stats = defaultdict(lambda: {
+        "count": 0,
+        "ratings": [],
+        "product": None,
+    })
+
+    for row in rows:
+        product = row.get("products")
+
+        if not product:
+            continue
+
+        pid = product["id"]
+
+        stats[pid]["count"] += 1
+        stats[pid]["ratings"].append(row.get("rating", 0))
+        stats[pid]["product"] = product
+
+    # Bayesian ranking
+    ranked = []
+
+    global_avg = sum(
+        sum(v["ratings"]) / max(len(v["ratings"]), 1)
+        for v in stats.values()
+    ) / max(len(stats), 1)
+
+    m = 5  # minimum votes threshold
+
+    for pid, data in stats.items():
+        count = data["count"]
+        avg_rating = (
+            sum(data["ratings"]) / max(len(data["ratings"]), 1)
+        )
+
+        bayesian_rating = (
+            (count / (count + m)) * avg_rating
+            + (m / (count + m)) * global_avg
+        )
+
+        score = bayesian_rating * count
+
+        ranked.append({
+            "id": data["product"]["id"],
+            "title": data["product"]["title"],
+            "category": data["product"].get("category", ""),
+            "rating": data["product"].get("rating", 0),
+            "avg_sentiment": data["product"].get("avg_sentiment", 0),
+            "review_count": data["product"].get("review_count", 0),
+            "interaction_count": count,
+            "bayesian_rating": round(bayesian_rating, 3),
+            "trending_score": round(score, 3),
+        })
+
+    ranked.sort(
+        key=lambda x: x["trending_score"],
+        reverse=True
+    )
+
+    response = {
+        "results": ranked[:limit],
+        "days": days,
+        "limit": limit,
+    }
+
+    TRENDING_CACHE["data"] = response
+    TRENDING_CACHE["timestamp"] = now
+
+    return response
 
 # ── Feedback ──────────────────────────────────────────────────────────
 @app.post("/api/feedback")

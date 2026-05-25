@@ -54,6 +54,11 @@
                 <span id="hindi-indicator" style="display:none; color: #888; font-size: 12px;">Searching in Hindi</span>
                 <span class="search-shortcut" id="search-shortcut">Press / to search</span>
                 <div class="search-dropdown" id="search-dropdown"></div>
+                <div class="typing-indicator" id="typing-indicator" hidden>
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
             </div>
             <div class="header__actions">
                 <a href="/static/wishlist.html" class="btn btn--outline btn--sm wishlist-btn">
@@ -73,6 +78,18 @@
             </div>
         </div>
     </header>
+
+    <!-- Filter Chips -->
+    <div class="filter-chips-wrapper">
+        <div class="filter-chips" id="filter-chips">
+            <button class="chip active" data-filter="all">All</button>
+            <button class="chip" data-filter="category:Electronics">Electronics</button>
+            <button class="chip" data-filter="category:Clothing">Clothing</button>
+            <button class="chip" data-filter="rating:top-rated">⭐ Top Rated</button>
+            <button class="chip" data-filter="sentiment:positive">😊 Positive Sentiment</button>
+            <button class="chip" data-filter="special:trending">🔥 Trending</button>
+        </div>
+    </div>
 
     <!-- Auth Modal -->
     <div class="modal-overlay" id="auth-modal" hidden>
@@ -122,6 +139,12 @@
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                     </svg>
                     Upload Dataset
+                </button>
+                <button id="download-btn" hidden>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    Download Dataset
                 </button>
                 <button class="btn btn--primary btn--sm" id="build-btn">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -204,6 +227,15 @@
             <div class="heatmap-container" id="heatmap-container"></div>
         </section>
 
+        <!-- Trending Section -->
+    <section class="products-section" id="trending-section">
+        <div class="section-header">
+            <h2 class="section-title">🔥 Trending Now</h2>
+        </div>
+
+        <div class="product-grid" id="trending-grid"></div>
+    </section>
+
         <!-- Product Grid -->
         <section class="products-section" id="products-section">
             <div class="section-header">
@@ -222,7 +254,7 @@
                 <span class="infinite-scroll-end__text">No more products</span>
             </div>
         </section>
-
+        <div class="product-detail" id="product-detail"></div>
         <!-- Skeleton Loader -->
         <div class="skeleton-grid" id="skeleton-loader">
             <div class="skeleton-card"><div class="skeleton-image"></div><div class="skeleton-line w70"></div><div class="skeleton-line w50"></div><div class="skeleton-line w90"></div></div>
@@ -268,5 +300,37 @@
 
     <script src="app.js"></script>
     <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
+  </div>
+</footer>
+</div>
+<!-- Product Details Modal -->
+<div class="modal-overlay" id="product-modal" hidden>
+    <div class="product-modal">
+        <button class="modal__close" id="product-modal-close">&times;</button>
+
+        <div class="product-modal__content">
+            <h2 id="modal-product-title"></h2>
+
+            <div class="product-meta">
+                <span id="modal-product-category"></span>
+                <span id="modal-product-rating"></span>
+                <span id="modal-product-sentiment"></span>
+            </div>
+
+            <p id="modal-product-description"></p>
+
+            <div class="product-score">
+                Hybrid Score:
+                <span id="modal-product-score"></span>
+            </div>
+
+            <div class="modal-recommendations">
+                <h3>Similar Recommendations</h3>
+                <ul id="modal-recommendations-list"></ul>
+            </div>
+        </div>
+    </div>
+</div>
+    <script src="/static/app.js"></script>
 </body>
 </html>
