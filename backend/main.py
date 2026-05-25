@@ -26,6 +26,9 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
+from datetime import datetime, timedelta
+from functools import lru_cache
+
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
@@ -441,7 +444,126 @@ def create_purchase(data: PurchaseCreate):
         'review_text': data.review_text[:1000],
     }).execute()
     return {"purchase": result.data}
+# ── Trending Products ───────────────────────────────────────────────
 
+TRENDING_CACHE = {
+    "data": None,
+    "timestamp": None,
+}
+
+
+@app.get("/api/trending")
+def get_trending_products(days: int = 7, limit: int = 10):
+    """
+    Get trending products based on recent interactions.
+    """
+
+    # Cache for 1 hour
+    now = datetime.utcnow()
+
+    if (
+        TRENDING_CACHE["data"] is not None and
+        TRENDING_CACHE["timestamp"] is not None and
+        (now - TRENDING_CACHE["timestamp"]).seconds < 3600
+    ):
+        return TRENDING_CACHE["data"]
+
+    sb = get_supabase()
+
+    cutoff_date = (now - timedelta(days=days)).isoformat()
+
+    result = sb.table("purchases") \
+        .select("""
+            product_id,
+            rating,
+            purchased_at,
+            products (
+                id,
+                title,
+                category,
+                rating,
+                avg_sentiment,
+                review_count
+            )
+        """) \
+        .gte("purchased_at", cutoff_date) \
+        .execute()
+
+    rows = result.data or []
+
+    if not rows:
+        return {"results": []}
+
+    from collections import defaultdict
+
+    stats = defaultdict(lambda: {
+        "count": 0,
+        "ratings": [],
+        "product": None,
+    })
+
+    for row in rows:
+        product = row.get("products")
+
+        if not product:
+            continue
+
+        pid = product["id"]
+
+        stats[pid]["count"] += 1
+        stats[pid]["ratings"].append(row.get("rating", 0))
+        stats[pid]["product"] = product
+
+    # Bayesian ranking
+    ranked = []
+
+    global_avg = sum(
+        sum(v["ratings"]) / max(len(v["ratings"]), 1)
+        for v in stats.values()
+    ) / max(len(stats), 1)
+
+    m = 5  # minimum votes threshold
+
+    for pid, data in stats.items():
+        count = data["count"]
+        avg_rating = (
+            sum(data["ratings"]) / max(len(data["ratings"]), 1)
+        )
+
+        bayesian_rating = (
+            (count / (count + m)) * avg_rating
+            + (m / (count + m)) * global_avg
+        )
+
+        score = bayesian_rating * count
+
+        ranked.append({
+            "id": data["product"]["id"],
+            "title": data["product"]["title"],
+            "category": data["product"].get("category", ""),
+            "rating": data["product"].get("rating", 0),
+            "avg_sentiment": data["product"].get("avg_sentiment", 0),
+            "review_count": data["product"].get("review_count", 0),
+            "interaction_count": count,
+            "bayesian_rating": round(bayesian_rating, 3),
+            "trending_score": round(score, 3),
+        })
+
+    ranked.sort(
+        key=lambda x: x["trending_score"],
+        reverse=True
+    )
+
+    response = {
+        "results": ranked[:limit],
+        "days": days,
+        "limit": limit,
+    }
+
+    TRENDING_CACHE["data"] = response
+    TRENDING_CACHE["timestamp"] = now
+
+    return response
 
 # ── Frontend Serving ────────────────────────────────────────────────
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')

@@ -73,6 +73,7 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    trendingGrid: $('trending-grid'),
 };
 
 // ── Utilities ───────────────────────────────────────────────────────
@@ -220,6 +221,47 @@ async function handleAuth(e) {
     } finally {
         els.authSubmit.disabled = false;
         els.authSubmit.textContent = state.isAuthSignUp ? 'Sign Up' : 'Sign In';
+    }
+}
+
+async function loadTrendingProducts() {
+    try {
+        const data = await API.get('/api/trending?days=7&limit=10');
+
+        const products = data.results || [];
+
+        if (!products.length) return;
+
+        els.trendingGrid.innerHTML = '';
+
+        const fragment = document.createDocumentFragment();
+
+        products.forEach((p) => {
+            const card = document.createElement('div');
+
+            card.className = 'product-card';
+
+            card.innerHTML = `
+                <div class="product-card__image">
+                    ${categoryIcon(p.category)}
+                </div>
+
+                <div class="product-card__body">
+                    <h3 class="product-card__title">${p.title}</h3>
+
+                    <p class="product-card__desc">
+                        Trending Score: ${p.trending_score}
+                    </p>
+                </div>
+            `;
+
+            fragment.appendChild(card);
+        });
+
+        els.trendingGrid.appendChild(fragment);
+
+    } catch (err) {
+        console.warn('Trending load failed:', err);
     }
 }
 
@@ -651,6 +693,7 @@ async function init() {
     // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
+    loadTrendingProducts();
 }
 
 document.addEventListener('DOMContentLoaded', init);
