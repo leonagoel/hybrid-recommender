@@ -213,6 +213,12 @@ def run_evaluation(
 
     df = df.dropna(subset=["title"]).reset_index(drop=True)
 
+    # --- auto-analyze sentiment if missing ---
+    if "sentiment_score" not in df.columns:
+        from nlp_engine import batch_analyze
+        text_col = "description" if "description" in df.columns else ("review_text" if "review_text" in df.columns else "title")
+        df = batch_analyze(df, text_col=text_col)
+
     # --- build/load matrices ---
     # Try to load pre-built matrices from disk; fall back to building on-the-fly
     tfidf_matrix = _load_or_build_tfidf(df)
