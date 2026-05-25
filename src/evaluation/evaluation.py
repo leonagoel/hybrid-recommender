@@ -23,6 +23,7 @@ import argparse
 import json
 import math
 import os
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -36,6 +37,7 @@ Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
 
 MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
 ResultsDict = dict[str, MetricsDict]    # {"content": {...}, "hybrid": {...}, ...}
+UNSAFE_CACHE_SUFFIXES = {".pkl", ".pickle"}
 
 
 # ---------------------------------------------------------------------------
@@ -287,12 +289,13 @@ def run_evaluation(
 
 def _load_or_build_tfidf(df: pd.DataFrame):
     """Load TF-IDF matrix from disk if available, else build from scratch."""
-    import pickle
-
-    cache_path = os.getenv("TFIDF_CACHE", "models/tfidf_matrix.pkl")
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
+    cache_path = Path(os.getenv("TFIDF_CACHE", "models/tfidf_matrix.npz"))
+    if cache_path.exists():
+        _reject_unsafe_cache(cache_path)
+        if cache_path.suffix != ".npz":
+            raise RuntimeError("TF-IDF cache must use the safe .npz sparse matrix format.")
+        from scipy import sparse
+        return sparse.load_npz(cache_path)
 
     # Build on-the-fly using title + category as text
     text_col = "title"
@@ -308,12 +311,12 @@ def _load_or_build_tfidf(df: pd.DataFrame):
 
 def _load_or_build_svd(df: pd.DataFrame):
     """Load SVD matrix from disk if available, else build from scratch."""
-    import pickle
-
-    cache_path = os.getenv("SVD_CACHE", "models/svd_matrix.pkl")
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
+    cache_path = Path(os.getenv("SVD_CACHE", "models/svd_matrix.npy"))
+    if cache_path.exists():
+        _reject_unsafe_cache(cache_path)
+        if cache_path.suffix != ".npy":
+            raise RuntimeError("SVD cache must use the safe .npy array format.")
+        return np.load(cache_path, allow_pickle=False)
 
     # Build rating matrix and decompose
     from sklearn.decomposition import TruncatedSVD
@@ -321,6 +324,14 @@ def _load_or_build_svd(df: pd.DataFrame):
     tfidf = _load_or_build_tfidf(df)
     svd = TruncatedSVD(n_components=min(50, tfidf.shape[1] - 1), random_state=42)
     return svd.fit_transform(tfidf)
+
+
+def _reject_unsafe_cache(cache_path: Path) -> None:
+    if cache_path.suffix.lower() in UNSAFE_CACHE_SUFFIXES:
+        raise RuntimeError(
+            f"Refusing to load unsafe pickle model cache '{cache_path}'. "
+            "Use .npz for TF-IDF caches or .npy for SVD caches."
+        )
 
 
 # ---------------------------------------------------------------------------
