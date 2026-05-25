@@ -3,8 +3,8 @@
 // Debounced FTS, global keyboard capture, category filter, pagination.
 // =============================================================================
 
-import { state, setState } from './state.js';
-import { renderProductCards, setLoadingState, showToast, renderPagination } from './ui.js';
+import { state, setState, addToSearchHistory } from './state.js';
+import { renderProductCards, setLoadingState, showToast, renderPagination, showLoadingBar, hideLoadingBar } from './ui.js';
 
 const DEBOUNCE_MS = 300;
 let _debounceTimer = null;
@@ -21,6 +21,7 @@ export async function runSearch(query, limit = 20) {
   const q = query.trim();
   setState({ lastQuery: q, isSearching: true });
   setLoadingState('search', true);
+  showLoadingBar();
 
   try {
     const params = new URLSearchParams({ q, limit });
@@ -33,6 +34,7 @@ export async function runSearch(query, limit = 20) {
     const results = data.results ?? data ?? [];
 
     setState({ searchResults: results, isSearching: false });
+    addToSearchHistory(q);   // <-- ADD SEARCH TO HISTORY
     renderProductCards(results, { context: 'search', query: q });
     renderPagination(1, data.total ?? results.length, state.perPage, loadProducts);
   } catch (err) {
@@ -41,6 +43,7 @@ export async function runSearch(query, limit = 20) {
     setState({ isSearching: false });
   } finally {
     setLoadingState('search', false);
+    hideLoadingBar();
   }
 }
 
@@ -48,6 +51,7 @@ export async function runSearch(query, limit = 20) {
 export async function loadProducts(page = 1) {
   setLoadingState('products', true);
   setState({ currentPage: page });
+  showLoadingBar();
 
   try {
     const params = new URLSearchParams({ page, per_page: state.perPage });
@@ -67,11 +71,13 @@ export async function loadProducts(page = 1) {
     console.error('[search]', err);
   } finally {
     setLoadingState('products', false);
+    hideLoadingBar();
   }
 }
 
 /** Fetch categories and populate the dropdown. */
 export async function loadCategories() {
+  showLoadingBar();
   try {
     const res  = await fetch('/api/categories');
     if (!res.ok) return;
@@ -81,6 +87,8 @@ export async function loadCategories() {
     _renderCategoryOptions(cats);
   } catch (err) {
     console.warn('[search] loadCategories:', err);
+  } finally {
+    hideLoadingBar();
   }
 }
 

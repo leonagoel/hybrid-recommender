@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from llm_explainer import LLMExplainer, get_explainer
+from src.model.llm_explainer import LLMExplainer, get_explainer
 
 
 class TestLLMExplainerInit:

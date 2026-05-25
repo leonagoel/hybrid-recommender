@@ -1,5 +1,5 @@
 import pandas as pd
-from collaborative_model import CollaborativeRecommender
+from src.model.collaborative_model import CollaborativeRecommender
 
 
 def sample_data():

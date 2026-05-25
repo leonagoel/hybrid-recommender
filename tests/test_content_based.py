@@ -10,7 +10,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from content_model import ContentRecommender
+from src.model.content_model import ContentRecommender
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from content_model import ContentRecommender
+from src.model.content_model import ContentRecommender
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────

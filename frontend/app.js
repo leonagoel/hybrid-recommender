@@ -90,6 +90,7 @@ const state = {
     scrollObserver: null,
     compareList: [],
     heatmapSelected: [],
+    activeChips: new Set(['all']),
     filters: {
         category: '',
         rating: '',
@@ -141,6 +142,16 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    productModal: $('product-modal'),
+    productModalClose: $('product-modal-close'),
+    modalProductTitle: $('modal-product-title'),
+    modalProductCategory: $('modal-product-category'),
+    modalProductRating: $('modal-product-rating'),
+    modalProductSentiment: $('modal-product-sentiment'),
+    modalProductDescription: $('modal-product-description'),
+    modalProductScore: $('modal-product-score'),
+    modalRecommendationsList: $('modal-recommendations-list'),
+  };
     categoryFilter: $('category-filter'),
     ratingFilter: $('rating-filter'),
     sentimentFilter: $('sentiment-filter'),
@@ -241,6 +252,18 @@ function renderStars(rating) {
     return html;
 }
 
+function formatReviewCount(count) {
+    if (!count || count === 0) {
+        return "No reviews yet";
+    }
+
+    if (count >= 1000) {
+        return `(${(count / 1000).toFixed(1)}k reviews)`;
+    }
+
+    return `(${count} reviews)`;
+}
+
 function sentimentBadge(score) {
     if (score > CONFIG.SENTIMENT_POSITIVE) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
     if (score < CONFIG.SENTIMENT_NEGATIVE) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
@@ -248,6 +271,13 @@ function sentimentBadge(score) {
 }
 
 function applyFilters(products) {
+    // Pre-calculate chip states to avoid recomputing for every product
+    const hasAll = state.activeChips.has('all');
+    const activeCategories = Array.from(state.activeChips).filter(c => c.startsWith('category:')).map(c => c.split(':')[1]);
+    const hasTopRated = state.activeChips.has('rating:top-rated');
+    const hasPositive = state.activeChips.has('sentiment:positive');
+    const hasTrending = state.activeChips.has('special:trending');
+
     return products.filter((p) => {
 
         const matchesCategory =
@@ -270,11 +300,26 @@ function applyFilters(products) {
             !state.filters.sentiment ||
             sentiment === state.filters.sentiment;
 
-        return (
-            matchesCategory &&
-            matchesRating &&
-            matchesSentiment
-        );
+        let traditionalMatch = matchesCategory && matchesRating && matchesSentiment;
+
+        // Chip logic
+        if (hasAll) {
+            return traditionalMatch;
+        }
+
+        let pass = true;
+        
+        // Categories OR logic
+        if (activeCategories.length > 0) {
+            if (!activeCategories.includes(p.category)) pass = false;
+        }
+
+        // Ratings & Sentiments AND logic
+        if (hasTopRated && (p.rating || 0) < 4.0) pass = false;
+        if (hasPositive && sentiment !== 'positive') pass = false;
+        if (hasTrending && (p.rating || 0) < 4.2) pass = false;
+
+        return traditionalMatch && pass;
     });
 }
 
@@ -618,6 +663,7 @@ async function loadProducts(append = false) {
 
     if (!append) {
         els.productGrid.innerHTML = '';
+        showSkeletons(els.productGrid, 8);
         els.skeletonLoader.hidden = false;
         els.infiniteEnd.hidden = true;
         state.page = 1;
@@ -1206,7 +1252,76 @@ async function handleWeightChange() {
     } catch {}
 }
 
-function populateCategoryFilter(products) {
+async function openProductModal(product) {
+    els.modalProductTitle.textContent = product.title || 'Untitled';
+
+    els.modalProductCategory.textContent =
+        `Category: ${product.category || 'Unknown'}`;
+
+    els.modalProductRating.textContent =
+        `Rating: ${(product.rating || 0).toFixed(1)}`;
+
+    els.modalProductSentiment.textContent =
+        `Sentiment: ${(product.avg_sentiment || 0).toFixed(2)}`;
+
+    els.modalProductDescription.textContent =
+        product.description || 'No description available.';
+
+    els.modalProductScore.textContent =
+        (product.hybrid_score || 0).toFixed(3);
+
+    els.modalRecommendationsList.innerHTML =
+        '<li>Loading recommendations...</li>';
+
+    els.productModal.hidden = false;
+
+    // Fetch top recommendations
+    try {
+        const data = await API.get(
+            `/api/recommend/${encodeURIComponent(product.title)}?top_n=5`
+        );
+
+        const recs = data.recommendations || [];
+
+        els.modalRecommendationsList.innerHTML = recs.map((r) => `
+            <li>${r.title}</li>
+        `).join('');
+    } catch {
+        els.modalRecommendationsList.innerHTML =
+            '<li>No recommendations available.</li>';
+    }
+}
+
+function closeProductModal() {
+    els.productModal.hidden = true;
+}
+
+// ── API Helpers ─────────────────────────────────────────────────────
+const API = {
+    async get(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    },
+    async post(url, data) {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    },
+    async put(url, data) {
+        const res = await fetch(url, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    },
+};
 
     const categories = [...new Set(
         products
@@ -1399,61 +1514,28 @@ function setupScrollObserver() {
     state.scrollObserver.observe(els.scrollSentinel);
 }
 
-function destroyScrollObserver() {
-    if (state.scrollObserver) {
-        state.scrollObserver.disconnect();
-        state.scrollObserver = null;
-    }
-}
-
-function addToSearchHistory(query) {
-    if (!state.searchHistory) state.searchHistory = [];
-    state.searchHistory = [query, ...state.searchHistory.filter(q => q !== query)].slice(0, 10);
-    renderSearchHistory();
-}
-
-function renderSearchHistory() {
-    if (!state.searchHistory || !state.searchHistory.length) {
-        els.searchHistory.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">No search history</div>';
+// ── Search ──────────────────────────────────────────────────────────
+async function handleSearch(query) {
+    if (!query || query.length < 1) {
+        els.typingIndicator.hidden = true;
+        closeSearchDropdown();
         return;
     }
 
-    els.searchHistory.innerHTML = `
-        <div class="search-history__list">
-            ${state.searchHistory.map(query => `
-                <div class="search-history__item" data-query="${query}">
-                    <span style="font-size:14px;">🕐</span>
-                    <span>${query}</span>
-                </div>
-            `).join('')}
-        </div>
-        <button id="clear-history-btn" class="btn btn--link" style="width:100%;padding:12px;border-top:1px solid var(--border);border-radius:0;font-size:12px;">
-            Clear History
-        </button>
-    `;
-    
-    els.searchHistory.classList.add('active');
-
-    // Click history item
-    els.searchHistory.querySelectorAll('.search-history__item')
-        .forEach((el) => {
-            el.addEventListener('click', () => {
-                const query = el.dataset.query;
-                els.searchInput.value = query;
-                loadSearchResults(query);
-                handleSearch(query);
-            });
-        });
-
-    // Clear history
-    const clearBtn = document.getElementById('clear-history-btn');
-
-    if (clearBtn) {
-        clearBtn.addEventListener('click', () => {
-            state.searchHistory = [];
-            renderSearchHistory();
-        });
-    }
+    clearTimeout(state.searchTimer);
+    els.typingIndicator.hidden = false;
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
+            state.searchResults = data.results || [];
+            state.selectedSearchIdx = -1;
+            renderSearchDropdown(state.searchResults, query);
+            els.typingIndicator.hidden = true;
+        } catch {
+            closeSearchDropdown();
+            els.typingIndicator.hidden = true;
+        }
+    }, 300);
 }
 
 function renderSearchDropdown(results, query) {
@@ -1533,7 +1615,7 @@ function handleSearchKeydown(e) {
 async function loadProducts(append = false) {
     if (!append) {
         els.productGrid.innerHTML = '';
-        els.skeletonLoader.hidden = false;
+        els.skeletonLoader.hidden = true;
         state.page = 1;
     }
 
@@ -1576,6 +1658,7 @@ async function loadSearchResults(query) {
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
         renderProducts(products, false);
+        els.searchInput.select();
         els.productGrid.classList.remove('fade-in');
 
         requestAnimationFrame(() => {
@@ -1605,7 +1688,11 @@ function renderProducts(products, append) {
         card.style.animationDelay = `${i * 50}ms`;
         card.innerHTML = `
             <div class="product-card__image">
-                ${categoryIcon(p.category)}
+            ${
+                !p.image || p.image === 'undefined'
+                ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
+                : `<img src="${p.image}" alt="${p.title}" class="product-image" />`
+             }
             </div>
             <div class="product-card__body">
                 ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
@@ -1615,6 +1702,9 @@ function renderProducts(products, append) {
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
                         <span class="rating-value">${(p.rating || 0).toFixed(1)}</span>
+                    </div>
+                    <div class="product-review-count">
+                        ${formatReviewCount(p.review_count)}
                     </div>
                     ${sentimentBadge(p.avg_sentiment || 0)}
                 </div>
@@ -1635,7 +1725,7 @@ function renderProducts(products, append) {
         });
 
         card.addEventListener('click', () => {
-            loadRecommendations(p.title);
+            openProductModal(p);
         });
 
         fragment.appendChild(card);
@@ -1779,9 +1869,28 @@ async function handleWeightChange() {
     const b = parseInt(els.weightBeta.value);
     const g = parseInt(els.weightGamma.value);
 
+    // Save values to sessionStorage
+    sessionStorage.setItem('alpha', a);
+    sessionStorage.setItem('beta', b);
+    sessionStorage.setItem('gamma', g);
+
     try {
-        await API.put('/api/weights', { alpha: a / 100, beta: b / 100, gamma: g / 100 });
+        await API.put('/api/weights', {
+            alpha: a / 100,
+            beta: b / 100,
+            gamma: g / 100
+        });
     } catch {}
+}
+
+function loadSavedWeights() {
+    const alpha = sessionStorage.getItem('alpha') || 33;
+    const beta = sessionStorage.getItem('beta') || 33;
+    const gamma = sessionStorage.getItem('gamma') || 33;
+
+    els.weightAlpha.value = alpha;
+    els.weightBeta.value = beta;
+    els.weightGamma.value = gamma;
 }
 
 // ── Event Listeners ─────────────────────────────────────────────────
@@ -1830,6 +1939,23 @@ function bindEvents() {
         }
     });
 
+    // Product modal close button
+    els.productModalClose.addEventListener('click', closeProductModal);
+
+    // Close on outside click
+    els.productModal.addEventListener('click', (e) => {
+     if (e.target === els.productModal) {
+        closeProductModal();
+        }
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !els.productModal.hidden) {
+            closeProductModal();
+        }
+    });
+
     els.authForm.addEventListener('submit', handleAuth);
     els.authToggleBtn.addEventListener('click', toggleAuthMode);
     els.modalClose.addEventListener('click', () => { els.authModal.hidden = true; });
@@ -1867,7 +1993,10 @@ document.head.appendChild(spinStyle);
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
+    initDebugMode();
+    loadSavedWeights();
     initTypeToSearch();
+    initFilterChips();
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
@@ -1896,6 +2025,62 @@ async function loadCategories() {
     }
 }
 
+// Store previous scroll position
+let previousScrollPosition = 0;
+
+// Create back button dynamically
+const backButton = document.createElement("button");
+backButton.id = "backToResultsBtn";
+backButton.innerHTML = "← Back to Results";
+document.body.appendChild(backButton);
+
+// Hide initially
+backButton.style.display = "none";
+
+// Product grid container
+const productGrid = document.querySelector(".product-grid");
+
+// Example function when opening product detail
+function openProductDetail(productId) {
+    // Save current scroll position
+    previousScrollPosition = window.scrollY;
+
+    // Open detail logic
+    const detailView = document.querySelector(".product-detail");
+    detailView.classList.add("active");
+
+    // Show button
+    backButton.style.display = "flex";
+}
+
+// Close detail function
+function closeProductDetail() {
+    const detailView = document.querySelector(".product-detail");
+    detailView.classList.remove("active");
+
+    // Hide button
+    backButton.style.display = "none";
+
+    // Restore scroll position smoothly
+    window.scrollTo({
+        top: previousScrollPosition,
+        behavior: "smooth"
+    });
+}
+
+// Back button click
+backButton.addEventListener("click", () => {
+    closeProductDetail();
+});
+
+// Example existing product card click listeners
+document.querySelectorAll(".product-card").forEach(card => {
+    card.addEventListener("click", () => {
+        const productId = card.dataset.id;
+        openProductDetail(productId);
+    });
+});
+
 document.addEventListener('DOMContentLoaded', init);
 document.addEventListener('DOMContentLoaded', init);
 
@@ -1915,4 +2100,47 @@ function toggleLanguage() {
         document.getElementById('hindi-indicator').style.display = 'none';
         document.getElementById('search-shortcut').style.display = 'block';
     }
+}
+
+// -- Filter Chips ----------------------------------------------------
+function initFilterChips() {
+    const chipsContainer = document.getElementById('filter-chips');
+    if (!chipsContainer) return;
+
+    const chips = chipsContainer.querySelectorAll('.chip');
+    
+    chips.forEach(chip => {
+        chip.addEventListener('click', (e) => {
+            const filterVal = e.currentTarget.dataset.filter;
+            
+            if (filterVal === 'all') {
+                state.activeChips.clear();
+                state.activeChips.add('all');
+            } else {
+                state.activeChips.delete('all');
+                
+                if (state.activeChips.has(filterVal)) {
+                    state.activeChips.delete(filterVal);
+                } else {
+                    state.activeChips.add(filterVal);
+                }
+                
+                if (state.activeChips.size === 0) {
+                    state.activeChips.add('all');
+                }
+            }
+            
+            // Update UI
+            chips.forEach(c => {
+                if (state.activeChips.has(c.dataset.filter)) {
+                    c.classList.add('active');
+                } else {
+                    c.classList.remove('active');
+                }
+            });
+            
+            // Re-render
+            renderProducts(state.allProducts, false);
+        });
+    });
 }

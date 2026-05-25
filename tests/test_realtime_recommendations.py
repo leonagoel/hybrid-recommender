@@ -11,8 +11,8 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from backend.main import app, models, realtime_hub
-from content_model import ContentRecommender
-from hybrid_model import HybridRecommender
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender
 
 
 @pytest.fixture
