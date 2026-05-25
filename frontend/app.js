@@ -73,6 +73,7 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    downloadBtn: $('download-btn'),
 };
 
 // ── Utilities ───────────────────────────────────────────────────────
@@ -120,6 +121,19 @@ function categoryIcon(cat) {
     if (c.includes('cloth') || c.includes('fashion')) return '👕';
     if (c.includes('home') || c.includes('garden')) return '🏡';
     return '📦';
+}
+
+function initDebugMode() {
+    const params = new URLSearchParams(window.location.search);
+    const debugMode = params.get('debug') === 'true';
+
+    if (debugMode && els.downloadBtn) {
+        els.downloadBtn.hidden = false;
+
+        els.downloadBtn.addEventListener('click', () => {
+            window.open('/api/export/dataset', '_blank');
+        });
+    }
 }
 
 // ── API Helpers ─────────────────────────────────────────────────────
@@ -643,6 +657,7 @@ document.head.appendChild(spinStyle);
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
+    initDebugMode();
     initTypeToSearch();
 
     // Initialize Supabase client from backend config (no hardcoded keys)

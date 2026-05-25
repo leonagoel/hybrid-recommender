@@ -26,6 +26,9 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
+from fastapi.responses import StreamingResponse
+from io import StringIO
+
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
@@ -442,6 +445,38 @@ def create_purchase(data: PurchaseCreate):
     }).execute()
     return {"purchase": result.data}
 
+# ── Export Dataset ──────────────────────────────────────────────────
+
+@app.get("/api/export/dataset")
+def export_dataset(columns: Optional[str] = None):
+    """Export currently loaded dataset as CSV."""
+
+    item_df = models.get("item_df")
+
+    if item_df is None or item_df.empty:
+        raise HTTPException(400, "No dataset loaded.")
+
+    df = item_df.copy()
+
+    # Optional column filtering
+    if columns:
+        selected_cols = [c.strip() for c in columns.split(",")]
+        valid_cols = [c for c in selected_cols if c in df.columns]
+
+        if valid_cols:
+            df = df[valid_cols]
+
+    stream = StringIO()
+    df.to_csv(stream, index=False)
+    stream.seek(0)
+
+    return StreamingResponse(
+        iter([stream.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="dataset.csv"'
+        }
+    )
 
 # ── Frontend Serving ────────────────────────────────────────────────
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
