@@ -1,5 +1,6 @@
 // state is imported read-only for rendering context (e.g. perPage, weights display).
 // ui.js never calls setState() — all writes go through the calling module.
+import { getStars } from './utils.js';
 import { state } from './state.js';
 
 // ── Toast Notifications ───────────────────────────────────────────────────────
@@ -120,10 +121,12 @@ function _buildCard(item, context) {
       <div class="card__body">
         <p class="card__category">${category}</p>
         <h3 class="card__title">${title}</h3>
-        ${rating ? `<div class="card__rating" aria-label="Rating ${rating}/5">
-          <span class="stars" style="--fill:${(parseFloat(rating)/5*100).toFixed(0)}%">★★★★★</span>
-          <span>${rating}</span>
-        </div>` : ''}
+        ${rating ? `
+          <div class="card-rating">
+            ${getStars(item.rating || 0)}
+            <span class="review-count">(${item.review_count || 0} reviews)</span>
+          </div>
+          ` : ''}
         <div class="card__footer">
           ${price ? `<span class="card__price">${price}</span>` : ''}
           ${score != null && context === 'recommendations'
