@@ -10,6 +10,7 @@ Improvements:
 - Better weight redistribution
 """
 import numpy as np
+import math
 
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
@@ -25,7 +26,8 @@ def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
 
 class HybridRecommender:
     def __init__(self, content_model, collab_model=None, item_df=None,
-                 alpha=0.4, beta=0.35, gamma=0.25):
+                 alpha=0.4, beta=0.35, gamma=0.25,
+                 normalization='minmax', weight_matrix=None):
         """
         content_model:  ContentRecommender instance
         collab_model:   CollaborativeRecommender instance (optional)
@@ -40,6 +42,10 @@ class HybridRecommender:
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        # normalization: 'minmax' or 'zscore'
+        self.normalization = normalization
+        # dynamic weighting matrix (dict of context -> (alpha,beta,gamma))
+        self.weight_matrix = weight_matrix or {}
 
         # Build sentiment + rating lookups
         self._sentiment_map = {}
@@ -91,13 +97,91 @@ class HybridRecommender:
         return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
 
     def _normalize(self, scores):
-        """Min-max normalize a list of scores to [0, 1]."""
+        """Backward-compatible alias for the configured normalizer."""
+        return self._normalize_scores(scores)
+
+    def _normalize_scores(self, scores):
+        """Normalize a list of numeric scores to [0,1].
+
+        Supports 'minmax' and 'zscore'. When std is zero, falls back to
+        constant 0.5 for all values.
+        """
         if not scores:
             return scores
-        mn, mx = min(scores), max(scores)
-        if mx - mn == 0:
-            return [0.5] * len(scores)
-        return [(v - mn) / (mx - mn) for v in scores]
+        arr = np.array(scores, dtype=float)
+        if self.normalization == 'zscore':
+            mu = float(np.nanmean(arr))
+            sigma = float(np.nanstd(arr))
+            if sigma == 0 or math.isnan(sigma):
+                return [0.5] * len(arr)
+            # map z-score to standard normal CDF to get values in (0,1)
+            z = (arr - mu) / sigma
+            cdf = 0.5 * (1.0 + np.vectorize(math.erf)(z / math.sqrt(2.0)))
+            return [float(v) for v in cdf]
+        # default: min-max
+        mn = float(np.nanmin(arr))
+        mx = float(np.nanmax(arr))
+        if mx - mn == 0 or math.isnan(mn) or math.isnan(mx):
+            return [0.5] * len(arr)
+        return [float((v - mn) / (mx - mn)) for v in arr]
+
+    def _get_active_weights(self, base_a, base_b, base_g, user_id=None, candidate_titles=None):
+        """Resolve active weights using configured weight_matrix and runtime signals.
+
+        The matrix keys can include: 'default', 'cold_user', 'warm_user', 'no_collab',
+        'no_sentiment', or 'category:<Name>' to override base weights for specific
+        contexts. The returned weights are normalized to sum to 1.
+        """
+        a, b, g = base_a, base_b, base_g
+
+        # Apply matrix by priority: default -> category -> user signals -> feature absence
+        if 'default' in self.weight_matrix:
+            da, db, dg = self.weight_matrix['default']
+            a, b, g = da, db, dg
+
+        # category overrides (if candidate_titles provided, pick most common category)
+        try:
+            if candidate_titles and self.item_df is not None:
+                cats = self.item_df[self.item_df['title'].isin(candidate_titles)]['category'].dropna().tolist()
+                if cats:
+                    # use the modal category
+                    from collections import Counter
+                    top_cat = Counter(cats).most_common(1)[0][0]
+                    key = f'category:{top_cat}'
+                    if key in self.weight_matrix:
+                        a, b, g = self.weight_matrix[key]
+        except Exception:
+            pass
+
+        # user signals
+        if user_id and self.collab_model and hasattr(self.collab_model, 'df'):
+            try:
+                user_interacts = int(len(self.collab_model.df[self.collab_model.df['user_id'] == user_id]))
+                if 'warm_user' in self.weight_matrix and user_interacts > 10:
+                    a, b, g = self.weight_matrix['warm_user']
+                if 'cold_user' in self.weight_matrix and user_interacts < 3:
+                    a, b, g = self.weight_matrix['cold_user']
+            except Exception:
+                pass
+
+        # feature absence overrides
+        if self.collab_model is None and 'no_collab' in self.weight_matrix:
+            a, b, g = self.weight_matrix['no_collab']
+        if not self._sentiment_map and 'no_sentiment' in self.weight_matrix:
+            a, b, g = self.weight_matrix['no_sentiment']
+
+        # Fallback: if matrix entries are partial tuples, keep bases
+        try:
+            a = float(a)
+            b = float(b)
+            g = float(g)
+        except Exception:
+            a, b, g = base_a, base_b, base_g
+
+        total = a + b + g
+        if total <= 0:
+            return base_a, base_b, base_g
+        return a / total, b / total, g / total
 
     def recommend(self, title, user_id=None, top_n=10, explain=False, weights=None):
         """
@@ -140,34 +224,26 @@ class HybridRecommender:
 
         items = list(candidates.values())
 
-        # 4. Normalize each component
-        content_scores = self._normalize([it['raw_content'] for it in items])
-        collab_scores = self._normalize([it['raw_collab'] for it in items])
-        sentiment_scores = [(it['raw_sentiment'] + 1) / 2 for it in items]
+        # 4. Normalize each component using configured normalizer
+        content_raws = [it['raw_content'] for it in items]
+        collab_raws = [it['raw_collab'] for it in items]
+        sentiment_raws = [it['raw_sentiment'] for it in items]
 
-        # 5. Determine active weights dynamically
+        content_scores = self._normalize_scores(content_raws)
+        collab_scores = self._normalize_scores(collab_raws)
+        sentiment_scores = self._normalize_scores(sentiment_raws)
+
+        # 5. Determine active weights dynamically (weights param overrides)
         if weights is not None:
             a = weights.get("alpha", self.alpha)
             b = weights.get("beta", self.beta)
             g = weights.get("gamma", self.gamma)
+            # normalize provided weights
+            tot = a + b + g
+            if tot > 0:
+                a, b, g = a / tot, b / tot, g / tot
         else:
-            a, b, g = self.alpha, self.beta, self.gamma
-        
-        if user_id and self.collab_model and user_id in self.collab_model._user_to_idx:
-            user_interacts = len(self.collab_model.df[self.collab_model.df['user_id'] == user_id])
-            if user_interacts > 10:
-                b += 0.2  # high confidence in collaborative
-            elif user_interacts < 3:
-                a += 0.2  # fallback to content for cold users
-                
-        if self.collab_model is None:
-            b = 0
-        if not self._sentiment_map:
-            g = 0
-            
-        total = a + b + g
-        if total > 0:
-            a, b, g = a / total, b / total, g / total
+            a, b, g = self._get_active_weights(self.alpha, self.beta, self.gamma, user_id=user_id, candidate_titles=all_titles)
 
         # 6. Compute hybrid score with popularity boost
         results = []
