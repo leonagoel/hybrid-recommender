@@ -99,7 +99,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 
 const els = {
-    searchInput: $('search-input'),
+    searchInput: $('searchInput'),
     searchDropdown: $('search-dropdown'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),

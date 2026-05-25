@@ -87,7 +87,7 @@ export async function loadCategories() {
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 function _bindSearchInput() {
-  const input = document.getElementById('search-input');
+  const input = document.getElementById('searchInput');
   if (!input) return;
 
   input.addEventListener('input', (e) => {
@@ -107,7 +107,7 @@ function _bindGlobalKeyCapture() {
     const tag = document.activeElement?.tagName?.toLowerCase();
     if (['input', 'textarea', 'select'].includes(tag)) return;
     if (e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1) return;
-    document.getElementById('search-input')?.focus();
+    document.getElementById('searchInput')?.focus();
   });
 }
 

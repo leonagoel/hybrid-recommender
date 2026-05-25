@@ -6,12 +6,14 @@ import os
 import sys
 import io
 import time
+import math
 import logging
 import re
 from collections import deque, Counter
 from threading import Lock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import (
     FastAPI,
@@ -42,18 +44,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from db import get_supabase, get_supabase_admin
-from data_adapter import adapt_data, read_file
-from nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
-from hybrid_model import HybridRecommender
+from src.data.data_adapter import adapt_data, read_file
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from celery.result import AsyncResult
 from celery_app import celery_app
 from tasks import compute_recommendations
-from ab_testing import DEFAULT_EXPERIMENT_ID, run_recommendation_experiment
+from src.evaluation.ab_testing import DEFAULT_EXPERIMENT_ID, run_recommendation_experiment
 
 from functools import lru_cache
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
@@ -790,6 +789,11 @@ def build_models(
     token: str = Depends(verify_token)
 ):
     """Build recommendation models from Supabase data."""
+    # Lazy imports to avoid loading heavy dependencies at startup
+    from src.model.content_model import ContentRecommender
+    from src.model.collaborative_model import CollaborativeRecommender
+    from src.model.hybrid_model import HybridRecommender
+    
     sb = None
     all_products = []
     try:
@@ -1422,3 +1426,15 @@ if os.path.isdir(frontend_dir):
     @app.get("/dashboard.html")
     def serve_dashboard():
         return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
+
+
+# ── Startup ──────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
