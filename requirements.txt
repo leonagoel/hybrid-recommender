@@ -9,3 +9,5 @@ supabase
 python-dotenv
 tqdm
 scipy
+pytest
+pytest-cov
