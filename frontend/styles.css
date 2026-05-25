@@ -582,6 +582,7 @@ body {
 .weight-label {
     font-weight: 500;
     min-width: fit-content;
+    color: var(--text);   /* uses theme variable */
 }
 
 /* ── Main Content ────────────────────────────────────────────────── */
