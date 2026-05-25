@@ -101,6 +101,18 @@ function renderStars(rating) {
     return html;
 }
 
+function formatReviewCount(count) {
+    if (!count || count === 0) {
+        return "No reviews yet";
+    }
+
+    if (count >= 1000) {
+        return `(${(count / 1000).toFixed(1)}k reviews)`;
+    }
+
+    return `(${count} reviews)`;
+}
+
 function sentimentBadge(score) {
     if (score > 0.05) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
     if (score < -0.05) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
@@ -254,21 +266,25 @@ function initTypeToSearch() {
 // ── Search ──────────────────────────────────────────────────────────
 async function handleSearch(query) {
     if (!query || query.length < 1) {
+        els.typingIndicator.hidden = true;
         closeSearchDropdown();
         return;
     }
 
     clearTimeout(state.searchTimer);
+    els.typingIndicator.hidden = false;
     state.searchTimer = setTimeout(async () => {
         try {
             const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
             state.searchResults = data.results || [];
             state.selectedSearchIdx = -1;
             renderSearchDropdown(state.searchResults, query);
+            els.typingIndicator.hidden = true;
         } catch {
             closeSearchDropdown();
+            els.typingIndicator.hidden = true;
         }
-    }, 200);
+    }, 300);
 }
 
 function renderSearchDropdown(results, query) {
@@ -412,6 +428,9 @@ function renderProducts(products, append) {
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
                         <span class="rating-value">${(p.rating || 0).toFixed(1)}</span>
+                    </div>
+                    <div class="product-review-count">
+                        ${formatReviewCount(p.review_count)}
                     </div>
                     ${sentimentBadge(p.avg_sentiment || 0)}
                 </div>
