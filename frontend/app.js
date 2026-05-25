@@ -402,7 +402,11 @@ function renderProducts(products, append) {
         card.style.animationDelay = `${i * 50}ms`;
         card.innerHTML = `
             <div class="product-card__image">
-                ${categoryIcon(p.category)}
+            ${
+                !p.image || p.image === 'undefined'
+                ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
+                : `<img src="${p.image}" alt="${p.title}" class="product-image" />`
+             }
             </div>
             <div class="product-card__body">
                 ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
