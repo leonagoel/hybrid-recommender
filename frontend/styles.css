@@ -1753,3 +1753,92 @@ main {
 .wishlist-btn:hover::before {
     transform: translateX(100%);
 }
+/* Global animated loading bar (issue #236) */
+#global-loading-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0%;
+  height: 3px;
+  background: var(--accent);      /* gold #f59e0b */
+  z-index: 9999;
+  transition: width 0.3s ease-out, opacity 0.2s ease;
+  opacity: 0;
+  display: none;
+  box-shadow: 0 0 4px var(--accent);
+}
+/* Search history dropdown (issue #22) */
+.history-btn {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 8px;
+  color: var(--text-muted);
+  transition: var(--transition);
+}
+.history-btn:hover {
+  color: var(--accent);
+}
+
+.search-history-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: 260px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+  margin-top: 4px;
+}
+
+.history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.clear-history-btn {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 12px;
+}
+.clear-history-btn:hover {
+  text-decoration: underline;
+}
+
+#history-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.history-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  transition: var(--transition);
+}
+.history-item:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.history-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}

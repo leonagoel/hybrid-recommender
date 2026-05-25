@@ -2,6 +2,82 @@
 // ui.js never calls setState() — all writes go through the calling module.
 import { getStars } from './utils.js';
 import { state } from './state.js';
+// ── Search History Dropdown (issue #22) ─────────────────────────────────────
+import { getSearchHistory, clearSearchHistory } from './state.js';
+import { runSearch } from './search.js';
+
+let historyVisible = false;
+
+function renderSearchHistory() {
+  const historyList = document.getElementById('history-list');
+  if (!historyList) return;
+  const history = getSearchHistory();
+  if (history.length === 0) {
+    historyList.innerHTML = '<li class="history-empty">No recent searches</li>';
+  } else {
+    historyList.innerHTML = history.map(query => `<li class="history-item" data-query="${escapeHtml(query)}">${escapeHtml(query)}</li>`).join('');
+    document.querySelectorAll('.history-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const query = item.dataset.query;
+        if (query) {
+          const searchInput = document.getElementById('search-input');
+          if (searchInput) searchInput.value = query;
+          runSearch(query);
+          hideHistoryDropdown();
+        }
+      });
+    });
+  }
+}
+
+export function toggleHistoryDropdown() {
+  const dropdown = document.getElementById('search-history-dropdown');
+  if (!dropdown) return;
+  if (historyVisible) {
+    dropdown.style.display = 'none';
+    historyVisible = false;
+  } else {
+    renderSearchHistory();
+    dropdown.style.display = 'block';
+    historyVisible = true;
+  }
+}
+
+export function hideHistoryDropdown() {
+  const dropdown = document.getElementById('search-history-dropdown');
+  if (dropdown) dropdown.style.display = 'none';
+  historyVisible = false;
+}
+
+export function initSearchHistory() {
+  const historyBtn = document.getElementById('search-history-btn');
+  const clearBtn = document.getElementById('clear-history-btn');
+  if (historyBtn) {
+    historyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleHistoryDropdown();
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearSearchHistory();
+      renderSearchHistory();
+    });
+  }
+  document.addEventListener('click', (e) => {
+    if (historyVisible && !e.target.closest('#search-history-dropdown') && !e.target.closest('#search-history-btn')) {
+      hideHistoryDropdown();
+    }
+  });
+}
+
+// Auto‑initialize when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initSearchHistory);
+} else {
+  initSearchHistory();
+}
 
 // ── Toast Notifications ───────────────────────────────────────────────────────
 
