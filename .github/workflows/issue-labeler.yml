@@ -1,0 +1,86 @@
+name: GSSoC Issue Labeler
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  label-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-label and triage issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const title = issue.title.toLowerCase();
+            const body = (issue.body || '').toLowerCase();
+            const text = title + ' ' + body;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = issue.number;
+
+            const labelsToAdd = ['gssoc:approved'];
+
+            let detectedType = '';
+            if (title.includes('[bug]') || text.includes('bug') || text.includes('error') || text.includes('fix') || text.includes('crash') || text.includes('broken')) {
+              labelsToAdd.push('type:bug'); detectedType = 'Bug';
+            } else if (text.includes('doc') || text.includes('readme') || text.includes('wiki') || text.includes('guide')) {
+              labelsToAdd.push('type:docs'); detectedType = 'Documentation';
+            } else if (text.includes('test') || text.includes('spec') || text.includes('coverage')) {
+              labelsToAdd.push('type:testing'); detectedType = 'Testing';
+            } else if (text.includes('performance') || text.includes('slow') || text.includes('speed') || text.includes('optimize')) {
+              labelsToAdd.push('type:performance'); detectedType = 'Performance';
+            } else if (text.includes('security') || text.includes('vulnerability') || text.includes('auth') || text.includes('exploit')) {
+              labelsToAdd.push('type:security'); detectedType = 'Security';
+            } else if (text.includes('ui') || text.includes('design') || text.includes('style') || text.includes('css') || text.includes('layout')) {
+              labelsToAdd.push('type:design'); detectedType = 'Design';
+            } else if (text.includes('refactor') || text.includes('cleanup') || text.includes('restructure')) {
+              labelsToAdd.push('type:refactor'); detectedType = 'Refactor';
+            } else if (text.includes('accessibility') || text.includes('a11y') || text.includes('wcag')) {
+              labelsToAdd.push('type:accessibility'); detectedType = 'Accessibility';
+            } else {
+              labelsToAdd.push('type:feature'); detectedType = 'Feature';
+            }
+
+            let detectedArea = '';
+            if (text.includes('frontend') || text.includes('ui') || text.includes('streamlit') || text.includes('button') || text.includes('slider') || text.includes('css')) {
+              labelsToAdd.push('frontend'); detectedArea = 'Frontend';
+            }
+            if (text.includes('backend') || text.includes('api') || text.includes('server') || text.includes('endpoint') || text.includes('flask') || text.includes('fastapi')) {
+              labelsToAdd.push('backend'); detectedArea += (detectedArea ? ' + ' : '') + 'Backend';
+            }
+            if (text.includes('ml') || text.includes('model') || text.includes('recommend') || text.includes('collaborative') || text.includes('sentiment') || text.includes('ai')) {
+              labelsToAdd.push('ml/ai'); detectedArea += (detectedArea ? ' + ' : '') + 'ML/AI';
+            }
+            if (!detectedArea) detectedArea = 'General';
+
+            let difficulty = 'level:beginner';
+            let difficultyLabel = 'Beginner';
+            if (text.includes('complex') || text.includes('advanced') || text.includes('hard') || text.includes('difficult') || text.includes('architecture')) {
+              difficulty = 'level:advanced'; difficultyLabel = 'Advanced';
+            } else if (text.includes('medium') || text.includes('moderate') || text.includes('intermediate') || text.includes('refactor')) {
+              difficulty = 'level:intermediate'; difficultyLabel = 'Intermediate';
+            }
+            labelsToAdd.push(difficulty);
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: labelsToAdd });
+
+            const comment = '## GSSoC 2026 - Issue Triaged\n\n'
+              + '| Field | Detected |\n'
+              + '|-------|----------|\n'
+              + '| **Type** | ' + detectedType + ' |\n'
+              + '| **Area** | ' + detectedArea + ' |\n'
+              + '| **Difficulty** | ' + difficultyLabel + ' |\n'
+              + '| **GSSoC Status** | gssoc:approved applied - ready for contributors |\n\n'
+              + '### Want to work on this?\n'
+              + 'Comment below: **I would like to work on this**\n'
+              + 'A mentor will assign it to you within 24 hours.\n\n'
+              + '> Please do not start work until you are officially assigned.';
+
+            await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: comment });
