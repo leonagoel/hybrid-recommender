@@ -57,6 +57,7 @@ DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
 CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 _response_cache: dict = {}
+_cache_lock = Lock()
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -71,22 +72,25 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
-    cached = _response_cache.get(key)
-    if not cached:
-        return None
-    expires_at, value = cached
-    if expires_at <= time.time():
-        _response_cache.pop(key, None)
-        return None
-    return value
+    with _cache_lock:
+        cached = _response_cache.get(key)
+        if not cached:
+            return None
+        expires_at, value = cached
+        if expires_at <= time.time():
+            _response_cache.pop(key, None)
+            return None
+        return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    with _cache_lock:
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 
 def _clear_response_cache() -> None:
-    _response_cache.clear()
+    with _cache_lock:
+        _response_cache.clear()
 
 
 def _set_cache_headers(response: Response, status: str) -> None:
