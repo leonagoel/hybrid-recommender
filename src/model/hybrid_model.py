@@ -144,8 +144,7 @@ class HybridRecommender:
         content_scores = self._normalize([it['raw_content'] for it in items])
         collab_scores = self._normalize([it['raw_collab'] for it in items])
         sentiment_scores = [(it['raw_sentiment'] + 1) / 2 for it in items]
-
-        # 5. Determine active weights dynamically
+# 5. Determine active weights dynamically with single-pass redistribution (#374)
         if weights is not None:
             a = weights.get("alpha", self.alpha)
             b = weights.get("beta", self.beta)
@@ -160,27 +159,34 @@ class HybridRecommender:
             elif user_interacts < 3:
                 a += 0.2  # fallback to content for cold users
                 
+        # Apply strict presence constraint flags
         if self.collab_model is None:
             b = 0
         if not self._sentiment_map:
             g = 0
             
-        total = a + b + g
-        if total > 0:
-            a, b, g = a / total, b / total, g / total
+        # Single-pass dynamic ratio normalisation
+        total_weight = a + b + g
+        if total_weight > 0:
+            a, b, g = a / total_weight, b / total_weight, g / total_weight
+        else:
+            a = 1.0  # Absolute fallback to safe content routing when everything is absent
 
-        # 6. Compute hybrid score with popularity boost
+        # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
         for i, item in enumerate(items):
-            hybrid = (
+            hybrid_base = (
                 a * content_scores[i] +
                 b * collab_scores[i] +
                 g * sentiment_scores[i]
             )
 
-            # Light popularity boost (max 5% bonus)
+            # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
             popularity = self._popularity_map.get(item['title'], 0.5)
-            hybrid += 0.05 * popularity
+            popularity_bonus = 0.05 * popularity
+            
+            # Enforce strict upper bound limit check
+            hybrid = min(1.0, hybrid_base + popularity_bonus)
 
             # Lookup info from content model's df
             row_data = self.content_model.df[
