@@ -32,11 +32,7 @@ class ContentRecommender:
         Returns list of dicts: [{ 'title', 'content_score' }, ...]
         """
         if title.lower() not in self._title_to_idx:
-<<<<<<< HEAD:src/model/content_model.py
             return []
-=======
-          return []
->>>>>>> 26389e7 (feat: add multi-language search support for Hindi and English):content_model.py
 
         idx = self._title_to_idx[title.lower()]
         query_vec = self.matrix[idx].reshape(1, -1)

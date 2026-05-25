@@ -56,6 +56,7 @@ RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
 CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
+MAX_SEARCH_QUERY_LENGTH = 120
 _response_cache: dict = {}
 
 
@@ -87,6 +88,25 @@ def _set_cached_response(key: str, value: Any) -> None:
 
 def _clear_response_cache() -> None:
     _response_cache.clear()
+
+
+def _normalize_search_query(query: str) -> str:
+    normalized = " ".join((query or "").split())
+    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.",
+        )
+    return normalized
+
+
+def _escape_like_pattern(value: str) -> str:
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
 
 
 def _set_cache_headers(response: Response, status: str) -> None:
@@ -339,22 +359,24 @@ def search_items(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    cache_key = _cache_key("search", q, limit, offset)
+    query = _normalize_search_query(q)
+    cache_key = _cache_key("search", query, limit, offset)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
     sb = get_supabase()
-    if q.strip():
+    if query:
         try:
             result = sb.rpc('search_products', {
-                'query_text': q.strip(), 'match_count': limit, 'offset_val': offset,
+                'query_text': query, 'match_count': limit, 'offset_val': offset,
             }).execute()
             products = result.data or []
         except Exception as e:
-            logger.warning("FTS failed for '%s': %s", q.strip(), e)
-            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{q.strip()}%').order('rating', desc=True).limit(limit).execute()
+            logger.warning("FTS failed for '%s': %s", query, e)
+            escaped_query = _escape_like_pattern(query)
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{escaped_query}%').order('rating', desc=True).limit(limit).execute()
             products = result.data or []
             for p in products:
                 p['rank'] = 0.0
@@ -372,7 +394,7 @@ def search_items(
             'review_count': p.get('review_count', 0), 'rank': p.get('rank', 0.0),
         })
 
-    payload = {"results": results, "total": len(results), "query": q, "is_fallback": not q.strip()}
+    payload = {"results": results, "total": len(results), "query": query, "is_fallback": not query}
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
@@ -385,11 +407,12 @@ def autocomplete_products(
     limit: int = Query(5, ge=1, le=10),
 ):
     sb = get_supabase()
-    query = q.strip()
+    query = _normalize_search_query(q)
     if not query:
         return {"suggestions": []}
     try:
-        result = sb.table('products').select('title').ilike('title', f'%{query}%').limit(limit).execute()
+        escaped_query = _escape_like_pattern(query)
+        result = sb.table('products').select('title').ilike('title', f'%{escaped_query}%').limit(limit).execute()
         suggestions = []
         seen = set()
         for item in result.data or []:
