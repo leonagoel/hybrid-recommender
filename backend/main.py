@@ -9,6 +9,7 @@ import time
 import logging
 import math
 import secrets
+import bleach
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone
@@ -568,9 +569,15 @@ async def upload_dataset(file: UploadFile = File(...)):
                 title = str(row.get('title', 'Unknown')).strip()
                 if not title or title == 'nan' or title == 'Unknown':
                     continue
+# --- sanitize HTML tags ---
+                title = bleach.clean(title, strip=True)[:500]
+
+                description = str(row.get('description', ''))
+                description = bleach.clean(description, strip=True)[:2000]
+
                 rows.append({
-                    'title': title[:500],
-                    'description': str(row.get('description', ''))[:2000],
+                    'title': title,
+                    'description': description,
                     'category': str(row.get('category', ''))[:200],
                     'rating': round(rating_val, 2),
                     'metadata': {},
