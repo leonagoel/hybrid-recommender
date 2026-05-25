@@ -10,9 +10,9 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from hybrid_model import HybridRecommender, bayesian_rating
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender, bayesian_rating
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -183,6 +183,21 @@ class TestHybridRecommender:
         required = {'title', 'hybrid_score', 'content_score', 'collab_score', 'sentiment_score'}
         for r in recs:
             assert required.issubset(r.keys())
+
+    def test_recommend_explain_false_keeps_default_payload_compact(self, hybrid_model):
+        recs = hybrid_model.recommend('Product A', top_n=2)
+        assert recs
+        assert 'explanation' not in recs[0]
+
+    def test_recommend_explain_true_adds_score_breakdown(self, hybrid_model):
+        recs = hybrid_model.recommend('Product A', top_n=2, explain=True)
+        assert recs
+        explanation = recs[0]['explanation']
+        assert explanation['source_item'] == 'Product A'
+        assert 'component_scores' in explanation
+        assert 'weighted_components' in explanation
+        assert 'top_content_terms' in explanation
+        assert explanation['signals']['sentiment_polarity'] in {'positive', 'neutral', 'negative'}
 
     def test_recommend_sorted_by_hybrid_score(self, hybrid_model):
         recs = hybrid_model.recommend('Product A', top_n=5)

@@ -15,7 +15,7 @@ import string
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from tqdm import tqdm
-from db import get_supabase_admin
+from src.data.db import get_supabase_admin
 
 
 FIRST_NAMES = [
