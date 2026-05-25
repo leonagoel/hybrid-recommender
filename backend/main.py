@@ -28,7 +28,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Any, Optional
 from dotenv import load_dotenv
 
@@ -178,12 +178,16 @@ models = {
 
 
 class WeightsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     alpha: float = 0.4
     beta: float = 0.35
     gamma: float = 0.25
 
 
 class PurchaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     product_id: int
     rating: float = 0.0
@@ -191,12 +195,16 @@ class PurchaseCreate(BaseModel):
 
 
 class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str
     item: str
     feedback: str
 
 
 class RealtimeRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     item_title: str
     top_n: int = 10
     explain: bool = False
