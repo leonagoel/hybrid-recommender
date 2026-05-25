@@ -45,6 +45,16 @@ function initThemeToggle() {
 
 document.addEventListener('DOMContentLoaded', initThemeToggle);
 
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char]));
+}
+
 /**
  * HybridRec — Frontend Application v3
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
@@ -509,10 +519,12 @@ function renderSearchDropdown(results, query) {
     }
 
     els.searchDropdown.innerHTML = results
-        .map((title, index) => `
+        .map((title, index) => {
+            const safeTitle = escapeHtml(title);
+            return `
             <div
                 class="search-result ${index === state.selectedSearchIdx ? 'active' : ''}"
-                data-title="${title}"
+                data-title="${safeTitle}"
                 data-idx="${index}"
             >
                 <span class="search-result__icon">🔍</span>
@@ -522,7 +534,8 @@ function renderSearchDropdown(results, query) {
                     </div>
                 </div>
             </div>
-        `)
+        `;
+        })
         .join('');
 
     els.searchDropdown.classList.add('active');
@@ -537,9 +550,11 @@ function renderSearchDropdown(results, query) {
 }
 
 function highlightMatch(text, query) {
-    if (!query) return text;
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<strong>$1</strong>');
+    const safeText = escapeHtml(text);
+    if (!query) return safeText;
+    const safeQuery = escapeHtml(query);
+    const regex = new RegExp(`(${safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return safeText.replace(regex, '<strong>$1</strong>');
 }
 
 function selectSearchResult(title) {
@@ -730,6 +745,10 @@ function renderTrending(items) {
     const fragment = document.createDocumentFragment();
 
     items.forEach((item, index) => {
+        const title = item.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(item.category || '');
+        const safeDescription = escapeHtml(item.description || 'No description available.');
         const card = document.createElement('div');
         card.className = 'product-card trending-card';
         card.style.animationDelay = `${index * 35}ms`;
@@ -738,9 +757,9 @@ function renderTrending(items) {
                 ${categoryIcon(item.category)}
             </div>
             <div class="product-card__body">
-                ${item.category ? `<span class="product-card__category">${item.category}</span>` : ''}
-                <h3 class="product-card__title">${item.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${item.description || 'No description available.'}</p>
+                ${item.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title">${safeTitle}</h3>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(item.rating || 0)}</div>
@@ -750,7 +769,7 @@ function renderTrending(items) {
                 </div>
             </div>
             <div class="product-card__actions">
-                <button class="btn--add-cart" data-title="${item.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     View Trending
                 </button>
             </div>
@@ -760,12 +779,12 @@ function renderTrending(items) {
         if (actionButton) {
             actionButton.addEventListener('click', (e) => {
                 e.stopPropagation();
-                loadRecommendations(item.title);
-                toast(`Showing recommendations for trending product "${item.title.substring(0, 40)}"`, 'info');
+                loadRecommendations(title);
+                toast(`Showing recommendations for trending product "${title.substring(0, 40)}"`, 'info');
             });
         }
 
-        card.addEventListener('click', () => loadRecommendations(item.title));
+        card.addEventListener('click', () => loadRecommendations(title));
         fragment.appendChild(card);
     });
 
@@ -894,24 +913,28 @@ function renderProducts(products, options = {}) {
 
     products.forEach((p, i) => {
         state.products.push(p);
+        const title = p.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(p.category || '');
+        const safeDescription = escapeHtml(p.description || 'No description available.');
         const card = document.createElement('div');
         card.className = p.image ? 'product-card' : 'product-card product-card--skeleton';
         card.style.animationDelay = `${i * 50}ms`;
-        const isChecked = state.heatmapSelected.includes(p.title);
+        const isChecked = state.heatmapSelected.includes(title);
         card.innerHTML = `
            <div class="product-card__image">
-            <button class="wishlist-btn" data-title="${p.title}">
-                ${isWishlisted(p.title) ? '❤️' : '🤍'}
+            <button class="wishlist-btn" data-title="${safeTitle}">
+                ${isWishlisted(title) ? '❤️' : '🤍'}
             </button>
 
             ${categoryIcon(p.category)}
             </div>
             <div class="product-card__body">
-                ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title" title="${p.title || 'Untitled'}">
-                ${p.title || 'Untitled'}
+                ${p.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title" title="${safeTitle}">
+                ${safeTitle}
                 </h3>
-                <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__price">
                 ₹${p.price || 0}
                 </div>
@@ -925,20 +948,20 @@ function renderProducts(products, options = {}) {
             </div>
             <div class="product-card__actions">
                 <label class="compare-label">
-                    <input type="checkbox" class="compare-checkbox" data-title="${p.title}" ${isChecked ? 'checked' : ''}>
+                    <input type="checkbox" class="compare-checkbox" data-title="${safeTitle}" ${isChecked ? 'checked' : ''}>
                     Heatmap
                 </label>
                 <label class="compare-label">
-                    <input type="checkbox" class="side-compare-checkbox" data-title="${p.title}">
+                    <input type="checkbox" class="side-compare-checkbox" data-title="${safeTitle}">
                     Compare
                 </label>
-                <button class="btn--add-cart" data-title="${p.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     Get Recommendations
                 </button>
             </div>
         `;
         if (p.image) {
-            const imgEl = createLazyImage(p.image, p.title);
+            const imgEl = createLazyImage(p.image, title);
             card.querySelector('.product-card__image').appendChild(imgEl);
         }
 
@@ -999,7 +1022,7 @@ function renderProducts(products, options = {}) {
         }
 
         card.addEventListener('click', () => {
-            loadRecommendations(p.title);
+            loadRecommendations(title);
         });
 
         fragment.appendChild(card);
@@ -1092,9 +1115,12 @@ function renderRecommendations(data) {
     return;
 }
 
-    els.recsStrip.innerHTML = recs.map((r) => `
-        <div class="rec-card" data-title="${r.title}">
-            <div class="rec-card__title">${r.title}</div>
+    els.recsStrip.innerHTML = recs.map((r) => {
+        const title = r.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        return `
+        <div class="rec-card" data-title="${safeTitle}">
+            <div class="rec-card__title">${safeTitle}</div>
             <div class="rec-card__rating">
                 <div class="star-rating">${renderStars(r.rating || 0)}</div>
                 <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
@@ -1105,7 +1131,8 @@ function renderRecommendations(data) {
                 · Collab: ${(r.collab_score || 0).toFixed(2)}
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
 
     els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
         card.addEventListener('click', () => {
@@ -1542,25 +1569,30 @@ function renderSearchDropdown(results, query) {
     if (!results.length) {
         els.searchDropdown.innerHTML = `
             <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
-                No results for "${query}"
+                No results for "${escapeHtml(query)}"
             </div>`;
         els.searchDropdown.classList.add('active');
         return;
     }
 
-    els.searchDropdown.innerHTML = results.map((r, i) => `
+    els.searchDropdown.innerHTML = results.map((r, i) => {
+        const title = r.title || '';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(r.category || '');
+        return `
         <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
-             data-title="${r.title}" data-idx="${i}">
+             data-title="${safeTitle}" data-idx="${i}">
             <span style="font-size:20px;">${categoryIcon(r.category)}</span>
             <div class="search-result__info">
-                <div class="search-result__title">${highlightMatch(r.title, query)}</div>
+                <div class="search-result__title">${highlightMatch(title, query)}</div>
                 <div class="search-result__meta">
                     ★ ${(r.rating || 0).toFixed(1)}
                     ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
                 </div>
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
     els.searchDropdown.classList.add('active');
 
     // Click handlers
@@ -1573,9 +1605,11 @@ function renderSearchDropdown(results, query) {
 }
 
 function highlightMatch(text, query) {
-    if (!query) return text;
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<strong>$1</strong>');
+    const safeText = escapeHtml(text);
+    if (!query) return safeText;
+    const safeQuery = escapeHtml(query);
+    const regex = new RegExp(`(${safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return safeText.replace(regex, '<strong>$1</strong>');
 }
 
 function selectSearchResult(title) {
@@ -1683,6 +1717,11 @@ function renderProducts(products, append) {
         );
     filteredProducts.forEach((p, i) => {
         state.products.push(p);
+        const title = p.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(p.category || '');
+        const safeDescription = escapeHtml(p.description || 'No description available.');
+        const safeImage = escapeHtml(p.image || '');
         const card = document.createElement('div');
         card.className = 'product-card';
         card.style.animationDelay = `${i * 50}ms`;
@@ -1691,13 +1730,13 @@ function renderProducts(products, append) {
             ${
                 !p.image || p.image === 'undefined'
                 ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
-                : `<img src="${p.image}" alt="${p.title}" class="product-image" />`
+                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" />`
              }
             </div>
             <div class="product-card__body">
-                ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                ${p.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title">${safeTitle}</h3>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
@@ -1710,7 +1749,7 @@ function renderProducts(products, append) {
                 </div>
             </div>
             <div class="product-card__actions">
-                <button class="btn--add-cart" data-title="${p.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     Get Recommendations
                 </button>
             </div>
@@ -1758,9 +1797,12 @@ async function loadRecommendations(title) {
             return;
         }
 
-        els.recsStrip.innerHTML = recs.map((r) => `
-            <div class="rec-card" data-title="${r.title}">
-                <div class="rec-card__title">${r.title}</div>
+        els.recsStrip.innerHTML = recs.map((r) => {
+            const title = r.title || 'Untitled';
+            const safeTitle = escapeHtml(title);
+            return `
+            <div class="rec-card" data-title="${safeTitle}">
+                <div class="rec-card__title">${safeTitle}</div>
                 <div class="rec-card__rating">
                     <div class="star-rating">${renderStars(r.rating || 0)}</div>
                     <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
@@ -1771,7 +1813,8 @@ async function loadRecommendations(title) {
                     · Collab: ${(r.collab_score || 0).toFixed(2)}
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
 
         // Click to chain recommendations
         els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {

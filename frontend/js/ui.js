@@ -320,7 +320,7 @@ export function startStatusPoller(intervalMs = 30_000) {
 
 export function escapeHtml(str) {
   return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ── Global loading bar (issue #236) ────────────────────────────────────
