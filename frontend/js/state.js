@@ -22,6 +22,7 @@ export const state = {
   lastQuery: '',
   searchResults: [],
   isSearching: false,
+  searchHistory: JSON.parse(localStorage.getItem('searchHistory') || '[]'), // new
 
   // Recommendations
   currentItem: null,
@@ -70,4 +71,39 @@ export function addRecentlyViewed(title) {
   const list = state.recentlyViewed.filter(t => t !== title);
   list.unshift(title);
   setState({ recentlyViewed: list.slice(0, 10) });
+}
+
+// ── Search History Helpers (issue #22) ──────────────────────────────────────
+
+/**
+ * Add a query to search history (no duplicates, max 5, most recent first).
+ * @param {string} query
+ */
+export function addToSearchHistory(query) {
+  if (!query || query.trim() === '') return;
+  let history = [...state.searchHistory];
+  // Remove duplicate if exists
+  history = history.filter(item => item !== query);
+  // Insert at the beginning
+  history.unshift(query);
+  // Keep only last 5
+  history = history.slice(0, 5);
+  state.searchHistory = history;
+  localStorage.setItem('searchHistory', JSON.stringify(history));
+}
+
+/**
+ * Clear the entire search history.
+ */
+export function clearSearchHistory() {
+  state.searchHistory = [];
+  localStorage.setItem('searchHistory', '[]');
+}
+
+/**
+ * Get a copy of the current search history.
+ * @returns {string[]}
+ */
+export function getSearchHistory() {
+  return [...state.searchHistory];
 }

@@ -9,7 +9,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from data_preprocessing import (
+from src.data.data_preprocessing import (
     handle_missing_values,
     remove_duplicates,
     normalize_ratings,
