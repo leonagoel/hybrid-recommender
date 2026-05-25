@@ -2,6 +2,82 @@
 // ui.js never calls setState() — all writes go through the calling module.
 import { getStars } from './utils.js';
 import { state } from './state.js';
+// ── Search History Dropdown (issue #22) ─────────────────────────────────────
+import { getSearchHistory, clearSearchHistory } from './state.js';
+import { runSearch } from './search.js';
+
+let historyVisible = false;
+
+function renderSearchHistory() {
+  const historyList = document.getElementById('history-list');
+  if (!historyList) return;
+  const history = getSearchHistory();
+  if (history.length === 0) {
+    historyList.innerHTML = '<li class="history-empty">No recent searches</li>';
+  } else {
+    historyList.innerHTML = history.map(query => `<li class="history-item" data-query="${escapeHtml(query)}">${escapeHtml(query)}</li>`).join('');
+    document.querySelectorAll('.history-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const query = item.dataset.query;
+        if (query) {
+          const searchInput = document.getElementById('search-input');
+          if (searchInput) searchInput.value = query;
+          runSearch(query);
+          hideHistoryDropdown();
+        }
+      });
+    });
+  }
+}
+
+export function toggleHistoryDropdown() {
+  const dropdown = document.getElementById('search-history-dropdown');
+  if (!dropdown) return;
+  if (historyVisible) {
+    dropdown.style.display = 'none';
+    historyVisible = false;
+  } else {
+    renderSearchHistory();
+    dropdown.style.display = 'block';
+    historyVisible = true;
+  }
+}
+
+export function hideHistoryDropdown() {
+  const dropdown = document.getElementById('search-history-dropdown');
+  if (dropdown) dropdown.style.display = 'none';
+  historyVisible = false;
+}
+
+export function initSearchHistory() {
+  const historyBtn = document.getElementById('search-history-btn');
+  const clearBtn = document.getElementById('clear-history-btn');
+  if (historyBtn) {
+    historyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleHistoryDropdown();
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearSearchHistory();
+      renderSearchHistory();
+    });
+  }
+  document.addEventListener('click', (e) => {
+    if (historyVisible && !e.target.closest('#search-history-dropdown') && !e.target.closest('#search-history-btn')) {
+      hideHistoryDropdown();
+    }
+  });
+}
+
+// Auto‑initialize when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initSearchHistory);
+} else {
+  initSearchHistory();
+}
 
 // ── Toast Notifications ───────────────────────────────────────────────────────
 
@@ -180,6 +256,7 @@ export function bindUploadHandler(onSuccess) {
       showToast('Only CSV and JSON files are supported.', 'error'); return;
     }
     setLoadingState('upload', true);
+    showLoadingBar();   // 👈 start loading bar
     try {
       const form = new FormData();
       form.append('file', file);
@@ -192,6 +269,7 @@ export function bindUploadHandler(onSuccess) {
       showToast(err.message, 'error');
     } finally {
       setLoadingState('upload', false);
+      hideLoadingBar();   // 👈 hide loading bar
       input.value = '';
     }
   });
@@ -202,6 +280,7 @@ export function bindBuildModelsHandler(onSuccess) {
     ?.addEventListener('click', async () => {
       setLoadingState('build', true);
       showToast('Building models… this may take a moment.', 'info', 8000);
+      showLoadingBar();   // 👈 start loading bar
       try {
         const res = await fetch('/api/build', { method: 'POST' });
         if (!res.ok) throw new Error((await res.json().catch(()=>({}))).detail ?? `Error ${res.status}`);
@@ -211,6 +290,7 @@ export function bindBuildModelsHandler(onSuccess) {
         showToast(err.message, 'error');
       } finally {
         setLoadingState('build', false);
+        hideLoadingBar();   // 👈 hide loading bar
       }
     });
 }
@@ -241,4 +321,62 @@ export function startStatusPoller(intervalMs = 30_000) {
 export function escapeHtml(str) {
   return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Global loading bar (issue #236) ────────────────────────────────────
+let loadingBarTimeout = null;
+
+export function showLoadingBar() {
+  let bar = document.getElementById('global-loading-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'global-loading-bar';
+    bar.className = 'loading-bar';
+    document.body.appendChild(bar);
+  }
+  // Force reflow to restart animation
+  bar.offsetHeight;
+  bar.style.width = '0%';
+  bar.style.opacity = '1';
+  bar.style.display = 'block';
+  // quickly animate to 90%
+  setTimeout(() => {
+    if (bar.style.width !== '100%') bar.style.width = '90%';
+  }, 50);
+}
+
+export function hideLoadingBar() {
+  const bar = document.getElementById('global-loading-bar');
+  if (!bar) return;
+  bar.style.width = '100%';
+  clearTimeout(loadingBarTimeout);
+  loadingBarTimeout = setTimeout(() => {
+    bar.style.opacity = '0';
+    setTimeout(() => {
+      if (bar) bar.style.display = 'none';
+    }, 200);
+  }, 200);
+// ── Skeleton Loading Cards ────────────────────────────────────────────────────
+
+export function showSkeletonCards(count = 8) {
+    const grid = document.getElementById('product-grid');
+    if (!grid) return;
+    grid.innerHTML = Array.from({ length: count }, () => `
+        <div class="product-card skeleton-card">
+            <div class="skeleton skeleton-image"></div>
+            <div class="product-info">
+                <div class="skeleton skeleton-title"></div>
+                <div class="skeleton skeleton-text"></div>
+                <div class="skeleton skeleton-text short"></div>
+                <div class="skeleton-footer">
+                    <div class="skeleton skeleton-price"></div>
+                    <div class="skeleton skeleton-button"></div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+export function hideSkeletonCards() {
+    document.querySelectorAll('.skeleton-card').forEach(el => el.remove());
 }

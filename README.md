@@ -7,6 +7,7 @@
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+![Coverage](https://img.shields.io/badge/coverage-50%25-brightgreen)
 
 <div align="center">
 
