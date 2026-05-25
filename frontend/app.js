@@ -347,7 +347,7 @@ function handleSearchKeydown(e) {
 async function loadProducts(append = false) {
     if (!append) {
         els.productGrid.innerHTML = '';
-        els.skeletonLoader.hidden = false;
+        els.skeletonLoader.hidden = true;
         state.page = 1;
     }
 
@@ -383,6 +383,7 @@ async function loadSearchResults(query) {
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
         renderProducts(products, false);
+        els.searchInput.select();
         els.loadMoreContainer.hidden = true;
     } catch {
         els.skeletonLoader.hidden = true;
