@@ -115,11 +115,12 @@ def _get_sentiment_recs(title: str, df: pd.DataFrame, k: int) -> list[str]:
     except IndexError:
         return []
 
-    item_sentiment = df.at[idx, "sentiment_score"] if "sentiment_score" in df.columns else 0.0
     df_copy = df.copy()
-    df_copy["_sent_diff"] = (df_copy.get("sentiment_score", 0) - item_sentiment).abs()
+    if "sentiment_score" not in df_copy.columns:
+        df_copy["sentiment_score"] = 0.0
+
     df_copy = df_copy.drop(index=idx, errors="ignore")
-    top = df_copy.nsmallest(k, "_sent_diff")
+    top = df_copy.sort_values(by="sentiment_score", ascending=False).head(k)
     return top["title"].tolist()
 
 
