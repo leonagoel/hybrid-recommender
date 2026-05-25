@@ -1020,6 +1020,13 @@ main {
     .product-grid, .skeleton-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
+@media (min-width: 768px) and (max-width: 1024px) {
+    .product-grid,
+    .skeleton-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
 @media (max-width: 768px) {
     .product-grid, .skeleton-grid { grid-template-columns: repeat(2, 1fr); }
 
