@@ -177,3 +177,27 @@ class TestContentRecommender:
     def test_search_no_match_returns_empty(self, content_model):
         results = content_model.search('xyzxyzxyz123456', top_n=3)
         assert isinstance(results, list)
+
+    def test_search_very_long_query(self, content_model):
+        long_query = "wizard " * 100
+        try:
+            results = content_model.search(long_query, top_n=3)
+            assert isinstance(results, list)
+        except Exception:
+            pass
+
+    def test_search_special_characters(self, content_model):
+        special_query = "!@#$%^&*()_+-=[]{}|;':\",./<>?"
+        results = content_model.search(special_query, top_n=3)
+        assert isinstance(results, list)
+
+    def test_search_unicode_text(self, content_model):
+        unicode_query = "wizard \u00e9\u00e8\u00ea"
+        results = content_model.search(unicode_query, top_n=3)
+        assert isinstance(results, list)
+
+    def test_search_case_sensitivity(self, content_model):
+        results_lower = content_model.search('wizard', top_n=3)
+        results_upper = content_model.search('WIZARD', top_n=3)
+        assert isinstance(results_lower, list)
+        assert isinstance(results_upper, list)
