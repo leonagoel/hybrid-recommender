@@ -1,3 +1,4 @@
+import { initBenchmarkingDashboard } from './js/benchmarking.js';
 
 // ===== THEME TOGGLE =====
 const themeToggle = document.getElementById('theme-toggle');
@@ -43,6 +44,17 @@ function initThemeToggle() {
 }
 
 document.addEventListener('DOMContentLoaded', initThemeToggle);
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char]));
+}
+
 /**
  * HybridRec — Frontend Application v3
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
@@ -88,6 +100,7 @@ const state = {
     scrollObserver: null,
     compareList: [],
     heatmapSelected: [],
+    activeChips: new Set(['all']),
     filters: {
         category: '',
         rating: '',
@@ -139,10 +152,30 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    productModal: $('product-modal'),
+    productModalClose: $('product-modal-close'),
+    modalProductTitle: $('modal-product-title'),
+    modalProductCategory: $('modal-product-category'),
+    modalProductRating: $('modal-product-rating'),
+    modalProductSentiment: $('modal-product-sentiment'),
+    modalProductDescription: $('modal-product-description'),
+    modalProductScore: $('modal-product-score'),
+    modalRecommendationsList: $('modal-recommendations-list'),
+  };
     categoryFilter: $('category-filter'),
     ratingFilter: $('rating-filter'),
     sentimentFilter: $('sentiment-filter'),
     clearFiltersBtn: $('clear-filters'),
+};
+// ===== CONFIG=====
+const CONFIG = {
+  TOAST_DURATION_MS: 3500,
+  TOAST_EXIT_MS: 300,
+  SEARCH_DEBOUNCE_MS: 300,
+  SENTIMENT_POSITIVE: 0.05,
+  SENTIMENT_NEGATIVE: -0.05,
+  SEARCH_LIMIT: 5,
+  MAX_COMPARE_ITEMS: 20
 };
 
 function loadPreferences() {
@@ -186,9 +219,9 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = '300ms ease';
-        setTimeout(() => el.remove(), 300);
-    }, 3500);
+        el.style.transition = '${CONFIG.TOAST_EXIT_MS}ms ease';
+        setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
+    }, CONFIG.TOAST_DURATION_MS);
 }
 
 function createSkeletonCard() {
@@ -229,13 +262,32 @@ function renderStars(rating) {
     return html;
 }
 
+function formatReviewCount(count) {
+    if (!count || count === 0) {
+        return "No reviews yet";
+    }
+
+    if (count >= 1000) {
+        return `(${(count / 1000).toFixed(1)}k reviews)`;
+    }
+
+    return `(${count} reviews)`;
+}
+
 function sentimentBadge(score) {
-    if (score > 0.05) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
-    if (score < -0.05) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
+    if (score > CONFIG.SENTIMENT_POSITIVE) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
+    if (score < CONFIG.SENTIMENT_NEGATIVE) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
     return '<span class="product-card__sentiment sentiment-neutral">Neutral</span>';
 }
 
 function applyFilters(products) {
+    // Pre-calculate chip states to avoid recomputing for every product
+    const hasAll = state.activeChips.has('all');
+    const activeCategories = Array.from(state.activeChips).filter(c => c.startsWith('category:')).map(c => c.split(':')[1]);
+    const hasTopRated = state.activeChips.has('rating:top-rated');
+    const hasPositive = state.activeChips.has('sentiment:positive');
+    const hasTrending = state.activeChips.has('special:trending');
+
     return products.filter((p) => {
 
         const matchesCategory =
@@ -248,9 +300,9 @@ function applyFilters(products) {
 
         let sentiment = 'neutral';
 
-        if ((p.avg_sentiment || 0) > 0.05) {
+        if ((p.avg_sentiment || 0) > CONFIG.SENTIMENT_POSITIVE) {
             sentiment = 'positive';
-        } else if ((p.avg_sentiment || 0) < -0.05) {
+        } else if ((p.avg_sentiment || 0) < CONFIG.SENTIMENT_NEGATIVE) {
             sentiment = 'negative';
         }
 
@@ -258,11 +310,26 @@ function applyFilters(products) {
             !state.filters.sentiment ||
             sentiment === state.filters.sentiment;
 
-        return (
-            matchesCategory &&
-            matchesRating &&
-            matchesSentiment
-        );
+        let traditionalMatch = matchesCategory && matchesRating && matchesSentiment;
+
+        // Chip logic
+        if (hasAll) {
+            return traditionalMatch;
+        }
+
+        let pass = true;
+        
+        // Categories OR logic
+        if (activeCategories.length > 0) {
+            if (!activeCategories.includes(p.category)) pass = false;
+        }
+
+        // Ratings & Sentiments AND logic
+        if (hasTopRated && (p.rating || 0) < 4.0) pass = false;
+        if (hasPositive && sentiment !== 'positive') pass = false;
+        if (hasTrending && (p.rating || 0) < 4.2) pass = false;
+
+        return traditionalMatch && pass;
     });
 }
 
@@ -309,7 +376,7 @@ function toggleWishlist(product) {
 
     saveWishlist(wishlist);
 
-    renderProducts(state.allProducts, false);
+    renderProducts(state.allProducts, { append: false });
 }
 
 // ── API Helpers ─────────────────────────────────────────────────────
@@ -452,10 +519,12 @@ function renderSearchDropdown(results, query) {
     }
 
     els.searchDropdown.innerHTML = results
-        .map((title, index) => `
+        .map((title, index) => {
+            const safeTitle = escapeHtml(title);
+            return `
             <div
                 class="search-result ${index === state.selectedSearchIdx ? 'active' : ''}"
-                data-title="${title}"
+                data-title="${safeTitle}"
                 data-idx="${index}"
             >
                 <span class="search-result__icon">🔍</span>
@@ -465,7 +534,8 @@ function renderSearchDropdown(results, query) {
                     </div>
                 </div>
             </div>
-        `)
+        `;
+        })
         .join('');
 
     els.searchDropdown.classList.add('active');
@@ -480,9 +550,11 @@ function renderSearchDropdown(results, query) {
 }
 
 function highlightMatch(text, query) {
-    if (!query) return text;
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<strong>$1</strong>');
+    const safeText = escapeHtml(text);
+    if (!query) return safeText;
+    const safeQuery = escapeHtml(query);
+    const regex = new RegExp(`(${safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return safeText.replace(regex, '<strong>$1</strong>');
 }
 
 function selectSearchResult(title) {
@@ -573,7 +645,7 @@ function handleSearch(query) {
     state.searchTimer = setTimeout(async () => {
         try {
             const data = await API.get(
-                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=5`
+                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=${CONFIG.SEARCH_LIMIT}`
             );
 
             state.autocompleteResults = data.suggestions || [];
@@ -584,7 +656,7 @@ function handleSearch(query) {
             console.error('Autocomplete failed:', err);
             closeSearchDropdown();
         }
-    }, 300);
+    }, CONFIG.SEARCH_DEBOUNCE_MS);
 }
 
 // ── Product Loading ─────────────────────────────────────────────────
@@ -606,6 +678,7 @@ async function loadProducts(append = false) {
 
     if (!append) {
         els.productGrid.innerHTML = '';
+        showSkeletons(els.productGrid, 8);
         els.skeletonLoader.hidden = false;
         els.infiniteEnd.hidden = true;
         state.page = 1;
@@ -630,7 +703,7 @@ async function loadProducts(append = false) {
             state.allProducts = [...(state.allProducts || []), ...products];
         }
 
-        renderProducts(products, append);
+        renderProducts(products, { append });
         els.productCount.textContent = `${state.products.length} of ${state.totalProducts} products`;
 
         if (!state.hasMore) {
@@ -672,6 +745,10 @@ function renderTrending(items) {
     const fragment = document.createDocumentFragment();
 
     items.forEach((item, index) => {
+        const title = item.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(item.category || '');
+        const safeDescription = escapeHtml(item.description || 'No description available.');
         const card = document.createElement('div');
         card.className = 'product-card trending-card';
         card.style.animationDelay = `${index * 35}ms`;
@@ -680,9 +757,9 @@ function renderTrending(items) {
                 ${categoryIcon(item.category)}
             </div>
             <div class="product-card__body">
-                ${item.category ? `<span class="product-card__category">${item.category}</span>` : ''}
-                <h3 class="product-card__title">${item.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${item.description || 'No description available.'}</p>
+                ${item.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title">${safeTitle}</h3>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(item.rating || 0)}</div>
@@ -692,7 +769,7 @@ function renderTrending(items) {
                 </div>
             </div>
             <div class="product-card__actions">
-                <button class="btn--add-cart" data-title="${item.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     View Trending
                 </button>
             </div>
@@ -702,12 +779,12 @@ function renderTrending(items) {
         if (actionButton) {
             actionButton.addEventListener('click', (e) => {
                 e.stopPropagation();
-                loadRecommendations(item.title);
-                toast(`Showing recommendations for trending product "${item.title.substring(0, 40)}"`, 'info');
+                loadRecommendations(title);
+                toast(`Showing recommendations for trending product "${title.substring(0, 40)}"`, 'info');
             });
         }
 
-        card.addEventListener('click', () => loadRecommendations(item.title));
+        card.addEventListener('click', () => loadRecommendations(title));
         fragment.appendChild(card);
     });
 
@@ -732,7 +809,7 @@ async function loadSearchResults(query) {
         state.products = [];
         state.hasMore = false;
         state.allProducts = [...products];
-        renderProducts(products, false);
+        renderProducts(products, { append: false, ignoreFilters: true });
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
@@ -768,8 +845,13 @@ function createLazyImage(src, alt) {
     return img;
 }
 
-function renderProducts(products, append) {
-    products = applyFilters(products);
+function renderProducts(products, options = {}) {
+    const append = options.append || false;
+    const ignoreFilters = options.ignoreFilters || false;
+
+    if (!ignoreFilters) {
+        products = applyFilters(products);
+    }
     els.productCount.textContent = `${products.length} products`;
     if (!append) {
     els.productGrid.innerHTML = '';
@@ -831,22 +913,28 @@ function renderProducts(products, append) {
 
     products.forEach((p, i) => {
         state.products.push(p);
+        const title = p.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(p.category || '');
+        const safeDescription = escapeHtml(p.description || 'No description available.');
         const card = document.createElement('div');
         card.className = p.image ? 'product-card' : 'product-card product-card--skeleton';
         card.style.animationDelay = `${i * 50}ms`;
-        const isChecked = state.heatmapSelected.includes(p.title);
+        const isChecked = state.heatmapSelected.includes(title);
         card.innerHTML = `
            <div class="product-card__image">
-            <button class="wishlist-btn" data-title="${p.title}">
-                ${isWishlisted(p.title) ? '❤️' : '🤍'}
+            <button class="wishlist-btn" data-title="${safeTitle}">
+                ${isWishlisted(title) ? '❤️' : '🤍'}
             </button>
 
             ${categoryIcon(p.category)}
             </div>
             <div class="product-card__body">
-                ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                ${p.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title" title="${safeTitle}">
+                ${safeTitle}
+                </h3>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__price">
                 ₹${p.price || 0}
                 </div>
@@ -860,21 +948,31 @@ function renderProducts(products, append) {
             </div>
             <div class="product-card__actions">
                 <label class="compare-label">
-                    <input type="checkbox" class="compare-checkbox" data-title="${p.title}" ${isChecked ? 'checked' : ''}>
+                    <input type="checkbox" class="compare-checkbox" data-title="${safeTitle}" ${isChecked ? 'checked' : ''}>
                     Heatmap
                 </label>
                 <label class="compare-label">
-                    <input type="checkbox" class="side-compare-checkbox" data-title="${p.title}">
+                    <input type="checkbox" class="side-compare-checkbox" data-title="${safeTitle}">
                     Compare
                 </label>
-                <button class="btn--add-cart" data-title="${p.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     Get Recommendations
                 </button>
             </div>
         `;
         if (p.image) {
-            const imgEl = createLazyImage(p.image, p.title);
+            const imgEl = createLazyImage(p.image, title);
             card.querySelector('.product-card__image').appendChild(imgEl);
+        }
+
+        // Wishlist button
+        const wishlistBtn = card.querySelector('.wishlist-btn');
+
+        if (wishlistBtn) {
+            wishlistBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleWishlist(p);
+            });
         }
 
         // Click → get recommendations
@@ -898,7 +996,7 @@ function renderProducts(products, append) {
                 e.stopPropagation();
                 const title = checkbox.dataset.title;
                 if (checkbox.checked) {
-                    if (state.heatmapSelected.length >= 20) {
+                    if (state.heatmapSelected.length >= CONFIG.MAX_COMPARE_ITEMS) {
                         checkbox.checked = false;
                         toast('Maximum 20 items for comparison', 'error');
                         return;
@@ -924,7 +1022,7 @@ function renderProducts(products, append) {
         }
 
         card.addEventListener('click', () => {
-            loadRecommendations(p.title);
+            loadRecommendations(title);
         });
 
         fragment.appendChild(card);
@@ -1017,9 +1115,12 @@ function renderRecommendations(data) {
     return;
 }
 
-    els.recsStrip.innerHTML = recs.map((r) => `
-        <div class="rec-card" data-title="${r.title}">
-            <div class="rec-card__title">${r.title}</div>
+    els.recsStrip.innerHTML = recs.map((r) => {
+        const title = r.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        return `
+        <div class="rec-card" data-title="${safeTitle}">
+            <div class="rec-card__title">${safeTitle}</div>
             <div class="rec-card__rating">
                 <div class="star-rating">${renderStars(r.rating || 0)}</div>
                 <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
@@ -1030,7 +1131,8 @@ function renderRecommendations(data) {
                 · Collab: ${(r.collab_score || 0).toFixed(2)}
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
 
     els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
         card.addEventListener('click', () => {
@@ -1177,7 +1279,76 @@ async function handleWeightChange() {
     } catch {}
 }
 
-function populateCategoryFilter(products) {
+async function openProductModal(product) {
+    els.modalProductTitle.textContent = product.title || 'Untitled';
+
+    els.modalProductCategory.textContent =
+        `Category: ${product.category || 'Unknown'}`;
+
+    els.modalProductRating.textContent =
+        `Rating: ${(product.rating || 0).toFixed(1)}`;
+
+    els.modalProductSentiment.textContent =
+        `Sentiment: ${(product.avg_sentiment || 0).toFixed(2)}`;
+
+    els.modalProductDescription.textContent =
+        product.description || 'No description available.';
+
+    els.modalProductScore.textContent =
+        (product.hybrid_score || 0).toFixed(3);
+
+    els.modalRecommendationsList.innerHTML =
+        '<li>Loading recommendations...</li>';
+
+    els.productModal.hidden = false;
+
+    // Fetch top recommendations
+    try {
+        const data = await API.get(
+            `/api/recommend/${encodeURIComponent(product.title)}?top_n=5`
+        );
+
+        const recs = data.recommendations || [];
+
+        els.modalRecommendationsList.innerHTML = recs.map((r) => `
+            <li>${r.title}</li>
+        `).join('');
+    } catch {
+        els.modalRecommendationsList.innerHTML =
+            '<li>No recommendations available.</li>';
+    }
+}
+
+function closeProductModal() {
+    els.productModal.hidden = true;
+}
+
+// ── API Helpers ─────────────────────────────────────────────────────
+const API = {
+    async get(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    },
+    async post(url, data) {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    },
+    async put(url, data) {
+        const res = await fetch(url, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!res.ok) throw new Error(`API error: ${res.status}`);
+        return res.json();
+    },
+};
 
     const categories = [...new Set(
         products
@@ -1347,6 +1518,7 @@ function renderHeatmap(labels, matrix) {
 
 // ── Infinite Scroll (Intersection Observer) ─────────────────────────
 function setupScrollObserver() {
+    try{
     // Tear down any previous observer to avoid duplicates / leaks
     destroyScrollObserver();
 
@@ -1364,79 +1536,63 @@ function setupScrollObserver() {
             rootMargin: '0px 0px 200px 0px',
             threshold: 0,
         }
-
     );
-  } catch (err) {
-    console.warn('[app] Config fetch failed — running offline.', err);
-  }
+    
+    state.scrollObserver.observe(els.scrollSentinel);
+}
 
-  // 2. Auth
-  if (supabaseClient) {
-    initAuth(supabaseClient);
-    bindAuthEvents();
-    const { data: { session } } = await supabaseClient.auth.getSession();
-    if (!session) await signInAsGuest();
-  }
-
-  // 3. UI infrastructure
-  initModalDismiss();
-  startStatusPoller(30_000);
-
-  // 4. Dataset management
-  bindUploadHandler((data) => {
-    setState({ datasetLoaded: true, productCount: data.rows ?? 0 });
-    loadProducts(1);
-    loadCategories();
-  });
-  bindBuildModelsHandler(() => setState({ modelsBuilt: true }));
-
-    els.searchHistory.classList.add('active');
-
-    // Click history item
-    els.searchHistory.querySelectorAll('.search-history__item')
-        .forEach((el) => {
-            el.addEventListener('click', () => {
-                const query = el.dataset.query;
-                els.searchInput.value = query;
-                loadSearchResults(query);
-                handleSearch(query);
-            });
-        });
-
-    // Clear history
-    const clearBtn = document.getElementById('clear-history-btn');
-
-    if (clearBtn) {
-        clearBtn.addEventListener('click', () => {
-            state.searchHistory = [];
-            renderSearchHistory();
-        });
+// ── Search ──────────────────────────────────────────────────────────
+async function handleSearch(query) {
+    if (!query || query.length < 1) {
+        els.typingIndicator.hidden = true;
+        closeSearchDropdown();
+        return;
     }
+
+    clearTimeout(state.searchTimer);
+    els.typingIndicator.hidden = false;
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
+            state.searchResults = data.results || [];
+            state.selectedSearchIdx = -1;
+            renderSearchDropdown(state.searchResults, query);
+            els.typingIndicator.hidden = true;
+        } catch {
+            closeSearchDropdown();
+            els.typingIndicator.hidden = true;
+        }
+    }, 300);
 }
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
         els.searchDropdown.innerHTML = `
             <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
-                No results for "${query}"
+                No results for "${escapeHtml(query)}"
             </div>`;
         els.searchDropdown.classList.add('active');
         return;
     }
 
-    els.searchDropdown.innerHTML = results.map((r, i) => `
+    els.searchDropdown.innerHTML = results.map((r, i) => {
+        const title = r.title || '';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(r.category || '');
+        return `
         <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
-             data-title="${r.title}" data-idx="${i}">
+             data-title="${safeTitle}" data-idx="${i}">
             <span style="font-size:20px;">${categoryIcon(r.category)}</span>
             <div class="search-result__info">
-                <div class="search-result__title">${highlightMatch(r.title, query)}</div>
+                <div class="search-result__title">${highlightMatch(title, query)}</div>
                 <div class="search-result__meta">
                     ★ ${(r.rating || 0).toFixed(1)}
                     ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
                 </div>
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
     els.searchDropdown.classList.add('active');
 
     // Click handlers
@@ -1449,9 +1605,11 @@ function renderSearchDropdown(results, query) {
 }
 
 function highlightMatch(text, query) {
-    if (!query) return text;
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<strong>$1</strong>');
+    const safeText = escapeHtml(text);
+    if (!query) return safeText;
+    const safeQuery = escapeHtml(query);
+    const regex = new RegExp(`(${safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return safeText.replace(regex, '<strong>$1</strong>');
 }
 
 function selectSearchResult(title) {
@@ -1491,7 +1649,7 @@ function handleSearchKeydown(e) {
 async function loadProducts(append = false) {
     if (!append) {
         els.productGrid.innerHTML = '';
-        els.skeletonLoader.hidden = false;
+        els.skeletonLoader.hidden = true;
         state.page = 1;
     }
 
@@ -1504,7 +1662,7 @@ async function loadProducts(append = false) {
             els.skeletonLoader.hidden = true;
         }
 
-        renderProducts(products, append);
+        renderProducts(products, { append });
         const visibleCount =
     state.selectedCategory === 'All Categories'
         ? products.length
@@ -1534,6 +1692,12 @@ async function loadSearchResults(query) {
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
         renderProducts(products, false);
+        els.searchInput.select();
+        els.productGrid.classList.remove('fade-in');
+
+        requestAnimationFrame(() => {
+        els.productGrid.classList.add('fade-in');
+        });
         els.loadMoreContainer.hidden = true;
     } catch {
         els.skeletonLoader.hidden = true;
@@ -1553,27 +1717,39 @@ function renderProducts(products, append) {
         );
     filteredProducts.forEach((p, i) => {
         state.products.push(p);
+        const title = p.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(p.category || '');
+        const safeDescription = escapeHtml(p.description || 'No description available.');
+        const safeImage = escapeHtml(p.image || '');
         const card = document.createElement('div');
         card.className = 'product-card';
         card.style.animationDelay = `${i * 50}ms`;
         card.innerHTML = `
             <div class="product-card__image">
-                ${categoryIcon(p.category)}
+            ${
+                !p.image || p.image === 'undefined'
+                ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
+                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" />`
+             }
             </div>
             <div class="product-card__body">
-                ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                ${p.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title">${safeTitle}</h3>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
                         <span class="rating-value">${(p.rating || 0).toFixed(1)}</span>
                     </div>
+                    <div class="product-review-count">
+                        ${formatReviewCount(p.review_count)}
+                    </div>
                     ${sentimentBadge(p.avg_sentiment || 0)}
                 </div>
             </div>
             <div class="product-card__actions">
-                <button class="btn--add-cart" data-title="${p.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     Get Recommendations
                 </button>
             </div>
@@ -1588,7 +1764,7 @@ function renderProducts(products, append) {
         });
 
         card.addEventListener('click', () => {
-            loadRecommendations(p.title);
+            openProductModal(p);
         });
 
         fragment.appendChild(card);
@@ -1605,6 +1781,11 @@ async function loadRecommendations(title) {
     }
 
     els.recsSection.hidden = false;
+    els.recsSection.classList.remove('slide-up');
+
+        requestAnimationFrame(() => {
+    els.recsSection.classList.add('slide-up');
+    });
     els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px;">Loading recommendations...</div>';
 
     try {
@@ -1616,9 +1797,12 @@ async function loadRecommendations(title) {
             return;
         }
 
-        els.recsStrip.innerHTML = recs.map((r) => `
-            <div class="rec-card" data-title="${r.title}">
-                <div class="rec-card__title">${r.title}</div>
+        els.recsStrip.innerHTML = recs.map((r) => {
+            const title = r.title || 'Untitled';
+            const safeTitle = escapeHtml(title);
+            return `
+            <div class="rec-card" data-title="${safeTitle}">
+                <div class="rec-card__title">${safeTitle}</div>
                 <div class="rec-card__rating">
                     <div class="star-rating">${renderStars(r.rating || 0)}</div>
                     <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
@@ -1629,7 +1813,8 @@ async function loadRecommendations(title) {
                     · Collab: ${(r.collab_score || 0).toFixed(2)}
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
 
         // Click to chain recommendations
         els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
@@ -1727,9 +1912,28 @@ async function handleWeightChange() {
     const b = parseInt(els.weightBeta.value);
     const g = parseInt(els.weightGamma.value);
 
+    // Save values to sessionStorage
+    sessionStorage.setItem('alpha', a);
+    sessionStorage.setItem('beta', b);
+    sessionStorage.setItem('gamma', g);
+
     try {
-        await API.put('/api/weights', { alpha: a / 100, beta: b / 100, gamma: g / 100 });
+        await API.put('/api/weights', {
+            alpha: a / 100,
+            beta: b / 100,
+            gamma: g / 100
+        });
     } catch {}
+}
+
+function loadSavedWeights() {
+    const alpha = sessionStorage.getItem('alpha') || 33;
+    const beta = sessionStorage.getItem('beta') || 33;
+    const gamma = sessionStorage.getItem('gamma') || 33;
+
+    els.weightAlpha.value = alpha;
+    els.weightBeta.value = beta;
+    els.weightGamma.value = gamma;
 }
 
 // ── Event Listeners ─────────────────────────────────────────────────
@@ -1778,6 +1982,23 @@ function bindEvents() {
         }
     });
 
+    // Product modal close button
+    els.productModalClose.addEventListener('click', closeProductModal);
+
+    // Close on outside click
+    els.productModal.addEventListener('click', (e) => {
+     if (e.target === els.productModal) {
+        closeProductModal();
+        }
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !els.productModal.hidden) {
+            closeProductModal();
+        }
+    });
+
     els.authForm.addEventListener('submit', handleAuth);
     els.authToggleBtn.addEventListener('click', toggleAuthMode);
     els.modalClose.addEventListener('click', () => { els.authModal.hidden = true; });
@@ -1815,7 +2036,10 @@ document.head.appendChild(spinStyle);
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
+    initDebugMode();
+    loadSavedWeights();
     initTypeToSearch();
+    initFilterChips();
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
@@ -1823,6 +2047,9 @@ async function init() {
     // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
+
+    // Benchmarking dashboard
+    initBenchmarkingDashboard();
 }
 
 async function loadCategories() {
@@ -1841,4 +2068,122 @@ async function loadCategories() {
     }
 }
 
+// Store previous scroll position
+let previousScrollPosition = 0;
+
+// Create back button dynamically
+const backButton = document.createElement("button");
+backButton.id = "backToResultsBtn";
+backButton.innerHTML = "← Back to Results";
+document.body.appendChild(backButton);
+
+// Hide initially
+backButton.style.display = "none";
+
+// Product grid container
+const productGrid = document.querySelector(".product-grid");
+
+// Example function when opening product detail
+function openProductDetail(productId) {
+    // Save current scroll position
+    previousScrollPosition = window.scrollY;
+
+    // Open detail logic
+    const detailView = document.querySelector(".product-detail");
+    detailView.classList.add("active");
+
+    // Show button
+    backButton.style.display = "flex";
+}
+
+// Close detail function
+function closeProductDetail() {
+    const detailView = document.querySelector(".product-detail");
+    detailView.classList.remove("active");
+
+    // Hide button
+    backButton.style.display = "none";
+
+    // Restore scroll position smoothly
+    window.scrollTo({
+        top: previousScrollPosition,
+        behavior: "smooth"
+    });
+}
+
+// Back button click
+backButton.addEventListener("click", () => {
+    closeProductDetail();
+});
+
+// Example existing product card click listeners
+document.querySelectorAll(".product-card").forEach(card => {
+    card.addEventListener("click", () => {
+        const productId = card.dataset.id;
+        openProductDetail(productId);
+    });
+});
+
 document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', init);
+
+// ── Language Toggle ─────────────────────────────────────────────────
+let currentLang = 'EN';
+
+function toggleLanguage() {
+    currentLang = currentLang === 'EN' ? 'HI' : 'EN';
+    document.getElementById('lang-toggle').textContent = currentLang;
+    
+    if (currentLang === 'HI') {
+        document.getElementById('search-input').placeholder = 'हिंदी में खोजें...';
+        document.getElementById('hindi-indicator').style.display = 'inline';
+        document.getElementById('search-shortcut').style.display = 'none';
+    } else {
+        document.getElementById('search-input').placeholder = 'Search products...';
+        document.getElementById('hindi-indicator').style.display = 'none';
+        document.getElementById('search-shortcut').style.display = 'block';
+    }
+}
+
+// -- Filter Chips ----------------------------------------------------
+function initFilterChips() {
+    const chipsContainer = document.getElementById('filter-chips');
+    if (!chipsContainer) return;
+
+    const chips = chipsContainer.querySelectorAll('.chip');
+    
+    chips.forEach(chip => {
+        chip.addEventListener('click', (e) => {
+            const filterVal = e.currentTarget.dataset.filter;
+            
+            if (filterVal === 'all') {
+                state.activeChips.clear();
+                state.activeChips.add('all');
+            } else {
+                state.activeChips.delete('all');
+                
+                if (state.activeChips.has(filterVal)) {
+                    state.activeChips.delete(filterVal);
+                } else {
+                    state.activeChips.add(filterVal);
+                }
+                
+                if (state.activeChips.size === 0) {
+                    state.activeChips.add('all');
+                }
+            }
+            
+            // Update UI
+            chips.forEach(c => {
+                if (state.activeChips.has(c.dataset.filter)) {
+                    c.classList.add('active');
+                } else {
+                    c.classList.remove('active');
+                }
+            });
+            
+            // Re-render
+            renderProducts(state.allProducts, false);
+        });
+    });
+}

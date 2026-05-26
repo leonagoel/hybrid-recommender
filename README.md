@@ -7,6 +7,7 @@
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+![Coverage](https://img.shields.io/badge/coverage-50%25-brightgreen)
 
 <div align="center">
 
@@ -295,19 +296,64 @@ Add `-v` to also remove named volumes if you want a completely clean state.
 
 ## 06 — API Reference
 
+**Retrieve frontend configuration (Supabase URL + anon key):**
 ```http
-GET    /api/config
-GET    /api/status
-GET    /api/search?q=...&limit=20
-POST   /api/upload
-POST   /api/build
-GET    /api/recommend/{title}
-GET    /api/items?page=1&per_page=50
-GET    /api/categories
-GET    /api/weights
-PUT    /api/weights
-GET    /api/purchases/{user_id}
-POST   /api/purchases
+GET /api/config
+```
+
+**Check if the API server is running:**
+```http
+GET /api/status
+```
+
+**Full-text search across items (PostgreSQL FTS):**
+```http
+GET /api/search?q=...&limit=20
+```
+
+**Upload a CSV or JSON dataset:**
+```http
+POST /api/upload
+```
+
+**Build / rebuild the ML models from uploaded data:**
+```http
+POST /api/build
+```
+
+**Get hybrid recommendations for a given item title:**
+```http
+GET /api/recommend/{title}
+```
+
+**Paginated list of all items:**
+```http
+GET /api/items?page=1&per_page=50
+```
+
+**List all distinct product categories:**
+```http
+GET /api/categories
+```
+
+**Read the current α / β / γ blending weights:**
+```http
+GET /api/weights
+```
+
+**Update the α / β / γ blending weights:**
+```http
+PUT /api/weights
+```
+
+**Get purchase history for a specific user:**
+```http
+GET /api/purchases/{user_id}
+```
+
+**Record a new purchase event:**
+```http
+POST /api/purchases
 ```
 
 ---
@@ -340,6 +386,59 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 ✓  Generic error messages — no stack trace leakage
 ✓  SQL injection safe (Supabase SDK parameterized queries)
 ```
+
+---
+
+## 09 — FAQ
+
+<details>
+<summary><strong>How do I set up the project locally?</strong></summary>
+
+Clone the repository and install the required dependencies using the package manager mentioned in the project documentation. After that, configure the environment variables if needed and start both the frontend and backend servers. Make sure your database or dataset files are also available before running the app.
+
+</details>
+
+<details>
+<summary><strong>What datasets does this project use?</strong></summary>
+
+This project uses datasets related to user interactions, ratings, and item metadata to generate recommendations. The exact dataset files are usually stored inside the data or datasets directory. You can check the project documentation for download links and formatting details.
+
+</details>
+
+<details>
+<summary><strong>How do the alpha/beta/gamma weights affect recommendations?</strong></summary>
+
+The alpha, beta, and gamma weights control how much influence different recommendation factors have in the final score. Changing these values can prioritize popularity, similarity, or personalized behavior differently. Experimenting with the weights helps fine-tune recommendation quality for your use case.
+
+</details>
+
+<details>
+<summary><strong>What is Bayesian rating and why is it used?</strong></summary>
+
+Bayesian rating is a method used to balance average ratings with the number of votes an item has received. It prevents items with very few ratings from unfairly appearing at the top of recommendations. This makes the ranking system more stable and reliable.
+
+</details>
+
+<details>
+<summary><strong>How do I run the tests?</strong></summary>
+
+Run the test command provided in the project, usually through a package manager like npm or a testing framework command. Make sure all dependencies are installed before running tests. The test results will help verify that the application works correctly after changes.
+
+</details>
+
+<details>
+<summary><strong>The backend shows "Backend offline" — what do I do?</strong></summary>
+
+First, check whether the backend server is running on the correct port. Verify that your environment variables and database connections are configured properly. If the issue continues, restart the backend server and review the console logs for errors.
+
+</details>
+
+<details>
+<summary><strong>Can I use my own dataset with this project?</strong></summary>
+
+Yes, you can use your own dataset as long as it follows the expected format used by the project. You may need to update file paths or preprocessing steps depending on your data structure. Testing with smaller datasets first is recommended to ensure compatibility.
+
+</details>
 
 ---
 
@@ -436,6 +535,10 @@ MIT — see [`LICENSE`](LICENSE)
 
 ---
 
+## Documentation
+
+- [CHANGELOG](CHANGELOG.md)
+
 <div align="center">
 
 ```text
@@ -448,28 +551,36 @@ National Finalist · Smart India Hackathon 2025 · Top 8% of 950+ Teams
 [![GitHub](https://img.shields.io/badge/Follow-GitHub-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/leonagoel)
 [![Email](https://img.shields.io/badge/Email-leona.goel123%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel123@gmail.com)
 
+</div>
+
 ---
 
-## Contributors
+## 👥 Contributors
 
 Thanks to all the amazing people who contribute to this project ❤️
+
+[![Good First Issues](https://img.shields.io/github/issues/leonagoel/hybrid-recommender/good%20first%20issue?color=brightgreen&label=good+first+issues&style=flat-square)](https://github.com/leonagoel/hybrid-recommender/issues?q=is%3Aopen+label%3A%22good+first+issue%22)
+[![Open Issues](https://img.shields.io/github/issues/leonagoel/hybrid-recommender?style=flat-square)](https://github.com/leonagoel/hybrid-recommender/issues)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://makeapullrequest.com)
 
 ### Contributor Grid
 
 <a href="https://github.com/leonagoel/hybrid-recommender/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=leonagoel/hybrid-recommender" />
+  <img src="https://contrib.rocks/image?repo=leonagoel/hybrid-recommender" alt="Contributors" />
 </a>
 
----
+### Want to contribute?
 
-### Top Contributors
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started — all skill levels welcome!
 
-| Contributor | PRs Merged | Joined |
-|-------------|------------|---------|
-| @mansigite19 | 3 | May 2026 |
-| @2024itb047samata | 2 | May 2026 |
-| @vavilalarahul | 1 | May 2026 |
+<div align="center">
 
-> This table is manually maintained and updated weekly.
+| Step | Action |
+|------|--------|
+| 1️⃣ | [Fork the repo](https://github.com/leonagoel/hybrid-recommender/fork) |
+| 2️⃣ | Pick a [good first issue](https://github.com/leonagoel/hybrid-recommender/issues?q=is%3Aopen+label%3A%22good+first+issue%22) |
+| 3️⃣ | Submit a Pull Request |
 
 </div>
+
+---
