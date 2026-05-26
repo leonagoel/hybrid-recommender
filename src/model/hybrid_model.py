@@ -80,6 +80,11 @@ class HybridRecommender:
 
     def set_weights(self, alpha, beta, gamma):
         """Update the scoring weights. Normalized to sum to 1."""
+        import math
+        if any(math.isnan(w) for w in [alpha, beta, gamma]):
+            raise ValueError("Weights must be finite numbers")
+        if any(w < 0 for w in [alpha, beta, gamma]):
+            raise ValueError("Weights must be non-negative")
         total = alpha + beta + gamma
         if total == 0:
             total = 1
