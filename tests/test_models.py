@@ -237,3 +237,25 @@ class TestHybridRecommender:
         recs = hm.recommend('Product A', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
+
+    def test_recommend_for_user_known(self, hybrid_model):
+        """Should return personalized recs for known user."""
+        recs = hybrid_model.recommend_for_user('u1', top_n=3)
+        assert isinstance(recs, list)
+        assert len(recs) > 0
+        required = {'title', 'hybrid_score', 'content_score', 'collab_score', 'sentiment_score'}
+        for r in recs:
+            assert required.issubset(r.keys())
+
+    def test_recommend_for_user_unknown_fallback(self, hybrid_model):
+        """Unknown user should gracefully fallback to popular items."""
+        recs = hybrid_model.recommend_for_user('ghost_user', top_n=3)
+        assert isinstance(recs, list)
+        assert len(recs) > 0
+        
+    def test_recommend_for_user_no_collab_model(self, content_model, sample_item_df):
+        """Missing collab model should gracefully fallback for any user."""
+        hm = HybridRecommender(content_model, collab_model=None, item_df=sample_item_df)
+        recs = hm.recommend_for_user('u1', top_n=3)
+        assert isinstance(recs, list)
+        assert len(recs) > 0

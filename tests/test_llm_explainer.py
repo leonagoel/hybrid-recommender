@@ -143,6 +143,27 @@ class TestExplainRecommendation:
         )
         assert explanation is None or isinstance(explanation, str)
 
+    def test_explain_recommendation_none_response_uses_fallback(self):
+        """Test that a literal None LLM response falls back cleanly."""
+
+        class FakeClient:
+            def generate_content(self, prompt):
+                return None
+
+        explainer = LLMExplainer()
+        explainer.client = FakeClient()
+
+        explanation = explainer.explain_recommendation(
+            recommended_item="Product A",
+            query_item="Product B",
+            scores={"hybrid": 0.88, "content": 0.92},
+            description="Premium electronics",
+            category="Electronics",
+        )
+
+        assert isinstance(explanation, str)
+        assert len(explanation) > 0
+
 
 class TestExplainMultiple:
     """Test batch explanation generation."""

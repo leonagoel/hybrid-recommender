@@ -39,6 +39,8 @@
                     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
                 <input type="text" id="search-input" placeholder="Search products..." autocomplete="off" spellcheck="false">
+                <div class="search-char-counter" id="search-char-counter" style="display: none;">0/100</div>
+                <input type="text" id="search-input" aria-label="Search products" placeholder="Search products..." autocomplete="off" spellcheck="false">
                 
                 <!-- Search history button and dropdown (issue #22) -->
                 <button id="search-history-btn" class="history-btn" aria-label="Search history">⏱️</button>
@@ -180,11 +182,48 @@
                 </svg>
                 Recommended for you
             </h2>
+
             <div class="recs-loader" id="recs-loader" hidden aria-live="polite" aria-label="Loading recommendations">
+
                 <div class="spinner" role="status"></div>
-                <span class="recs-loader__text">Loading recommendations...</span>
+
+                <span class="recs-loader__text">
+                    Loading recommendations...
+                </span>
+
             </div>
+
+            <!-- Recommendation Cards Container -->
+
             <div class="recs-strip" id="recs-strip"></div>
+
+            <!-- Empty Recommendation State -->
+
+            <div id="empty-state" class="empty-state" hidden>
+
+                <div class="empty-icon">
+                    🔍
+                </div>
+
+                <h3>
+                    No Recommendations Found
+                </h3>
+
+                <p>
+                    Try searching another product or adjusting filters.
+                </p>
+
+                <button
+                    id="retry-btn"
+                    class="btn btn--primary"
+                    aria-label="Retry recommendations">
+
+                    Explore Products
+
+                </button>
+
+            </div>
+
         </section>
 
         <div class="filters-bar">

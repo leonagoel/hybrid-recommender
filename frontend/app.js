@@ -60,6 +60,27 @@ function escapeHtml(value) {
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
  */
 
+// ── CSRF Token ──────────────────────────────────────────────────────
+// Fetched once from /api/csrf-token and kept in memory.
+// Every mutating request (POST / PUT / PATCH / DELETE) must include it
+// as the X-CSRF-Token header to satisfy the Double Submit Cookie check.
+let _csrfToken = null;
+
+async function initCsrf() {
+    try {
+        const res = await fetch('/api/csrf-token');
+        if (!res.ok) throw new Error(`CSRF fetch failed: ${res.status}`);
+        const data = await res.json();
+        _csrfToken = data.csrfToken || null;
+    } catch (e) {
+        console.warn('CSRF init failed:', e.message);
+    }
+}
+
+function _csrfHeaders() {
+    return _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {};
+}
+
 // ── Supabase Client ─────────────────────────────────────────────────
 // Loaded dynamically from backend — no hardcoded credentials
 let sbClient = null;
@@ -161,7 +182,6 @@ const els = {
     modalProductDescription: $('modal-product-description'),
     modalProductScore: $('modal-product-score'),
     modalRecommendationsList: $('modal-recommendations-list'),
-  };
     categoryFilter: $('category-filter'),
     ratingFilter: $('rating-filter'),
     sentimentFilter: $('sentiment-filter'),
@@ -389,7 +409,7 @@ const API = {
     async post(url, data) {
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -398,7 +418,7 @@ const API = {
     async put(url, data) {
         const res = await fetch(url, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -803,9 +823,9 @@ async function loadSearchResults(query) {
 
     try {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
-        const products = data.results || data.items || [];
+        const products = data.results || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
         state.hasMore = false;
         state.allProducts = [...products];
@@ -1100,20 +1120,18 @@ async function fallbackRecommendationRequest(title) {
 }
 
 function renderRecommendations(data) {
-    const recs = data.recommendations || [];
+    const recs = data.results || data.recommendations || [];
 
     els.recsLoader.hidden = true;
     els.recsStrip.hidden = false;
 
     if (!recs.length) {
-    els.recsStrip.innerHTML = `
-        <div class="empty-recommendations">
-            <span class="empty-icon" aria-hidden="true">🔍</span>
-            <p>No recommendations found. Try a different product!</p>
-        </div>
-    `;
-    return;
-}
+        els.recsStrip.innerHTML = "";
+        document.getElementById("empty-state").hidden = false;
+        return;
+    }
+
+    document.getElementById("empty-state").hidden = true;
 
     els.recsStrip.innerHTML = recs.map((r) => {
         const title = r.title || 'Untitled';
@@ -1157,12 +1175,29 @@ async function loadRecommendations(title) {
     els.recsSection.hidden = false;
     setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
+    document
+.getElementById(
+"empty-state"
+)
+.hidden=true;
+
+els.recsStrip.innerHTML=`
+<div class="recommendation-loading">
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+</div>
+`;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
 
     try {
         const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         els.recsLoader.hidden = true;
         els.recsStrip.hidden = false;
@@ -1194,7 +1229,13 @@ async function handleUpload(file) {
     form.append('file', file);
 
     try {
-        const res = await fetch('/api/upload', { method: 'POST', body: form });
+        // FormData POST — Content-Type is set automatically by the browser.
+        // We only inject the CSRF header manually.
+        const res = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { ..._csrfHeaders() },
+            body: form,
+        });
         if (!res.ok) throw new Error('Upload failed');
         const data = await res.json();
         toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
@@ -1308,7 +1349,7 @@ async function openProductModal(product) {
             `/api/recommend/${encodeURIComponent(product.title)}?top_n=5`
         );
 
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         els.modalRecommendationsList.innerHTML = recs.map((r) => `
             <li>${r.title}</li>
@@ -1322,48 +1363,6 @@ async function openProductModal(product) {
 function closeProductModal() {
     els.productModal.hidden = true;
 }
-
-// ── API Helpers ─────────────────────────────────────────────────────
-const API = {
-    async get(url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
-    async post(url, data) {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
-    async put(url, data) {
-        const res = await fetch(url, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
-};
-
-    const categories = [...new Set(
-        products
-            .map(p => p.category)
-            .filter(Boolean)
-    )];
-
-    els.categoryFilter.innerHTML = `
-        <option value="">All Categories</option>
-        ${categories.map(cat =>
-            `<option value="${cat}">${cat}</option>`
-        ).join('')}
-    `;
-}
-
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
@@ -1518,7 +1517,6 @@ function renderHeatmap(labels, matrix) {
 
 // ── Infinite Scroll (Intersection Observer) ─────────────────────────
 function setupScrollObserver() {
-    try{
     // Tear down any previous observer to avoid duplicates / leaks
     destroyScrollObserver();
 
@@ -1689,7 +1687,7 @@ async function loadSearchResults(query) {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
         const products = data.results || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
         renderProducts(products, false);
         els.searchInput.select();
@@ -1790,7 +1788,7 @@ async function loadRecommendations(title) {
 
     try {
         const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         if (!recs.length) {
             els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
@@ -1830,203 +1828,7 @@ async function loadRecommendations(title) {
     }
 }
 
-// ── Upload & Build ──────────────────────────────────────────────────
-async function handleUpload(file) {
-    toast(`Uploading ${file.name}...`, 'info');
-    const form = new FormData();
-    form.append('file', file);
 
-    try {
-        const res = await fetch('/api/upload', { method: 'POST', body: form });
-        if (!res.ok) throw new Error('Upload failed');
-        const data = await res.json();
-        toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
-        checkStatus();
-    } catch (err) {
-        toast('Upload failed: ' + err.message, 'error');
-    }
-}
-
-async function handleBuild() {
-    els.buildBtn.disabled = true;
-    els.buildBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin">
-            <path d="M21 12a9 9 0 11-6.219-8.56"/>
-        </svg>
-        Building...`;
-
-    try {
-        const data = await API.post('/api/build', {});
-        state.modelReady = true;
-        toast(`Models built in ${data.build_time_seconds}s — ${data.items?.toLocaleString()} items`, 'success');
-        updateStatus('ready', `Ready — ${data.items?.toLocaleString()} products`);
-        loadProducts();
-    } catch (err) {
-        toast('Build failed: ' + err.message, 'error');
-    } finally {
-        els.buildBtn.disabled = false;
-        els.buildBtn.innerHTML = `
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-            </svg>
-            Build Models`;
-    }
-}
-
-// ── Status ──────────────────────────────────────────────────────────
-async function checkStatus() {
-    try {
-        const data = await API.get('/api/status');
-        const count = data.product_count || 0;
-
-        if (data.model_ready) {
-            state.modelReady = true;
-            updateStatus('ready', `Ready — ${count.toLocaleString()} products`);
-            loadProducts();
-        } else if (count > 0) {
-            updateStatus('has-data', `${count.toLocaleString()} products — Build models to start`);
-            loadProducts();
-        } else {
-            updateStatus('', 'No data — Upload a CSV or JSON dataset');
-            els.skeletonLoader.hidden = true;
-            els.productGrid.innerHTML = `
-                <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
-                    <div style="font-size:48px;margin-bottom:16px;">📦</div>
-                    <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">No products yet</div>
-                    <div style="font-size:13px;">Upload a CSV or JSON dataset to get started</div>
-                </div>`;
-        }
-    } catch {
-        updateStatus('error', 'Backend offline');
-    }
-}
-
-function updateStatus(cls, text) {
-    els.statusDot.className = `status-dot ${cls}`;
-    els.statusText.textContent = text;
-}
-
-// ── Weight Controls ─────────────────────────────────────────────────
-async function handleWeightChange() {
-    const a = parseInt(els.weightAlpha.value);
-    const b = parseInt(els.weightBeta.value);
-    const g = parseInt(els.weightGamma.value);
-
-    // Save values to sessionStorage
-    sessionStorage.setItem('alpha', a);
-    sessionStorage.setItem('beta', b);
-    sessionStorage.setItem('gamma', g);
-
-    try {
-        await API.put('/api/weights', {
-            alpha: a / 100,
-            beta: b / 100,
-            gamma: g / 100
-        });
-    } catch {}
-}
-
-function loadSavedWeights() {
-    const alpha = sessionStorage.getItem('alpha') || 33;
-    const beta = sessionStorage.getItem('beta') || 33;
-    const gamma = sessionStorage.getItem('gamma') || 33;
-
-    els.weightAlpha.value = alpha;
-    els.weightBeta.value = beta;
-    els.weightGamma.value = gamma;
-}
-
-// ── Event Listeners ─────────────────────────────────────────────────
-function bindEvents() {
-    // Search
-    els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
-    els.searchInput.addEventListener('keydown', handleSearchKeydown);
-    els.searchInput.addEventListener('focus', () => {
-    if (els.searchInput.value) {
-        handleSearch(els.searchInput.value);
-    } else {
-        renderSearchHistory();
-    }
-});
-    els.categoryFilter.addEventListener('change', (e) => {
-    state.selectedCategory = e.target.value;
-
-    if (els.searchInput.value.trim()) {
-        loadSearchResults(els.searchInput.value);
-    } else {
-        loadProducts();
-    }
-});
-
-    // Close dropdown on outside click
-    document.addEventListener('click', (e) => {
-       if (!e.target.closest('.header__search')) {
-    closeSearchDropdown();
-    els.searchHistory.classList.remove('active');
-}
-});
-
-    // Auth
-    els.authBtn.addEventListener('click', () => {
-        if (state.isGuest) {
-            els.authModal.hidden = false;
-        } else {
-            // Logged in → sign out
-            sbClient.auth.signOut().then(() => {
-                state.user = null;
-                state.isGuest = true;
-                els.authLabel.textContent = 'Sign In';
-                toast('Signed out', 'info');
-                initAuth(); // Re-login as guest
-            });
-        }
-    });
-
-    // Product modal close button
-    els.productModalClose.addEventListener('click', closeProductModal);
-
-    // Close on outside click
-    els.productModal.addEventListener('click', (e) => {
-     if (e.target === els.productModal) {
-        closeProductModal();
-        }
-    });
-
-    // Close on Escape
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !els.productModal.hidden) {
-            closeProductModal();
-        }
-    });
-
-    els.authForm.addEventListener('submit', handleAuth);
-    els.authToggleBtn.addEventListener('click', toggleAuthMode);
-    els.modalClose.addEventListener('click', () => { els.authModal.hidden = true; });
-    els.authModal.addEventListener('click', (e) => {
-        if (e.target === els.authModal) els.authModal.hidden = true;
-    });
-
-    // Upload
-    els.uploadBtn.addEventListener('click', () => els.fileInput.click());
-    els.fileInput.addEventListener('change', (e) => {
-        if (e.target.files[0]) handleUpload(e.target.files[0]);
-        e.target.value = '';
-    });
-
-    // Build
-    els.buildBtn.addEventListener('click', handleBuild);
-
-    // Load more
-    els.loadMoreBtn.addEventListener('click', () => {
-        state.page++;
-        loadProducts(true);
-    });
-
-    // Weights
-    [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
-        slider.addEventListener('change', handleWeightChange);
-    });
-}
 
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
@@ -2040,6 +1842,9 @@ async function init() {
     loadSavedWeights();
     initTypeToSearch();
     initFilterChips();
+
+    // Fetch CSRF token first — must complete before any mutating request.
+    await initCsrf();
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
