@@ -29,7 +29,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
 from dotenv import load_dotenv
 
@@ -272,9 +272,9 @@ class WeightsUpdate(BaseModel):
 class PurchaseCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str
-    product_id: int
-    rating: float = 0.0
+    user_id: str = Field(..., min_length=1)
+    product_id: int = Field(..., gt=0)
+    rating: float = Field(0.0, ge=0.0, le=5.0)
     review_text: str = ""
 
 
