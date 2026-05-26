@@ -180,7 +180,7 @@ def seed_mock_data(num_users=100, num_purchases=5000):
         try:
             sb.table('reviews').upsert(batch, on_conflict='user_id,product_id').execute()
         except Exception as e:
-            pass
+            print(f"  Warning: Failed to upsert reviews batch: {str(e)[:100]}")
 
     print(f"\n  {'='*50}")
     print(f"  ✅ Seeded {len(mock_users)} users, {inserted:,} purchases, {len(reviews_data):,} reviews")

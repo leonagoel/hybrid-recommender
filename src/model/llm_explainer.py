@@ -143,13 +143,17 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
             )
 
             response = self.client.generate_content(prompt)
-            if response and response.text:
-                return response.text.strip()
-            else:
+            if response is None:
+                logger.warning("LLM returned None response, using fallback")
+                return self._generate_fallback_explanation(
+                    recommended_item, query_item, scores, description, category
+                )
+            if not hasattr(response, 'text') or response.text is None:
                 logger.warning("LLM returned empty response, using fallback")
                 return self._generate_fallback_explanation(
                     recommended_item, query_item, scores, description, category
                 )
+            return response.text.strip()
 
         except Exception as e:
             logger.error(f"Error generating LLM explanation: {e}. Using fallback explanation.")
