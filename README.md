@@ -197,6 +197,11 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 Open **http://localhost:8000**, upload any CSV/JSON from `datasets/`, click **Build Models**, then start typing to search.
 
+Check the active backend version:
+```bash
+curl "http://localhost:8000/api/version"
+```
+
 ### Async Recommendations — Celery Worker Setup
 
 Async recommendation tasks require Redis and a running Celery worker.
