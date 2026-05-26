@@ -152,6 +152,12 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
                 return self._generate_fallback_explanation(
                     recommended_item, query_item, scores, description, category
                 )
+            if not hasattr(response, 'text') or response.text is None:
+                logger.warning("LLM returned empty response, using fallback")
+                return self._generate_fallback_explanation(
+                    recommended_item, query_item, scores, description, category
+                )
+            return response.text.strip()
 
             response_text = getattr(response, "text", None)
             if response_text:
