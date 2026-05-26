@@ -9,6 +9,40 @@ import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
+def remove_duplicate_headers(df):
+    """
+    Normalizes dataframe column headers by lowercasing and stripping whitespace.
+    If duplicate semantic mappings are found, retains the column with fewer null values.
+    """
+    normalized_cols = {}
+    cols_to_drop = []
+
+    for col in df.columns:
+        # Convert to lowercase and strip spaces to detect duplicates like 'Product_ID' and 'product_id'
+        norm_name = str(col).strip().lower()
+        
+        if norm_name in normalized_cols:
+            existing_col = normalized_cols[norm_name]
+            # Compare missing/null value counts between the duplicates
+            existing_nulls = df[existing_col].isnull().sum()
+            current_nulls = df[col].isnull().sum()
+            
+            # Keep the one with fewer null values, drop the other from the array
+            if current_nulls < existing_nulls:
+                cols_to_drop.append(existing_col)
+                normalized_cols[norm_name] = col
+            else:
+                cols_to_drop.append(col)
+        else:
+            normalized_cols[norm_name] = col
+
+    # Drop duplicate column fields gracefully before parsing mapping states
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+        
+    return df
+
+
 def preprocess_books_data(df):
     """
     Preprocess books dataset.
@@ -199,6 +233,8 @@ def read_file(path_or_buffer, file_format=None):
                     encoding=encoding,
                 )
 
+                # Deduplicate raw column configurations early upon reading CSV file buffers
+                df = remove_duplicate_headers(df)
                 break
 
             except (UnicodeDecodeError, UnicodeError):
@@ -216,6 +252,8 @@ def read_file(path_or_buffer, file_format=None):
                 encoding='utf-8',
                 encoding_errors='replace',
             )
+            # Deduplicate raw column configurations early upon fallback processing loop strings
+            df = remove_duplicate_headers(df)
 
     return df
 
@@ -224,6 +262,9 @@ def adapt_data(df):
     """
     Adapt any DataFrame into unified schema.
     """
+
+    # Apply early header case deduplication loop tracking array states
+    df = remove_duplicate_headers(df)
 
     validate_dataframe(df)
 
