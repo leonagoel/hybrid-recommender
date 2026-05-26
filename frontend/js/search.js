@@ -31,12 +31,12 @@ export async function runSearch(query, limit = 20) {
     if (!res.ok) throw new Error(`Search error: ${res.status}`);
 
     const data    = await res.json();
-    const results = data.results ?? data ?? [];
+    const results = data.results ?? [];
 
     setState({ searchResults: results, isSearching: false });
     addToSearchHistory(q);   // <-- ADD SEARCH TO HISTORY
     renderProductCards(results, { context: 'search', query: q });
-    renderPagination(1, data.total ?? results.length, state.perPage, loadProducts);
+    renderPagination(1, data.count ?? data.total ?? results.length, state.perPage, loadProducts);
   } catch (err) {
     showToast('Search failed. Please try again.', 'error');
     console.error('[search]', err);

@@ -94,6 +94,7 @@ def test_search_empty_query_returns_top_rated_products(monkeypatch):
     payload = response.json()
     assert payload["is_fallback"] is True
     assert payload["query"] == ""
+    assert payload["count"] == 2
     assert payload["total"] == 2
     assert payload["results"][0]["title"] == "Wireless Headphones"
     assert len(payload["results"][0]["description"]) == 200
@@ -111,6 +112,7 @@ def test_search_query_uses_postgres_rpc(monkeypatch):
     payload = response.json()
     assert payload["is_fallback"] is False
     assert payload["query"] == "headphones"
+    assert payload["count"] == 1
     assert payload["results"][0]["rank"] == 0.91
     assert fake_supabase.rpc_calls == [
         (

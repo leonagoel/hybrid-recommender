@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
 Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
@@ -466,7 +468,8 @@ def search_items(
         response.headers["x-ratelimit-remaining"] = str(remaining)
         response.headers["x-ratelimit-reset"] = str(reset_time)
 
-    cache_key = _cache_key("search", q, limit, offset)
+    query = _normalize_search_query(q)
+    cache_key = _cache_key("search", query, limit, offset)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
@@ -500,7 +503,14 @@ def search_items(
             'review_count': p.get('review_count', 0), 'rank': p.get('rank', 0.0),
         })
 
-    payload = {"results": results, "total": len(results), "query": query, "is_fallback": not query}
+    result_count = len(results)
+    payload = {
+        "results": results,
+        "count": result_count,
+        "total": result_count,
+        "query": query,
+        "is_fallback": not query,
+    }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
@@ -687,6 +697,9 @@ def get_recommendations(
         raise HTTPException(404, "Item not found or no recommendations.")
 
     payload = {
+        "results": recs,
+        "count": len(recs),
+        "query": query_title,
         "query_item": query_title,
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),
