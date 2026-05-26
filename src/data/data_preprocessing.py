@@ -182,16 +182,30 @@ def preprocess_sentiment_data(
     return df
 
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Route DataFrame to the correct dataset-specific preprocessor.
 
-    columns = df.columns.str.lower()
+    Normalises column names to lowercase + stripped before both the
+    routing check AND before passing to branch functions, so datasets
+    with mixed-case headers ('Authors', 'PUBLISHER', 'User_ID', etc.)
+    are handled correctly.
 
-    if 'authors' in columns or 'publisher' in columns:
+    Previously, df.columns.str.lower() was used only for the 'in' check
+    but the original-cased df was passed to branch functions — meaning
+    encode_categorical(df, ['authors', 'publisher']) silently skipped
+    encoding because 'authors' not in ['Authors', 'Publisher', ...].
+    """
+    # Normalise on a copy so we never mutate the caller's DataFrame
+    df = df.copy()
+    df.columns = df.columns.str.lower().str.strip()
+
+    if 'authors' in df.columns or 'publisher' in df.columns:
         return preprocess_books_data(df)
 
-    elif 'user_id' in columns or 'book_id' in columns:
+    elif 'user_id' in df.columns or 'book_id' in df.columns:
         return preprocess_ratings_data(df)
 
-    elif 'sentiment' in columns:
+    elif 'sentiment' in df.columns:
         return preprocess_sentiment_data(df)
 
     return handle_missing_values(df)
