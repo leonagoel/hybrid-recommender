@@ -14,9 +14,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pandas as pd
 from tqdm import tqdm
+<<<<<<< HEAD
 from data_adapter import adapt_data
 from nlp_engine import analyze_sentiment, extract_keywords
 from db import get_supabase_admin
+=======
+from src.data.data_adapter import adapt_data
+from src.model.nlp_engine import analyze_sentiment
+from src.data.db import get_supabase_admin
+>>>>>>> upstream/main
 
 
 def chunked(df, size):

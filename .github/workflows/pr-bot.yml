@@ -2,18 +2,19 @@ name: GSSoC PR Bot
 
 on:
   pull_request_target:
-    types: [opened, reopened]
+    types: [opened, reopened, closed, labeled]
 
 permissions:
   pull-requests: write
   issues: write
-  contents: read
+  contents: write
 
 jobs:
   welcome-pr:
+    if: github.event.action == 'opened' || github.event.action == 'reopened'
     runs-on: ubuntu-latest
     steps:
-      - name: Welcome PR and check requirements
+      - name: Welcome PR and add mandatory labels
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -23,57 +24,227 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const prNumber = pr.number;
-            const isFirstTime = pr.author_association === 'FIRST_TIME_CONTRIBUTOR' || 
-                               pr.author_association === 'NONE';
+            const isFirstTime = pr.author_association === 'FIRST_TIME_CONTRIBUTOR' || pr.author_association === 'NONE';
             const body = pr.body || '';
+            const title = pr.title.toLowerCase();
 
-            // Check if PR description has required sections
+            const mandatoryLabels = ['gssoc:approved', 'mentor:leonagoel', 'status:review-needed'];
+
+            if (title.startsWith('feat') || title.startsWith('feature')) mandatoryLabels.push('type:feature');
+            else if (title.startsWith('fix') || title.startsWith('bug')) mandatoryLabels.push('type:bug');
+            else if (title.startsWith('docs')) mandatoryLabels.push('type:docs');
+            else if (title.startsWith('refactor')) mandatoryLabels.push('type:refactor');
+            else if (title.startsWith('test')) mandatoryLabels.push('type:testing');
+            else if (title.startsWith('chore') || title.startsWith('ci')) mandatoryLabels.push('type:devops');
+
+            try {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: mandatoryLabels });
+            } catch(e) {}
+
             const hasWhatChanged = body.toLowerCase().includes('what changed');
             const hasWhy = body.toLowerCase().includes('why');
             const hasHowToTest = body.toLowerCase().includes('how to test');
-            const hasRelatedIssue = body.toLowerCase().includes('closes #') || 
-                                    body.toLowerCase().includes('fixes #') ||
-                                    body.toLowerCase().includes('related issue');
-
-            let checklist = '';
-            checklist += hasWhatChanged ? '✅' : '❌';
-            checklist += ' What changed section\n';
-            checklist += hasWhy ? '✅' : '❌';
-            checklist += ' Why section\n';
-            checklist += hasHowToTest ? '✅' : '❌';
-            checklist += ' How to test section\n';
-            checklist += hasRelatedIssue ? '✅' : '❌';
-            checklist += ' Related issue linked\n';
-
+            const hasRelatedIssue = /closes #|fixes #|related issue/i.test(body);
             const allGood = hasWhatChanged && hasWhy && hasHowToTest && hasRelatedIssue;
 
-            let welcomeMessage = '';
+            let checklist = '';
+            checklist += (hasWhatChanged ? 'YES' : 'NO') + ' - What changed section\n';
+            checklist += (hasWhy ? 'YES' : 'NO') + ' - Why section\n';
+            checklist += (hasHowToTest ? 'YES' : 'NO') + ' - How to test section\n';
+            checklist += (hasRelatedIssue ? 'YES' : 'NO') + ' - Related issue linked\n';
 
-            if (isFirstTime) {
-              welcomeMessage = `🎉 **Welcome to Hybrid Recommender, @${sender}!** This is your first contribution here!\n\n`;
-            } else {
-              welcomeMessage = `👋 **Thanks for your PR, @${sender}!**\n\n`;
+            let msg = isFirstTime
+              ? '🎉 Welcome to Hybrid Recommender, @' + sender + '! This is your first contribution here!\n\n'
+              : '👋 Thanks for your PR, @' + sender + '!\n\n';
+
+            msg += '**Labels added:** `gssoc:approved` | `mentor:leonagoel` | `status:review-needed`\n\n';
+            msg += '**PR Description Checklist:**\n```\n' + checklist + '```\n';
+            msg += allGood ? '✅ PR description looks complete!\n\n' : '⚠️ Some required sections are missing. Please update your PR description.\n\n';
+            msg += '**What happens next:**\n';
+            msg += '1. @leonagoel will review your changes\n';
+            msg += '2. CI checks must pass\n';
+            msg += '3. Once approved, this PR will be auto-merged\n\n';
+            msg += '⏱️ Please respond to review comments within **48 hours**.';
+
+            try {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: msg });
+            } catch(e) {
+              console.log('Could not post welcome comment:', e.message);
             }
 
-            welcomeMessage += `**PR Description Checklist:**\n${checklist}\n`;
-
-            if (!allGood) {
-              welcomeMessage += `\n⚠️ **Some required sections are missing from your PR description.**\nPlease update your PR description to include all required sections from [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md).\n\n`;
-            } else {
-              welcomeMessage += `\n✅ **PR description looks complete!**\n\n`;
+            try {
+              await github.rest.pulls.requestReviewers({ owner, repo, pull_number: prNumber, reviewers: ['leonagoel'] });
+            } catch(e) {
+              console.log('Could not request review:', e.message);
             }
 
-            welcomeMessage += `**What happens next:**\n`;
-            welcomeMessage += `1. A mentor (@${owner}) will review your changes\n`;
-            welcomeMessage += `2. CI checks must pass (lint + smoke test)\n`;
-            welcomeMessage += `3. Once approved, labels will be added for GSSoC points\n`;
-            welcomeMessage += `4. PR will be merged after approval\n\n`;
-            welcomeMessage += `⏱️ Please respond to review comments within **48 hours**.\n\n`;
-            welcomeMessage += `📖 Make sure your changes follow our [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)`;
+  copy-issue-labels:
+    if: github.event.action == 'opened' || github.event.action == 'reopened'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Copy level/type/area labels from linked issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || '';
+            const title = pr.title || '';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = pr.number;
 
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: prNumber,
-              body: welcomeMessage
+            // Search in body first (Closes/Fixes/Resolves #123)
+            let match = body.match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
+
+            // Fallback 1: any #123 mention in body
+            if (!match) match = body.match(/#(\d+)/);
+
+            // Fallback 2: any #123 mention in PR title
+            if (!match) match = title.match(/#(\d+)/);
+
+            if (!match) {
+              console.log('No linked issue found in body or title. Skipping.');
+              return;
+            }
+
+            const issueNumber = parseInt(match[1]);
+            console.log('Linked issue #' + issueNumber);
+
+            let issue;
+            try {
+              const { data } = await github.rest.issues.get({
+                owner, repo, issue_number: issueNumber
+              });
+              issue = data;
+            } catch(e) {
+              console.log('Could not fetch issue #' + issueNumber + ':', e.message);
+              return;
+            }
+
+            const issueLabels = issue.labels.map(l => l.name);
+            console.log('Issue labels:', issueLabels);
+
+            const labelsToCopy = issueLabels.filter(l =>
+              l.startsWith('level:') ||
+              l.startsWith('type:') ||
+              l === 'frontend' ||
+              l === 'backend' ||
+              l === 'ml/ai'
+            );
+
+            if (labelsToCopy.length === 0) {
+              console.log('No relevant labels to copy.');
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: prNumber, labels: labelsToCopy
             });
+            console.log('Copied labels:', labelsToCopy);
+
+  auto-merge-on-label:
+    if: github.event.action == 'labeled' && github.event.label.name == 'status:approved'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge PR when status:approved label is added
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_PAT }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+
+            console.log('PR state:', pr.state);
+            console.log('PR mergeable:', pr.mergeable);
+            console.log('PR mergeable_state:', pr.mergeable_state);
+
+            if (pr.state !== 'open') {
+              console.log('PR not open, skipping.');
+              return;
+            }
+
+            if (pr.draft) {
+              console.log('PR is draft, skipping.');
+              return;
+            }
+
+            try {
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: 'status:review-needed' });
+            } catch(e) {}
+
+            if (pr.mergeable === false) {
+              try {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber,
+                  body: '✅ Marked as approved but **cannot auto-merge** — this PR has conflicts.\n\nPlease resolve conflicts and push again, then re-add the `status:approved` label.'
+                });
+              } catch(e) {}
+              return;
+            }
+
+            try {
+              await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: prNumber,
+                merge_method: 'squash',
+                commit_title: pr.title + ' (#' + prNumber + ')',
+                commit_message: ''
+              });
+              console.log('PR #' + prNumber + ' merged successfully!');
+              try {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber,
+                  body: '🎉 **Merged!**\n\nPoints will reflect on the GSSoC leaderboard at next **4 AM IST** refresh.\n\n🏆 https://gssoc.girlscript.org/leaderboard'
+                });
+              } catch(e) {}
+            } catch(e) {
+              console.log('Merge failed:', e.message);
+              try {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber,
+                  body: '⚠️ Could not auto-merge: `' + e.message + '`\n\nPlease click **Merge pull request** manually.'
+                });
+              } catch(e2) {}
+            }
+
+  notify-rebase-on-merge:
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify all open PRs to rebase
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const mergedPR = context.payload.pull_request;
+
+            const openPRs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100
+            });
+
+            for (const pr of openPRs) {
+              if (pr.number === mergedPR.number) continue;
+              try {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: pr.number,
+                  body: '⚠️ **Main branch was just updated!**\n\n'
+                    + 'PR #' + mergedPR.number + ' ("' + mergedPR.title + '") was just merged into `main`.\n\n'
+                    + 'Please rebase your branch to avoid conflicts:\n'
+                    + '```\n'
+                    + 'git fetch origin\n'
+                    + 'git rebase origin/main\n'
+                    + 'git push --force-with-lease\n'
+                    + '```\n\n'
+                    + 'Keeping your branch up to date prevents merge conflicts. 🚀'
+                });
+              } catch(e) {
+                console.log('Could not notify PR #' + pr.number + ':', e.message);
+              }
+            }
