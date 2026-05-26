@@ -50,7 +50,10 @@ python scripts/seed_mock_data.py --users 50 --purchases 2000  # Custom amounts
 
 ### 5. Start the Server
 ```bash
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
+if (-not $env:PORT) { $env:PORT = "8000" }
+
+python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT --reload
 ```
 ## Windows Local Setup (Recommended)
 
