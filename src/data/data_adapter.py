@@ -158,6 +158,50 @@ def validate_dataframe(df):
     return True
 
 
+def _has_blank_values(series):
+    """Return True when a column contains nulls or blank string values."""
+    return series.isna().any() or series.astype(str).str.strip().eq('').any()
+
+
+def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=None, rating_col=None):
+    """
+    Validate columns that feed the recommender pipeline before normalization.
+    """
+    missing = []
+    if user_col is None:
+        missing.append('user_id')
+    if item_id_col is None and title_col is None:
+        missing.append('item_id or title')
+    if rating_col is None:
+        missing.append('rating')
+
+    if missing:
+        raise ValueError(
+            "Interaction data is missing required column(s): "
+            + ", ".join(missing)
+        )
+
+    corrupted = []
+    for label, col in (('user_id', user_col), ('item_id', item_id_col), ('title', title_col)):
+        if col is not None and _has_blank_values(df[col]):
+            corrupted.append(label)
+
+    if _has_blank_values(df[rating_col]):
+        corrupted.append('rating')
+
+    ratings = pd.to_numeric(df[rating_col], errors='coerce')
+    if ratings.isna().any():
+        corrupted.append('rating must be numeric')
+
+    if corrupted:
+        raise ValueError(
+            "Interaction data contains invalid value(s) in: "
+            + ", ".join(dict.fromkeys(corrupted))
+        )
+
+    return True
+
+
 def read_file(path_or_buffer, file_format=None):
     """
     Read CSV or JSON into DataFrame.
@@ -221,25 +265,61 @@ def read_file(path_or_buffer, file_format=None):
 
 
 def adapt_data(df):
-    """
-    Adapt any DataFrame into unified schema.
-    """
+    """Adapt a preprocessed DataFrame into the unified schema used by all models.
 
-    validate_dataframe(df)
+    This function handles schema adaptation ONLY: column detection,
+    renaming to canonical names, and filling missing required fields.
+
+    It does NOT run preprocessing (encoding, normalisation, deduplication).
+    DatasetManager.load_csv() already calls preprocess() before this
+    function. Running preprocessing a second time here caused:
+    raw_columns = df.columns
+    raw_title_col = detect_column(
+        raw_columns,
+        ['title', 'name', 'product_name', 'item_name']
+    )
+    raw_user_col = detect_column(
+        raw_columns,
+        ['user_id', 'user', 'reviewer', 'customer']
+    )
+    raw_rating_col = detect_column(
+        raw_columns,
+        ['rating', 'score', 'stars']
+    )
+    raw_item_id_col = detect_column(
+        raw_columns,
+        ['item_id', 'product_id', 'asin',
+         'isbn', 'book_id', 'movie_id']
+    )
+    if raw_user_col is not None or raw_rating_col is not None or raw_item_id_col is not None:
+        validate_recommender_inputs(
+            df,
+            user_col=raw_user_col,
+            item_id_col=raw_item_id_col,
+            title_col=raw_title_col,
+            rating_col=raw_rating_col,
+        )
 
     # Apply preprocessing automatically
 
-    if 'authors' in df.columns or 'publisher' in df.columns:
+    - LabelEncoder re-encoding already-integer columns with a different
+      mapping on every load (inconsistent encodings across sessions).
+    - MinMaxScaler re-scaling an already 0-1 ``rating_normalized`` column,
+      collapsing all rating variance to std == 0 (flat distribution).
 
-        df = preprocess_books_data(df)
+    Correct pipeline order enforced by DatasetManager.load_csv()::
 
-    elif 'user_id' in df.columns and 'rating' in df.columns:
+        raw_df -> preprocess(raw_df) -> adapt_data(preprocessed_df)
 
-        df = preprocess_ratings_data(df)
+    Args:
+        df: A preprocessed DataFrame (output of preprocess()).
 
-    elif 'sentiment' in df.columns:
+    Returns:
+        Tuple of (adapted_df, meta) where adapted_df uses canonical column
+        names and meta is a dict of detected mappings and dataset flags.
+    """
 
-        df = preprocess_sentiment_data(df)
+    validate_dataframe(df)
 
     columns = df.columns
 
@@ -288,6 +368,18 @@ def adapt_data(df):
         columns,
         ['purchases', 'orders', 'bought', 'transactions']
     )
+
+    is_interaction_data = (
+        user_col is not None or rating_col is not None or item_id_col is not None
+    )
+    if is_interaction_data:
+        validate_recommender_inputs(
+            df,
+            user_col=user_col,
+            item_id_col=item_id_col,
+            title_col=title_col,
+            rating_col=rating_col,
+        )
 
     df = df.copy()
 
