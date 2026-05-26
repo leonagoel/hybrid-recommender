@@ -447,6 +447,30 @@ streamlit run app.py
 # Browser opens automatically with CSV upload interface
 ```
 
+### Environment Validation
+
+Run the helper script to verify required environment variables:
+
+```bash
+python scripts/check_env.py
+```
+
+Example output:
+
+```text
+❌ Missing environment variables:
+ - SUPABASE_URL
+ - SUPABASE_ANON_KEY
+ - SUPABASE_SERVICE_KEY
+```
+
+Or:
+
+```text
+✅ Environment setup looks good
+```
+
+
 ---
 
 ## 12 — Beginner Contributor Tips
