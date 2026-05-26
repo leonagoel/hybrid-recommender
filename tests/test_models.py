@@ -10,9 +10,9 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from hybrid_model import HybridRecommender, bayesian_rating
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender, bayesian_rating
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -184,6 +184,21 @@ class TestHybridRecommender:
         for r in recs:
             assert required.issubset(r.keys())
 
+    def test_recommend_explain_false_keeps_default_payload_compact(self, hybrid_model):
+        recs = hybrid_model.recommend('Product A', top_n=2)
+        assert recs
+        assert 'explanation' not in recs[0]
+
+    def test_recommend_explain_true_adds_score_breakdown(self, hybrid_model):
+        recs = hybrid_model.recommend('Product A', top_n=2, explain=True)
+        assert recs
+        explanation = recs[0]['explanation']
+        assert explanation['source_item'] == 'Product A'
+        assert 'component_scores' in explanation
+        assert 'weighted_components' in explanation
+        assert 'top_content_terms' in explanation
+        assert explanation['signals']['sentiment_polarity'] in {'positive', 'neutral', 'negative'}
+
     def test_recommend_sorted_by_hybrid_score(self, hybrid_model):
         recs = hybrid_model.recommend('Product A', top_n=5)
         scores = [r['hybrid_score'] for r in recs]
@@ -220,5 +235,27 @@ class TestHybridRecommender:
         """HybridRecommender should work without a collab model (content + sentiment only)."""
         hm = HybridRecommender(content_model, collab_model=None, item_df=sample_item_df)
         recs = hm.recommend('Product A', top_n=3)
+        assert isinstance(recs, list)
+        assert len(recs) > 0
+
+    def test_recommend_for_user_known(self, hybrid_model):
+        """Should return personalized recs for known user."""
+        recs = hybrid_model.recommend_for_user('u1', top_n=3)
+        assert isinstance(recs, list)
+        assert len(recs) > 0
+        required = {'title', 'hybrid_score', 'content_score', 'collab_score', 'sentiment_score'}
+        for r in recs:
+            assert required.issubset(r.keys())
+
+    def test_recommend_for_user_unknown_fallback(self, hybrid_model):
+        """Unknown user should gracefully fallback to popular items."""
+        recs = hybrid_model.recommend_for_user('ghost_user', top_n=3)
+        assert isinstance(recs, list)
+        assert len(recs) > 0
+        
+    def test_recommend_for_user_no_collab_model(self, content_model, sample_item_df):
+        """Missing collab model should gracefully fallback for any user."""
+        hm = HybridRecommender(content_model, collab_model=None, item_df=sample_item_df)
+        recs = hm.recommend_for_user('u1', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
