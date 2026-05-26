@@ -1,11 +1,14 @@
 pandas
 numpy
 scikit-learn
+scipy
 fastapi
 uvicorn[standard]
 nltk
+sentence-transformers>=3.0.0,<4.0.0
 python-multipart
 supabase
 python-dotenv
 tqdm
-scipy
+torch
+transformers
