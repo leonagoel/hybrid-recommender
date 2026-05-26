@@ -13,6 +13,9 @@ from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone
 
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from fastapi import (
@@ -52,6 +55,22 @@ from functools import lru_cache
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+
+@app.on_event("startup")
+def download_nltk_assets():
+    """
+    Ensures NLTK VADER assets are downloaded safely at startup
+    to prevent multi-worker download race conditions.
+    """
+    try:
+        # Check if VADER is already downloaded and working locally
+        SentimentIntensityAnalyzer()
+        logger.info("NLTK VADER lexicon verified successfully.")
+    except LookupError:
+        # If it's missing, download it safely on a single thread before taking traffic
+        logger.info("VADER lexicon missing. Downloading safely at startup...")
+        nltk.download('vader_lexicon', quiet=True)
+        logger.info("NLTK VADER lexicon downloaded successfully.")
 
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
