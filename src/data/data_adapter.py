@@ -222,26 +222,32 @@ def read_file(path_or_buffer, file_format=None):
 
 def adapt_data(df):
     """
-    Adapt any DataFrame into unified schema.
+    Adapt any DataFrame into unified schema (case‑insensitive column matching).
     """
 
     validate_dataframe(df)
 
-    # Apply preprocessing automatically
-
-    if 'authors' in df.columns or 'publisher' in df.columns:
-
+    # ── Decide which preprocessing pipeline to use (case‑insensitive) ──
+    columns = df.columns
+    # Books dataset detection
+    authors_col = detect_column(columns, ['authors'])
+    publisher_col = detect_column(columns, ['publisher'])
+    if authors_col is not None or publisher_col is not None:
         df = preprocess_books_data(df)
 
-    elif 'user_id' in df.columns and 'rating' in df.columns:
-
+    # Ratings dataset detection (user_id and rating)
+    user_col = detect_column(columns, ['user_id', 'user', 'reviewer', 'customer'])
+    rating_col = detect_column(columns, ['rating', 'score', 'stars'])
+    if user_col is not None and rating_col is not None:
         df = preprocess_ratings_data(df)
 
-    elif 'sentiment' in df.columns:
-
+    # Sentiment dataset detection
+    sentiment_col = detect_column(columns, ['sentiment'])
+    if sentiment_col is not None:
         df = preprocess_sentiment_data(df)
 
-    columns = df.columns
+    # ── Main column mapping (case‑insensitive) ──
+    columns = df.columns  # update after possible preprocessing
 
     title_col = detect_column(
         columns,
