@@ -612,6 +612,7 @@ def search_items(
     )
     if rate_limited is not None:
         return rate_limited
+    
 
     query = _normalize_search_query(q)
     cache_key = _cache_key("search", query, limit, offset)
