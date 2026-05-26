@@ -70,7 +70,12 @@ class CollaborativeRecommender:
         self.user_factors = self.svd.fit_transform(self.user_item_sparse)
         self.item_factors = self.svd.components_
 
-    def recommend(self, title, top_n=10):
+        # Build catalog map if catalog column is present in interaction_df
+        self._catalog_map = {}
+        if 'catalog' in self.df.columns:
+            self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+
+    def recommend(self, title, top_n=10, target_catalog=None):
         """
         Item-item collaborative recommendations using SVD latent space.
         Returns list of dicts: [{ 'title', 'collab_score' }, ...]
@@ -91,6 +96,13 @@ class CollaborativeRecommender:
             t = self.title_list[i]
             if t == title or t in seen:
                 continue
+
+            # Catalog filtering
+            if target_catalog and self._catalog_map:
+                item_catalog = self._catalog_map.get(t, '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             seen.add(t)
             results.append({
                 'title': t,
@@ -101,7 +113,7 @@ class CollaborativeRecommender:
 
         return results
 
-    def predict_for_user(self, user_id, top_n=10):
+    def predict_for_user(self, user_id, top_n=10, target_catalog=None):
         """
         Personalized recommendations for a specific user.
         Predicts scores for all unseen items and returns top N.
@@ -123,6 +135,13 @@ class CollaborativeRecommender:
             t = self.title_list[i]
             if t in seen_items:
                 continue
+
+            # Catalog filtering
+            if target_catalog and self._catalog_map:
+                item_catalog = self._catalog_map.get(t, '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             scored.append((t, float(score)))
 
         scored.sort(key=lambda x: x[1], reverse=True)
