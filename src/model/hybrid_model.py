@@ -245,18 +245,21 @@ class HybridRecommender:
         else:
             a, b, g = self._get_active_weights(self.alpha, self.beta, self.gamma, user_id=user_id, candidate_titles=all_titles)
 
-        # 6. Compute hybrid score with popularity boost
+        # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
         for i, item in enumerate(items):
-            hybrid = (
+            hybrid_base = (
                 a * content_scores[i] +
                 b * collab_scores[i] +
                 g * sentiment_scores[i]
             )
 
-            # Light popularity boost (max 5% bonus)
+            # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
             popularity = self._popularity_map.get(item['title'], 0.5)
-            hybrid += 0.05 * popularity
+            popularity_bonus = 0.05 * popularity
+            
+            # Enforce strict upper bound limit check
+            hybrid = min(1.0, hybrid_base + popularity_bonus)
 
             # Lookup info from content model's df
             row_data = self.content_model.df[

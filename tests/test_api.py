@@ -14,3 +14,4 @@ def test_health_endpoint():
     assert data["status"] == "healthy"
     assert "timestamp" in data
     assert isinstance(data["model_loaded"], bool)
+    
