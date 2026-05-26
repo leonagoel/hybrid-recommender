@@ -16,7 +16,7 @@ class DatasetManager:
         self._datasets = {}  # id → { 'name': str, 'raw': df, 'adapted': df, 'meta': dict }
 
     # ------------------------------------------------------------------
-    def load_csv(self, file_path_or_buffer, name=None):
+    def load_csv(self, file_path_or_buffer, name=None, catalog=None):
         """
         Load a CSV file (path string or file-like object) into the manager.
         Returns the dataset ID.
@@ -32,12 +32,18 @@ class DatasetManager:
             if name is None:
                 name = 'uploaded_dataset'
 
+        if catalog is None:
+            catalog = os.path.splitext(name)[0]
+
         raw_df = preprocess(raw_df)
         adapted_df, meta = adapt_data(raw_df)
+        adapted_df['catalog'] = catalog
+        
         ds_id = str(uuid.uuid4())[:8]
 
         self._datasets[ds_id] = {
             'name': name,
+            'catalog': catalog,
             'raw': raw_df,
             'adapted': adapted_df,
             'meta': meta,
@@ -111,6 +117,7 @@ class DatasetManager:
             'review_text':  lambda x: ' '.join(x.astype(str)),
             'views':        'sum',
             'purchases':    'sum',
+            'catalog':      'first',
         }
         
         # Filter agg_dict to only include columns present in merged

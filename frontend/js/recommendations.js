@@ -77,7 +77,7 @@ async function fallbackRecommendationRequest(title) {
 }
 
 function renderRecommendations(data) {
-  const recs = data.recommendations || [];
+  const recs = data.results || data.recommendations || [];
 
   const recsStrip = document.getElementById('recs-strip');
   const recsLoader = document.getElementById('recs-loader');

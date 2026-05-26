@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  # ── Backend ──────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hybridrec-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./datasets:/app/datasets:ro   # mount datasets/ read-only
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - hybridrec
+
+  # ── Frontend ─────────────────────────────────────────────────────────────
+  frontend:
+    image: nginx:alpine
+    container_name: hybridrec-frontend
+    ports:
+      - "3000:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - hybridrec
+
+networks:
+  hybridrec:
+    driver: bridge

@@ -28,11 +28,15 @@ class LLMExplainer:
             model_name: Google Generative AI model to use (default: gemini-pro)
             api_key: Google API key (will read from GOOGLE_API_KEY env var if not provided)
         """
-        if genai is None:
-            raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
-
         self.model_name = model_name
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or GOOGLE_API_KEY
+
+        if genai is None:
+            logger.warning(
+                "google-generativeai not installed. Falling back to text-based explanations."
+            )
+            self.client = None
+            return
 
         if not self.api_key or self.api_key == "Your_API_KEY":
             logger.warning(
@@ -143,13 +147,26 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
             )
 
             response = self.client.generate_content(prompt)
-            if response and response.text:
-                return response.text.strip()
-            else:
+            if response is None:
+                logger.warning("LLM returned None response, using fallback")
+                return self._generate_fallback_explanation(
+                    recommended_item, query_item, scores, description, category
+                )
+            if not hasattr(response, 'text') or response.text is None:
                 logger.warning("LLM returned empty response, using fallback")
                 return self._generate_fallback_explanation(
                     recommended_item, query_item, scores, description, category
                 )
+            return response.text.strip()
+
+            response_text = getattr(response, "text", None)
+            if response_text:
+                return response_text.strip()
+
+            logger.warning("LLM returned empty response, using fallback")
+            return self._generate_fallback_explanation(
+                recommended_item, query_item, scores, description, category
+            )
 
         except Exception as e:
             logger.error(f"Error generating LLM explanation: {e}. Using fallback explanation.")

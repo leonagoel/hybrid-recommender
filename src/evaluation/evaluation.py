@@ -229,25 +229,7 @@ def run_evaluation(
 
     # --- build relevance sets from rating data ---
     # "relevant" items for a given title = items in same category OR rating >= 4.0
-    def _get_relevant(row_idx: int) -> set[str]:
-        row = df.iloc[row_idx]
-        relevant = set()
-        # Same category
-        if "category" in df.columns and pd.notna(row.get("category")):
-            same_cat = df[df["category"] == row["category"]]["title"].tolist()
-            relevant.update(same_cat)
-        # High-rated items (if ratings available)
-        if "rating" in df.columns:
-            high_rated = df[df["rating"] >= 4.0]["title"].tolist()
-            relevant.update(high_rated)
-        # Remove self
-        relevant.discard(row["title"])
-        return relevant
-
-    # Sample up to 200 items for speed
-    sample_size = min(200, len(df))
-    sample_indices = np.random.choice(len(df), size=sample_size, replace=False)
-
+# --- FIXED: True User-Personalization Leave-One-Out Evaluation (#375) ---
     modes_to_run = (
         ["content", "collaborative", "sentiment", "hybrid"]
         if mode == "all"
@@ -255,31 +237,106 @@ def run_evaluation(
     )
 
     results: ResultsDict = {}
+    
+    # Check out if user interaction signals exist in the dataset
+    has_user_data = "user_id" in df.columns and len(df["user_id"].dropna().unique()) > 1
+
+    if has_user_data:
+        # User-based Evaluation Profile
+        unique_users = df["user_id"].dropna().unique()
+        sample_users = np.random.choice(unique_users, size=min(100, len(unique_users)), replace=False)
+    else:
+        # Fallback to item index sample if explicit user tracking columns aren't present
+        sample_indices = np.random.choice(len(df), size=min(100, len(df)), replace=False)
 
     for m in modes_to_run:
         precisions, recalls, ndcgs = [], [], []
 
-        for idx in sample_indices:
-            title   = df.iloc[idx]["title"]
-            relevant = _get_relevant(idx)
-            if not relevant:
-                continue
+        if has_user_data:
+            # ----------------------------------------------------
+            # USER-BASED PERSONALIZATION LOOP (Core Fix)
+            # ----------------------------------------------------
+            for current_user in sample_users:
+                # User ki poori consumption profiles fetch karna
+                user_profile = df[df["user_id"] == current_user].reset_index(drop=True)
+                if len(user_profile) < 2:
+                    continue  # Leave-one-out needs at least 2 items (1 history, 1 held-out)
 
-            if m == "content":
-                recs = _get_content_recs(title, df, tfidf_matrix, k)
-            elif m == "collaborative":
-                recs = _get_collab_recs(title, df, svd_matrix, k)
-            elif m == "sentiment":
-                recs = _get_sentiment_recs(title, df, k)
-            else:  # hybrid
-                recs = _get_hybrid_recs(
-                    title, df, tfidf_matrix, svd_matrix,
-                    w["alpha"], w["beta"], w["gamma"], k,
-                )
+                # Hold out the last item as the evaluation truth target
+                query_item = user_profile.iloc[-1]["title"]
+                relevant = {query_item}
+                
+                # Baki bache items user history seed banenge
+                user_history = user_profile.iloc[:-1]["title"].tolist()
 
-            precisions.append(_precision_at_k(recs, relevant, k))
-            recalls.append(_recall_at_k(recs, relevant, k))
-            ndcgs.append(_ndcg_at_k(recs, relevant, k))
+                all_recs = {}
+                # Extract up to 5 interaction points for high-fidelity evaluation profiling
+                for seed_title in user_history[:5]:
+                    try:
+                        if m == "content":
+                            recs_raw = _get_content_recs(seed_title, df, tfidf_matrix, k)
+                        elif m == "collaborative":
+                            recs_raw = _get_collab_recs(seed_title, df, svd_matrix, k)
+                        elif m == "sentiment":
+                            recs_raw = _get_sentiment_recs(seed_title, df, k)
+                        else:  # hybrid
+                            recs_raw = _get_hybrid_recs(
+                                seed_title, df, tfidf_matrix, svd_matrix,
+                                w["alpha"], w["beta"], w["gamma"], k,
+                            )
+                        
+                        # Blend recommendation confidence arrays
+                        for idx_rank, item_name in enumerate(recs_raw):
+                            score = 1.0 / (idx_rank + 1)  # Rank-based reciprocal pooling fallback
+                            all_recs[item_name] = max(all_recs.get(item_name, 0), score)
+                    except Exception:
+                        continue
+
+                # Sort aggregated items and filter out historical elements
+                sorted_recs = sorted(all_recs.items(), key=lambda x: x[1], reverse=True)
+                final_recs = [item[0] for item in sorted_recs if item[0] not in user_history][:k]
+
+                if final_recs:
+                    precisions.append(_precision_at_k(final_recs, relevant, k))
+                    recalls.append(_recall_at_k(final_recs, relevant, k))
+                    ndcgs.append(_ndcg_at_k(final_recs, relevant, k))
+        else:
+            # ----------------------------------------------------
+            # FALLBACK: Item similarity processing if dataset is flat
+            # ----------------------------------------------------
+            for idx in sample_indices:
+                title = df.iloc[idx]["title"]
+                
+                # Establish pseudo-relevance via category boundaries
+                relevant = set()
+                if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):
+                    relevant.update(df[df["category"] == df.iloc[idx]["category"]]["title"].tolist())
+                relevant.discard(title)
+
+                if not relevant:
+                    continue
+
+                if m == "content":
+                    recs = _get_content_recs(title, df, tfidf_matrix, k)
+                elif m == "collaborative":
+                    recs = _get_collab_recs(title, df, svd_matrix, k)
+                elif m == "sentiment":
+                    recs = _get_sentiment_recs(title, df, k)
+                else:
+                    recs = _get_hybrid_recs(
+                        title, df, tfidf_matrix, svd_matrix,
+                        w["alpha"], w["beta"], w["gamma"], k,
+                    )
+
+                precisions.append(_precision_at_k(recs, relevant, k))
+                recalls.append(_recall_at_k(recs, relevant, k))
+                ndcgs.append(_ndcg_at_k(recs, relevant, k))
+
+        results[m] = {
+            "precision": round(float(np.mean(precisions)), 4) if precisions else 0.0,
+            "recall":    round(float(np.mean(recalls)),    4) if recalls    else 0.0,
+            "ndcg":      round(float(np.mean(ndcgs)),      4) if ndcgs      else 0.0,
+        }
 
         results[m] = {
             "precision": round(float(np.mean(precisions)), 4) if precisions else 0.0,

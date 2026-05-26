@@ -94,6 +94,7 @@ def test_search_empty_query_returns_top_rated_products(monkeypatch):
     payload = response.json()
     assert payload["is_fallback"] is True
     assert payload["query"] == ""
+    assert payload["count"] == 2
     assert payload["total"] == 2
     assert payload["results"][0]["title"] == "Wireless Headphones"
     assert len(payload["results"][0]["description"]) == 200
@@ -111,6 +112,7 @@ def test_search_query_uses_postgres_rpc(monkeypatch):
     payload = response.json()
     assert payload["is_fallback"] is False
     assert payload["query"] == "headphones"
+    assert payload["count"] == 1
     assert payload["results"][0]["rank"] == 0.91
     assert fake_supabase.rpc_calls == [
         (
@@ -167,3 +169,14 @@ def test_search_fallback_escapes_like_wildcards(monkeypatch):
 
     assert response.status_code == 200
     assert ("ilike", ("title", r"%50\%\_off\\sale%"), {}) in fake_supabase.table_query.calls
+
+
+def test_search_rejects_oversized_offset(monkeypatch):
+    fake_supabase = FakeSupabase()
+    monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
+    client = TestClient(main.app)
+
+    response = client.get("/api/search", params={"offset": 10001})
+
+    assert response.status_code == 422
+
