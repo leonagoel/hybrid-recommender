@@ -9,7 +9,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -26,8 +26,43 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
+import logging
+import sys
+import uuid
+import structlog
+
+from datetime import datetime
+from starlette.middleware.base import BaseHTTPMiddleware
+
+# Set up structlog
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+logger = structlog.get_logger()
+
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        correlation_id = str(uuid.uuid4())
+        request.state.correlation_id = correlation_id
+
+        response = await call_next(request)
+
+        response.headers["X-Correlation-ID"] = correlation_id
+        return response
+
+app.add_middleware(CorrelationIdMiddleware)
 
 # CORS — restrict in production; allow localhost for development
 allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
@@ -110,7 +145,13 @@ def search_items(
                 'offset_val': offset,
             }).execute()
             products = result.data or []
-        except Exception:
+        except Exception as e:
+            logger.error(
+                "search.failed",
+                error=str(e),
+                query=q,
+                timestamp=datetime.utcnow().isoformat()
+            )
             # Fallback: do a LIKE search if FTS parsing fails
             result = sb.table('products') \
                 .select('id, title, description, category, rating, avg_sentiment, review_count') \
@@ -156,7 +197,7 @@ def search_items(
 # ── Upload + Import ─────────────────────────────────────────────────
 
 @app.post("/api/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(request: Request, file: UploadFile = File(...)):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
     filename = file.filename or "data.csv"
@@ -167,6 +208,12 @@ async def upload_dataset(file: UploadFile = File(...)):
 
     try:
         contents = await file.read()
+        logger.info(
+        "file.upload",
+        filename=file.filename,
+        ip=request.client.host if request else "unknown",
+        timestamp=datetime.utcnow().isoformat()
+        )
         buf = io.BytesIO(contents)
         raw_df = read_file(buf, file_format=ext.replace('.', ''))
         adapted_df, meta = adapt_data(raw_df)
@@ -217,6 +264,12 @@ async def upload_dataset(file: UploadFile = File(...)):
                 ).execute()
                 imported += len(rows)
             except Exception as e:
+                logger.error(
+                    "database.insert_failed",
+                    error=str(e),
+                    batch_start=start,
+                    timestamp=datetime.utcnow().isoformat()
+                )
                 errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
 
         models["ready"] = False  # Force rebuild
@@ -277,7 +330,10 @@ def build_models():
     item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
 
     start_time = time.time()
-
+    logger.info(
+    "model.build.started",
+    timestamp=datetime.utcnow().isoformat()
+    )
     # Content model
     content_model = ContentRecommender(item_df)
 
@@ -321,6 +377,13 @@ def build_models():
     models["item_df"] = item_df
     models["ready"] = True
     models["build_time"] = build_time
+
+    logger.info(
+    "model.build.completed",
+    build_time=build_time,
+    items=len(item_df),
+    timestamp=datetime.utcnow().isoformat()
+)
 
     return {
         "message": "Models built successfully!",
@@ -434,6 +497,12 @@ def get_user_purchases(user_id: str, limit: int = 50):
 def create_purchase(data: PurchaseCreate):
     """Record a purchase (validated input)."""
     sb = get_supabase()
+    logger.info(
+    "purchase.created",
+    user_id=data.user_id,
+    product_id=data.product_id,
+    timestamp=datetime.utcnow().isoformat()
+)
     result = sb.table('purchases').insert({
         'user_id': data.user_id,
         'product_id': data.product_id,
@@ -452,3 +521,13 @@ if os.path.isdir(frontend_dir):
     @app.get("/")
     def serve_frontend():
         return FileResponse(os.path.join(frontend_dir, "index.html"))
+    
+@app.get("/api/admin/audit-log")
+async def get_audit_logs():
+    logger.info(
+    "admin.audit.accessed",
+    timestamp=datetime.utcnow().isoformat()
+)
+    return {
+        "message": "Audit log endpoint added successfully"
+    }
