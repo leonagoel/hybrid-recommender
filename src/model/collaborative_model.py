@@ -53,12 +53,14 @@ class CollaborativeRecommender:
             (data, (row, col)), shape=(n_users, n_items)
         ).tocsr()
 
-        # Adaptive rank: reduce factors for very sparse matrices
+        # Adaptive rank: reduce factors dynamically for sparse matrices
         min_dim = min(self.user_item_sparse.shape)
         density = self.user_item_sparse.nnz / (n_users * n_items) if (n_users * n_items) > 0 else 0
 
-        if min_dim <= 1:
+        # FIX FOR ISSUE #483: Prevent array out-of-bounds collapse on small matrices
+        if min_dim <= 2:
             self.svd = None
+            # Matching shapes perfectly to prevent slice dimensionality failures inside recommend()
             self.user_factors = np.ones((n_users, 1))
             self.item_factors = np.ones((1, n_items))
         else:
@@ -69,11 +71,19 @@ class CollaborativeRecommender:
             else:
                 n_components = min(n_factors, min_dim - 1)
 
+            # Keep n_components safely below absolute matrix dimension boundaries
+            n_components = min(n_components, n_users - 1, n_items - 1)
             n_components = max(1, n_components)
 
-            self.svd = TruncatedSVD(n_components=n_components, random_state=42)
-            self.user_factors = self.svd.fit_transform(self.user_item_sparse)
-            self.item_factors = self.svd.components_
+            try:
+                self.svd = TruncatedSVD(n_components=n_components, random_state=42)
+                self.user_factors = self.svd.fit_transform(self.user_item_sparse)
+                self.item_factors = self.svd.components_
+            except ValueError:
+                # Safe baseline fallback if SVD initialization constraints fail on edge-case data shapes
+                self.svd = None
+                self.user_factors = np.ones((n_users, 1))
+                self.item_factors = np.ones((1, n_items))
 
     def recommend(self, title, top_n=10):
         """
