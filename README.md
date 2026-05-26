@@ -7,6 +7,7 @@
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+![Coverage](https://img.shields.io/badge/coverage-50%25-brightgreen)
 
 <div align="center">
 
@@ -332,9 +333,9 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 ✓  Generic error messages — no stack trace leakage
 ✓  SQL injection safe (Supabase SDK parameterized queries)
 ```
-## 👥 Contributors
 
 ---
+
 ## 09 — FAQ
 
 <details>
@@ -385,6 +386,7 @@ First, check whether the backend server is running on the correct port. Verify t
 Yes, you can use your own dataset as long as it follows the expected format used by the project. You may need to update file paths or preprocessing steps depending on your data structure. Testing with smaller datasets first is recommended to ensure compatibility.
 
 </details>
+
 ---
 
 ## 09 — Screenshots
@@ -479,6 +481,7 @@ git merge upstream/main
 MIT — see [`LICENSE`](LICENSE)
 
 ---
+
 ## Documentation
 
 - [CHANGELOG](CHANGELOG.md)
@@ -495,28 +498,36 @@ National Finalist · Smart India Hackathon 2025 · Top 8% of 950+ Teams
 [![GitHub](https://img.shields.io/badge/Follow-GitHub-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/leonagoel)
 [![Email](https://img.shields.io/badge/Email-leona.goel123%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:leona.goel123@gmail.com)
 
+</div>
+
 ---
 
-## Contributors
+## 👥 Contributors
 
 Thanks to all the amazing people who contribute to this project ❤️
+
+[![Good First Issues](https://img.shields.io/github/issues/leonagoel/hybrid-recommender/good%20first%20issue?color=brightgreen&label=good+first+issues&style=flat-square)](https://github.com/leonagoel/hybrid-recommender/issues?q=is%3Aopen+label%3A%22good+first+issue%22)
+[![Open Issues](https://img.shields.io/github/issues/leonagoel/hybrid-recommender?style=flat-square)](https://github.com/leonagoel/hybrid-recommender/issues)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://makeapullrequest.com)
 
 ### Contributor Grid
 
 <a href="https://github.com/leonagoel/hybrid-recommender/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=leonagoel/hybrid-recommender" />
+  <img src="https://contrib.rocks/image?repo=leonagoel/hybrid-recommender" alt="Contributors" />
 </a>
 
----
+### Want to contribute?
 
-### Top Contributors
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started — all skill levels welcome!
 
-| Contributor | PRs Merged | Joined |
-|-------------|------------|---------|
-| @mansigite19 | 3 | May 2026 |
-| @2024itb047samata | 2 | May 2026 |
-| @vavilalarahul | 1 | May 2026 |
+<div align="center">
 
-> This table is manually maintained and updated weekly.
+| Step | Action |
+|------|--------|
+| 1️⃣ | [Fork the repo](https://github.com/leonagoel/hybrid-recommender/fork) |
+| 2️⃣ | Pick a [good first issue](https://github.com/leonagoel/hybrid-recommender/issues?q=is%3Aopen+label%3A%22good+first+issue%22) |
+| 3️⃣ | Submit a Pull Request |
 
 </div>
+
+---

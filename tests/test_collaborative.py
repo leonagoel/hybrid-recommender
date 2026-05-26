@@ -1,5 +1,5 @@
 import pandas as pd
-from collaborative_model import CollaborativeRecommender
+from src.model.collaborative_model import CollaborativeRecommender
 
 
 def sample_data():
@@ -59,3 +59,19 @@ def test_cold_start_user():
     results = model.predict_for_user(999)
 
     assert results == []
+
+
+def test_extreme_sparse_matrix():
+    df = pd.DataFrame(
+        {
+            "user_id": [1],
+            "title": ["Naruto"],
+            "rating": [5],
+        }
+    )
+
+    model = CollaborativeRecommender(df)
+    assert model.svd is None
+    assert model.user_factors.shape == (1, 1)
+    assert model.item_factors.shape == (1, 1)
+    assert model.predict_rating(1, "Naruto") == 1.0
