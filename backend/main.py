@@ -58,6 +58,7 @@ from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
+from src.model.issue_triage import triage_issue
 
 from functools import lru_cache
 
@@ -233,6 +234,27 @@ def _apply_rate_limit(
     response.headers["x-ratelimit-remaining"] = str(remaining)
     response.headers["x-ratelimit-reset"] = str(reset_time)
     return None
+
+
+def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    if not contents:
+        raise HTTPException(400, "Uploaded file is empty.")
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
+    if b"\x00" in contents[:4096]:
+        raise HTTPException(400, "Uploaded file appears to be binary.")
+
+    sample = contents[:4096].lstrip()
+    lowered_name = filename.lower()
+    if ext == ".json":
+        if not sample.startswith((b"{", b"[")):
+            raise HTTPException(400, "JSON uploads must contain JSON content.")
+    elif ext == ".csv":
+        lowered_sample = sample[:128].lower()
+        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
+            raise HTTPException(400, "CSV uploads must contain CSV content.")
+        if not lowered_name.endswith(".csv"):
+            raise HTTPException(400, "CSV uploads must use a .csv filename.")
 
 
 def _extract_bearer_token(value: str | None) -> str:
@@ -1251,6 +1273,83 @@ def export_dataset(columns: Optional[str] = Query(None)):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=dataset.csv"}
     )
+
+
+# ── GitHub Webhook Triage ─────────────────────────────────────────────
+import hmac
+import hashlib
+
+def _verify_github_signature(request_body: bytes, signature_header: str | None) -> None:
+    secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        return
+    if not signature_header:
+        raise HTTPException(status_code=401, detail="Signature header X-Hub-Signature-256 missing.")
+    if not signature_header.startswith("sha256="):
+        raise HTTPException(status_code=400, detail="Invalid signature format.")
+        
+    expected_signature = hmac.new(
+        secret.encode(),
+        request_body,
+        hashlib.sha256
+    ).hexdigest()
+    
+    provided_signature = signature_header.partition("sha256=")[2].strip()
+    if not hmac.compare_digest(expected_signature, provided_signature):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature.")
+
+
+@app.post("/api/webhook/github")
+async def github_webhook(request: Request):
+    body_bytes = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256")
+    _verify_github_signature(body_bytes, signature)
+    
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+        
+    event = request.headers.get("X-GitHub-Event")
+    action = payload.get("action")
+    
+    issue_number = None
+    title = None
+    body = None
+    repo_full_name = None
+    should_triage = False
+    
+    if event == "issues" and action == "opened":
+        issue = payload.get("issue", {})
+        issue_number = issue.get("number")
+        title = issue.get("title", "")
+        body = issue.get("body", "")
+        repo_full_name = payload.get("repository", {}).get("full_name")
+        should_triage = True
+        
+    elif event == "issue_comment" and action == "created":
+        comment = payload.get("comment", {})
+        comment_body = comment.get("body", "").strip()
+        if comment_body.startswith("!retriage"):
+            issue = payload.get("issue", {})
+            issue_number = issue.get("number")
+            title = issue.get("title", "")
+            body = issue.get("body", "")
+            repo_full_name = payload.get("repository", {}).get("full_name")
+            should_triage = True
+            
+    if should_triage and issue_number and repo_full_name:
+        token = os.environ.get("GITHUB_TOKEN", "").strip()
+        triage_res = await triage_issue(
+            issue_number=issue_number,
+            title=title,
+            body=body,
+            repo_full_name=repo_full_name,
+            token=token
+        )
+        return {"status": "success", "action": "triaged", "details": triage_res}
+        
+    return {"status": "skipped", "reason": f"No triage actions required for event '{event}' action '{action}'."}
 
 
 # ── Frontend Serving ──────────────────────────────────────────────────
