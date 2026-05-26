@@ -466,7 +466,8 @@ def search_items(
         response.headers["x-ratelimit-remaining"] = str(remaining)
         response.headers["x-ratelimit-reset"] = str(reset_time)
 
-    cache_key = _cache_key("search", q, limit, offset)
+    query = _normalize_search_query(q)
+    cache_key = _cache_key("search", query, limit, offset)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
@@ -530,6 +531,30 @@ def autocomplete_products(
     except Exception as e:
         logger.error("Autocomplete error: %s", e)
         raise HTTPException(status_code=500, detail="Autocomplete failed")
+
+
+def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if b'\x00' in contents:
+        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
+    try:
+        decoded = contents.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
+    
+    stripped = decoded.strip()
+    if ext == ".csv":
+        if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+            raise HTTPException(status_code=400, detail="CSV uploads must contain CSV content.")
+    elif ext == ".json":
+        if not (stripped.startswith("{") or stripped.startswith("[")):
+            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
+        import json
+        try:
+            json.loads(stripped)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
 
 
 # ── Upload ────────────────────────────────────────────────────────────
