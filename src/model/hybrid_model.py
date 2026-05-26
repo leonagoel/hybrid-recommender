@@ -222,6 +222,9 @@ class HybridRecommender:
             results.append(result)
 
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+        if not results:
+            return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
+
         return results[:top_n]
 
     def _build_explanation(
@@ -286,7 +289,7 @@ class HybridRecommender:
     def _cold_start_fallback(self, title, top_n):
         """
         Fallback when no model data exists for the title.
-        Returns popular items from the same category.
+        Returns popular items from the same category or global popularity.
         """
         if self.item_df is None:
             return []
@@ -299,15 +302,40 @@ class HybridRecommender:
             if len(cat_items) >= top_n:
                 df = cat_items
 
+        return self.get_popular_fallback_items(
+            top_n=top_n,
+            source_df=df,
+            exclude_title=title,
+        )
+
+    def get_popular_fallback_items(self, top_n=5, source_df=None, exclude_title=None):
+        """
+        Return globally popular items when personalization produces no candidates.
+        """
+        if self.item_df is None and source_df is None:
+            return []
+
+        df = source_df if source_df is not None else self.item_df
+        if df is None or len(df) == 0:
+            return []
+
+        df = df.copy()
+        if exclude_title is not None and 'title' in df.columns:
+            df = df[df['title'] != exclude_title]
+
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
-            df = df.copy()
             df['_bayesian'] = df.apply(
                 lambda r: bayesian_rating(r['rating'], r.get('review_count', 0)), axis=1
             )
-            df = df.sort_values('_bayesian', ascending=False)
+            df = df.sort_values(
+                ['_bayesian', 'review_count'],
+                ascending=[False, False],
+            )
         elif 'rating' in df.columns:
             df = df.sort_values('rating', ascending=False)
+        elif 'review_count' in df.columns:
+            df = df.sort_values('review_count', ascending=False)
 
         results = []
         for _, row in df.head(top_n).iterrows():
