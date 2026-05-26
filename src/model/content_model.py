@@ -26,7 +26,7 @@ class ContentRecommender:
             t.lower(): i for i, t in enumerate(self.df['title'])
         }
 
-    def recommend(self, title, top_n=10):
+    def recommend(self, title, top_n=10, target_catalog=None):
         """
         Get content-based recommendations for a given item title.
         Returns list of dicts: [{ 'title', 'content_score' }, ...]
@@ -47,6 +47,13 @@ class ContentRecommender:
             t = self.df.iloc[i]['title']
             if t.lower() == title.lower() or t in seen:
                 continue
+            
+            # Catalog filtering
+            if target_catalog and 'catalog' in self.df.columns:
+                item_catalog = self.df.iloc[i].get('catalog', '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             seen.add(t)
             results.append({
                 'title': t,
@@ -75,14 +82,16 @@ class ContentRecommender:
         
         return [{'term': 'semantic_similarity', 'score': round(float(score), 4)}]
 
-    def search(self, query, top_n=20):
+    def search(self, query, top_n=20, target_catalog=None):
         """
         Search items by query text using semantic similarity.
         Returns list of matching item titles with scores.
         """
         query_vec = self.model.encode([query])
         scores = cosine_similarity(query_vec, self.matrix).flatten()
-        top_indices = scores.argsort()[::-1][:top_n]
+        
+        # Determine candidate indices matching similarity threshold or top N
+        top_indices = scores.argsort()[::-1]
 
         results = []
         seen = set()
@@ -92,6 +101,13 @@ class ContentRecommender:
             t = self.df.iloc[idx]['title']
             if t in seen:
                 continue
+
+            # Catalog filtering
+            if target_catalog and 'catalog' in self.df.columns:
+                item_catalog = self.df.iloc[idx].get('catalog', '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             seen.add(t)
             
             tp = self.df.iloc[idx].get('top_reviews', [])
@@ -105,4 +121,6 @@ class ContentRecommender:
                 'description': str(self.df.iloc[idx].get('description', ''))[:200],
                 'top_reviews': top_reviews,
             })
+            if len(results) >= top_n:
+                break
         return results

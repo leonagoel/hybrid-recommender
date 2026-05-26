@@ -75,11 +75,20 @@ class CollaborativeRecommender:
             self.user_factors = self.svd.fit_transform(self.user_item_sparse)
             self.item_factors = self.svd.components_
 
-    def recommend(self, title, top_n=10):
+        # Build catalog map if catalog column is present in interaction_df
+        self._catalog_map = {}
+        if 'catalog' in self.df.columns:
+            self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+
+    def recommend(self, title, top_n=10, target_catalog=None):
         """
         Item-item collaborative recommendations using SVD latent space.
         Returns list of dicts: [{ 'title', 'collab_score' }, ...]
         """
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer.")
+        top_n = min(top_n, 100)
+
         if title not in self._title_to_idx:
             return []
 
@@ -96,6 +105,13 @@ class CollaborativeRecommender:
             t = self.title_list[i]
             if t == title or t in seen:
                 continue
+
+            # Catalog filtering
+            if target_catalog and self._catalog_map:
+                item_catalog = self._catalog_map.get(t, '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             seen.add(t)
             results.append({
                 'title': t,
@@ -106,11 +122,15 @@ class CollaborativeRecommender:
 
         return results
 
-    def predict_for_user(self, user_id, top_n=10):
+    def predict_for_user(self, user_id, top_n=10, target_catalog=None):
         """
         Personalized recommendations for a specific user.
         Predicts scores for all unseen items and returns top N.
         """
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer.")
+        top_n = min(top_n, 100)
+
         if user_id not in self._user_to_idx:
             import logging
             logger = logging.getLogger(__name__)
@@ -132,6 +152,13 @@ class CollaborativeRecommender:
             t = self.title_list[i]
             if t in seen_items:
                 continue
+
+            # Catalog filtering
+            if target_catalog and self._catalog_map:
+                item_catalog = self._catalog_map.get(t, '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             scored.append((t, float(score)))
 
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -146,19 +173,28 @@ class CollaborativeRecommender:
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
     
     def _popularity_fallback(self, top_n=10):
-      import logging
-      logger = logging.getLogger(__name__)
-      logger.info("Using popularity-based fallback for cold-start user.")
+    #Fallback for cold-start users — top-N by interaction count (popularity)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Using popularity-based fallback for cold-start user.")
     
-    # Count interactions per item
-      item_counts = self.df['title'].value_counts()
+        item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
     
-      results = []
-      for title, count in item_counts.head(top_n).items():
-        results.append({
-            'title': title,
-            'predicted_score': float(count),
+       # Bayesian rating
+        global_avg = item_counts['mean'].mean()
+        m = 5
+        item_counts['bayesian'] = (
+            (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +
+            (m / (item_counts['count'] + m)) * global_avg
+        )
+    
+        top_items = item_counts.nlargest(top_n, 'bayesian')
+    
+        return [
+        {
+            'title': row['title'],
+            'predicted_score': round(float(row['bayesian']), 4),
             'fallback': True
-        })
-    
-        return results
+        }
+        for _, row in top_items.iterrows()
+        ]

@@ -1500,6 +1500,7 @@ main {
 
 @media (max-width: 768px) {
     .product-grid, .skeleton-grid { grid-template-columns: repeat(2, 1fr); }
+}
 
 @media (max-width: 768px) {
     .product-grid, .skeleton-grid, .trending-grid {
@@ -1623,6 +1624,80 @@ main {
   box-shadow: 0 0 4px var(--accent);
 }
 
+/* ==========================
+RECOMMENDATION CARD IMPROVEMENTS
+========================== */
+
+.rec-card{
+    border-radius:20px;
+    padding:22px;
+    transition:
+    all .25s ease;
+    background:
+    var(--bg-card);
+    border:
+    1px solid
+    var(--border);
+    cursor:pointer;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+}
+
+.rec-card:hover{
+    transform:
+    translateY(-6px);
+    box-shadow:
+    0 12px 30px
+    rgba(0,0,0,.15);
+}
+
+.rec-card__title{
+    font-size:18px;
+    font-weight:700;
+    line-height:1.5;
+}
+
+.rec-card__rating{
+    display:flex;
+    align-items:center;
+    gap:10px;
+}
+
+.rec-card__score{
+    font-size:13px;
+    opacity:.85;
+    line-height:1.6;
+}
+
+/* ==========================
+RESPONSIVE FIX
+========================== */
+
+.recs-strip{
+    display:grid;
+    grid-template-columns:
+    repeat(
+    auto-fit,
+    minmax(
+    260px,
+    1fr
+    )
+    );
+    gap:20px;
+}
+
+@media(max-width:768px){
+    .recs-strip{
+        grid-template-columns:
+        1fr;
+    }
+
+    .rec-card{
+        padding:18px;
+    }
+}
+
 /* Search history dropdown (issue #22) */
 .history-btn {
   background: none;
@@ -1697,4 +1772,162 @@ main {
   text-align: center;
   color: var(--text-muted);
   font-size: 12px;
+}
+}
+
+/* Character counter for search input (issue #32) */
+.search-char-counter {
+    position: absolute;
+    bottom: -20px;
+    left: 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+
+/* ==========================
+EMPTY RECOMMENDATION STATE
+
+.empty-state{
+
+display:flex;
+
+flex-direction:column;
+
+align-items:center;
+
+justify-content:center;
+
+text-align:center;
+
+padding:60px;
+
+margin-top:30px;
+
+border-radius:20px;
+
+background:var(--bg-card);
+
+box-shadow:var(--shadow-lg);
+
+border:1px solid var(--border);
+
+}
+
+.empty-icon{
+
+font-size:60px;
+
+margin-bottom:18px;
+
+}
+
+.empty-state h3{
+
+font-size:28px;
+
+margin-bottom:10px;
+
+color:var(--text);
+
+}
+
+.empty-state p{
+
+color:var(--text-secondary);
+
+margin-bottom:20px;
+
+max-width:450px;
+
+}
+
+#retry-btn{
+
+padding:12px 24px;
+
+border-radius:12px;
+
+}
+
+#retry-btn:hover{
+
+transform:translateY(-2px);
+
+}
+
+@media(max-width:768px){
+
+.empty-state{
+
+padding:35px;
+
+}
+
+.empty-state h3{
+
+font-size:22px;
+
+}
+}
+
+/* ==========================
+RECOMMENDATION LOADING
+
+.recommendation-loading{
+
+display:grid;
+
+grid-template-columns:
+repeat(
+auto-fit,
+minmax(
+220px,
+1fr
+)
+);
+
+gap:20px;
+
+}
+
+.loading-card{
+
+height:180px;
+
+border-radius:18px;
+
+background:
+linear-gradient(
+90deg,
+rgba(255,255,255,.05),
+rgba(255,255,255,.10),
+rgba(255,255,255,.05)
+);
+
+background-size:
+300% 100%;
+
+animation:
+loadingMove
+1.2s infinite;
+
+}
+
+@keyframes loadingMove{
+
+0%{
+
+background-position:
+100%;
+
+}
+
+100%{
+
+background-position:
+-100%;
+
+}
+
 }
