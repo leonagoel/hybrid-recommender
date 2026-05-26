@@ -96,17 +96,36 @@ export async function loadCategories() {
 
 function _bindSearchInput() {
   const input = document.getElementById('search-input');
+  const counter = document.getElementById('search-char-counter');
   if (!input) return;
 
+  // Update counter function
+  const updateCounter = () => {
+    if (!counter) return;
+    const len = input.value.length;
+    counter.textContent = `${len}/100`;
+  };
+
+  // Show/hide counter on focus/blur
+  input.addEventListener('focus', () => {
+    if (counter) {
+      counter.style.display = 'block';
+      updateCounter();
+    }
+  });
+  input.addEventListener('blur', () => {
+    if (counter) counter.style.display = 'none';
+  });
+
+  // Existing debounced search (keep it, but add counter update)
   input.addEventListener('input', (e) => {
     clearTimeout(_debounceTimer);
     const q = e.target.value;
+    // Update character counter
+    updateCounter();
+    // Existing behaviour
     if (!q.trim()) { loadProducts(1); return; }
     _debounceTimer = setTimeout(() => runSearch(q), DEBOUNCE_MS);
-  });
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { input.value = ''; loadProducts(1); }
   });
 }
 

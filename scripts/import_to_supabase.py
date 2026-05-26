@@ -15,13 +15,41 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import pandas as pd
 from tqdm import tqdm
 from src.data.data_adapter import adapt_data
-from src.model.nlp_engine import analyze_sentiment
 from src.data.db import get_supabase_admin
 
 
 def chunked(df, size):
     for start in range(0, len(df), size):
         yield df.iloc[start:start + size]
+
+
+def _safe_float(value, default=0.0):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if pd.notna(number) else default
+
+
+def _safe_int(value, default=0):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(number, default)
+
+
+def build_product_row(row):
+    """Normalize one adapted product row for the Supabase products table."""
+    return {
+        'title': str(row.get('title', 'Unknown'))[:500],
+        'description': str(row.get('description', ''))[:2000],
+        'category': str(row.get('category', ''))[:200],
+        'rating': _safe_float(row.get('rating', 0)),
+        'avg_sentiment': _safe_float(row.get('sentiment', 0)),
+        'review_count': _safe_int(row.get('review_count', 0)),
+        'metadata': {},
+    }
 
 
 def import_dataset(file_path, batch_size=1000, run_sentiment=False):
@@ -54,6 +82,8 @@ def import_dataset(file_path, batch_size=1000, run_sentiment=False):
 
     # Sentiment analysis (optional — slow on large datasets)
     if run_sentiment and 'review_text' in adapted_df.columns:
+        from src.model.nlp_engine import analyze_sentiment
+
         print("  Running sentiment analysis...")
         adapted_df['sentiment'] = adapted_df['review_text'].apply(
             lambda x: analyze_sentiment(str(x)) if pd.notna(x) and str(x).strip() else 0.0
@@ -69,14 +99,7 @@ def import_dataset(file_path, batch_size=1000, run_sentiment=False):
     for chunk in tqdm(list(chunked(adapted_df, batch_size)), desc="  Uploading"):
         rows = []
         for _, row in chunk.iterrows():
-            rows.append({
-                'title': str(row.get('title', 'Unknown'))[:500],
-                'description': str(row.get('description', ''))[:2000],
-                'category': str(row.get('category', ''))[:200],
-                'rating': float(row.get('rating', 0)) if pd.notna(row.get('rating')) else 0.0,
-                'avg_sentiment': float(row.get('sentiment', 0)) if pd.notna(row.get('sentiment')) else 0.0,
-                'metadata': {},
-            })
+            rows.append(build_product_row(row))
 
         try:
             result = sb.table('products').upsert(

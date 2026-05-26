@@ -14,9 +14,11 @@ models = main.models
 class FakeHybridModel:
     def __init__(self):
         self.last_title = None
+        self.last_target_catalog = None
 
-    def recommend(self, title, top_n=10, explain=False):
+    def recommend(self, title, top_n=10, explain=False, target_catalog=None):
         self.last_title = title
+        self.last_target_catalog = target_catalog
         return [{"title": "Related Item", "hybrid_score": 0.91}]
 
     def get_weights(self):
