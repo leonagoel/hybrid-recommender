@@ -163,7 +163,10 @@ cp .env.example .env
 # Fill in your Supabase credentials in .env
 
 # 3. Start the backend server
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
+if (-not $env:PORT) { $env:PORT = "8000" }
+
+python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT
 
 # 4. Open http://localhost:8000 in your browser
 
