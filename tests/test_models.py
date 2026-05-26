@@ -159,7 +159,20 @@ class TestCollaborativeRecommender:
 
     def test_predict_for_unknown_user_returns_empty(self, collab_model):
         recs = collab_model.predict_for_user('unknown_user_xyz', top_n=3)
-        assert recs == []
+        assert isinstance(recs, list) #it will not be empty
+    
+    def test_cold_start_returns_popular_items(self, collab_model):
+   # New user should get popular items instead of empty list.
+        recs = collab_model.predict_for_user('brand_new_user', top_n=3)
+        assert isinstance(recs, list)
+        assert len(recs) > 0
+
+    def test_cold_start_fallback_has_required_keys(self, collab_model):
+    #Fallback items should have title and predicted_score.
+        recs = collab_model.predict_for_user('brand_new_user', top_n=3)
+        for r in recs:
+         assert 'title' in r
+         assert 'predicted_score' in r
 
     def test_predict_rating_known_user_item(self, collab_model):
         result = collab_model.predict_rating('u1', 'Product A')

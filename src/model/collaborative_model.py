@@ -112,7 +112,11 @@ class CollaborativeRecommender:
         Predicts scores for all unseen items and returns top N.
         """
         if user_id not in self._user_to_idx:
-            return []
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
+            return self._popularity_fallback(top_n)
+            
 
         u_idx = self._user_to_idx[user_id]
         user_vec = self.user_factors[u_idx]
@@ -140,3 +144,21 @@ class CollaborativeRecommender:
         u_idx = self._user_to_idx[user_id]
         i_idx = self._title_to_idx[title]
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
+    
+    def _popularity_fallback(self, top_n=10):
+      import logging
+      logger = logging.getLogger(__name__)
+      logger.info("Using popularity-based fallback for cold-start user.")
+    
+    # Count interactions per item
+      item_counts = self.df['title'].value_counts()
+    
+      results = []
+      for title, count in item_counts.head(top_n).items():
+        results.append({
+            'title': title,
+            'predicted_score': float(count),
+            'fallback': True
+        })
+    
+        return results

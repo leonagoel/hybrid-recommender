@@ -669,6 +669,7 @@ def get_recommendations(
     title: Optional[str] = Query(None),
     top_n: int = 10,
     explain: bool = Query(False),
+    strategy: Optional[str] = Query(None), 
 ):
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
@@ -683,6 +684,11 @@ def get_recommendations(
         return cached
 
     recs = models["hybrid"].recommend(query_title, top_n=top_n, explain=explain)
+  
+    if not recs and strategy == "popularity" and models["collab"]:
+        recs = models["collab"]._popularity_fallback(top_n)
+    
+    
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
 
