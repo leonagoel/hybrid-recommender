@@ -167,3 +167,14 @@ def test_search_fallback_escapes_like_wildcards(monkeypatch):
 
     assert response.status_code == 200
     assert ("ilike", ("title", r"%50\%\_off\\sale%"), {}) in fake_supabase.table_query.calls
+
+
+def test_search_rejects_oversized_offset(monkeypatch):
+    fake_supabase = FakeSupabase()
+    monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
+    client = TestClient(main.app)
+
+    response = client.get("/api/search", params={"offset": 10001})
+
+    assert response.status_code == 422
+
