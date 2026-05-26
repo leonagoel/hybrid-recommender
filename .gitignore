@@ -211,3 +211,6 @@ __marimo__/
 .agent.vscode/
 .claude
 .refact
+
+# Requirements for development and testing
+requirements-dev.txt
