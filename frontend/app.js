@@ -1,3 +1,4 @@
+import { initBenchmarkingDashboard } from './js/benchmarking.js';
 
 // ===== THEME TOGGLE =====
 const themeToggle = document.getElementById('theme-toggle');
@@ -43,6 +44,7 @@ function initThemeToggle() {
 }
 
 document.addEventListener('DOMContentLoaded', initThemeToggle);
+
 /**
  * HybridRec — Frontend Application v3
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
@@ -144,6 +146,16 @@ const els = {
     sentimentFilter: $('sentiment-filter'),
     clearFiltersBtn: $('clear-filters'),
 };
+// ===== CONFIG=====
+const CONFIG = {
+  TOAST_DURATION_MS: 3500,
+  TOAST_EXIT_MS: 300,
+  SEARCH_DEBOUNCE_MS: 300,
+  SENTIMENT_POSITIVE: 0.05,
+  SENTIMENT_NEGATIVE: -0.05,
+  SEARCH_LIMIT: 5,
+  MAX_COMPARE_ITEMS: 20
+};
 
 function loadPreferences() {
     const saved = localStorage.getItem('userPreferences');
@@ -186,9 +198,9 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = '300ms ease';
-        setTimeout(() => el.remove(), 300);
-    }, 3500);
+        el.style.transition = '${CONFIG.TOAST_EXIT_MS}ms ease';
+        setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
+    }, CONFIG.TOAST_DURATION_MS);
 }
 
 function createSkeletonCard() {
@@ -230,8 +242,8 @@ function renderStars(rating) {
 }
 
 function sentimentBadge(score) {
-    if (score > 0.05) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
-    if (score < -0.05) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
+    if (score > CONFIG.SENTIMENT_POSITIVE) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
+    if (score < CONFIG.SENTIMENT_NEGATIVE) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
     return '<span class="product-card__sentiment sentiment-neutral">Neutral</span>';
 }
 
@@ -248,9 +260,9 @@ function applyFilters(products) {
 
         let sentiment = 'neutral';
 
-        if ((p.avg_sentiment || 0) > 0.05) {
+        if ((p.avg_sentiment || 0) > CONFIG.SENTIMENT_POSITIVE) {
             sentiment = 'positive';
-        } else if ((p.avg_sentiment || 0) < -0.05) {
+        } else if ((p.avg_sentiment || 0) < CONFIG.SENTIMENT_NEGATIVE) {
             sentiment = 'negative';
         }
 
@@ -309,7 +321,7 @@ function toggleWishlist(product) {
 
     saveWishlist(wishlist);
 
-    renderProducts(state.allProducts, false);
+    renderProducts(state.allProducts, { append: false });
 }
 
 // ── API Helpers ─────────────────────────────────────────────────────
@@ -573,7 +585,7 @@ function handleSearch(query) {
     state.searchTimer = setTimeout(async () => {
         try {
             const data = await API.get(
-                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=5`
+                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=${CONFIG.SEARCH_LIMIT}`
             );
 
             state.autocompleteResults = data.suggestions || [];
@@ -584,7 +596,7 @@ function handleSearch(query) {
             console.error('Autocomplete failed:', err);
             closeSearchDropdown();
         }
-    }, 300);
+    }, CONFIG.SEARCH_DEBOUNCE_MS);
 }
 
 // ── Product Loading ─────────────────────────────────────────────────
@@ -630,7 +642,7 @@ async function loadProducts(append = false) {
             state.allProducts = [...(state.allProducts || []), ...products];
         }
 
-        renderProducts(products, append);
+        renderProducts(products, { append });
         els.productCount.textContent = `${state.products.length} of ${state.totalProducts} products`;
 
         if (!state.hasMore) {
@@ -732,7 +744,7 @@ async function loadSearchResults(query) {
         state.products = [];
         state.hasMore = false;
         state.allProducts = [...products];
-        renderProducts(products, false);
+        renderProducts(products, { append: false, ignoreFilters: true });
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
@@ -768,8 +780,13 @@ function createLazyImage(src, alt) {
     return img;
 }
 
-function renderProducts(products, append) {
-    products = applyFilters(products);
+function renderProducts(products, options = {}) {
+    const append = options.append || false;
+    const ignoreFilters = options.ignoreFilters || false;
+
+    if (!ignoreFilters) {
+        products = applyFilters(products);
+    }
     els.productCount.textContent = `${products.length} products`;
     if (!append) {
     els.productGrid.innerHTML = '';
@@ -845,7 +862,9 @@ function renderProducts(products, append) {
             </div>
             <div class="product-card__body">
                 ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
+                <h3 class="product-card__title" title="${p.title || 'Untitled'}">
+                ${p.title || 'Untitled'}
+                </h3>
                 <p class="product-card__desc">${p.description || 'No description available.'}</p>
                 <div class="product-card__price">
                 ₹${p.price || 0}
@@ -877,6 +896,16 @@ function renderProducts(products, append) {
             card.querySelector('.product-card__image').appendChild(imgEl);
         }
 
+        // Wishlist button
+        const wishlistBtn = card.querySelector('.wishlist-btn');
+
+        if (wishlistBtn) {
+            wishlistBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleWishlist(p);
+            });
+        }
+
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
             const wishlistBtn = card.querySelector('.wishlist-btn');
@@ -898,7 +927,7 @@ function renderProducts(products, append) {
                 e.stopPropagation();
                 const title = checkbox.dataset.title;
                 if (checkbox.checked) {
-                    if (state.heatmapSelected.length >= 20) {
+                    if (state.heatmapSelected.length >= CONFIG.MAX_COMPARE_ITEMS) {
                         checkbox.checked = false;
                         toast('Maximum 20 items for comparison', 'error');
                         return;
@@ -1347,6 +1376,7 @@ function renderHeatmap(labels, matrix) {
 
 // ── Infinite Scroll (Intersection Observer) ─────────────────────────
 function setupScrollObserver() {
+    try{
     // Tear down any previous observer to avoid duplicates / leaks
     destroyScrollObserver();
 
@@ -1364,32 +1394,44 @@ function setupScrollObserver() {
             rootMargin: '0px 0px 200px 0px',
             threshold: 0,
         }
-
     );
-  } catch (err) {
-    console.warn('[app] Config fetch failed — running offline.', err);
-  }
+    
+    state.scrollObserver.observe(els.scrollSentinel);
+}
 
-  // 2. Auth
-  if (supabaseClient) {
-    initAuth(supabaseClient);
-    bindAuthEvents();
-    const { data: { session } } = await supabaseClient.auth.getSession();
-    if (!session) await signInAsGuest();
-  }
+function destroyScrollObserver() {
+    if (state.scrollObserver) {
+        state.scrollObserver.disconnect();
+        state.scrollObserver = null;
+    }
+}
 
-  // 3. UI infrastructure
-  initModalDismiss();
-  startStatusPoller(30_000);
+function addToSearchHistory(query) {
+    if (!state.searchHistory) state.searchHistory = [];
+    state.searchHistory = [query, ...state.searchHistory.filter(q => q !== query)].slice(0, 10);
+    renderSearchHistory();
+}
 
-  // 4. Dataset management
-  bindUploadHandler((data) => {
-    setState({ datasetLoaded: true, productCount: data.rows ?? 0 });
-    loadProducts(1);
-    loadCategories();
-  });
-  bindBuildModelsHandler(() => setState({ modelsBuilt: true }));
+function renderSearchHistory() {
+    if (!state.searchHistory || !state.searchHistory.length) {
+        els.searchHistory.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">No search history</div>';
+        return;
+    }
 
+    els.searchHistory.innerHTML = `
+        <div class="search-history__list">
+            ${state.searchHistory.map(query => `
+                <div class="search-history__item" data-query="${query}">
+                    <span style="font-size:14px;">🕐</span>
+                    <span>${query}</span>
+                </div>
+            `).join('')}
+        </div>
+        <button id="clear-history-btn" class="btn btn--link" style="width:100%;padding:12px;border-top:1px solid var(--border);border-radius:0;font-size:12px;">
+            Clear History
+        </button>
+    `;
+    
     els.searchHistory.classList.add('active');
 
     // Click history item
@@ -1504,7 +1546,7 @@ async function loadProducts(append = false) {
             els.skeletonLoader.hidden = true;
         }
 
-        renderProducts(products, append);
+        renderProducts(products, { append });
         const visibleCount =
     state.selectedCategory === 'All Categories'
         ? products.length
@@ -1534,6 +1576,11 @@ async function loadSearchResults(query) {
         els.productCount.textContent = `${products.length} results`;
         state.products = [];
         renderProducts(products, false);
+        els.productGrid.classList.remove('fade-in');
+
+        requestAnimationFrame(() => {
+        els.productGrid.classList.add('fade-in');
+        });
         els.loadMoreContainer.hidden = true;
     } catch {
         els.skeletonLoader.hidden = true;
@@ -1605,6 +1652,11 @@ async function loadRecommendations(title) {
     }
 
     els.recsSection.hidden = false;
+    els.recsSection.classList.remove('slide-up');
+
+        requestAnimationFrame(() => {
+    els.recsSection.classList.add('slide-up');
+    });
     els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px;">Loading recommendations...</div>';
 
     try {
@@ -1823,6 +1875,9 @@ async function init() {
     // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
+
+    // Benchmarking dashboard
+    initBenchmarkingDashboard();
 }
 
 async function loadCategories() {
@@ -1842,3 +1897,22 @@ async function loadCategories() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', init);
+
+// ── Language Toggle ─────────────────────────────────────────────────
+let currentLang = 'EN';
+
+function toggleLanguage() {
+    currentLang = currentLang === 'EN' ? 'HI' : 'EN';
+    document.getElementById('lang-toggle').textContent = currentLang;
+    
+    if (currentLang === 'HI') {
+        document.getElementById('search-input').placeholder = 'हिंदी में खोजें...';
+        document.getElementById('hindi-indicator').style.display = 'inline';
+        document.getElementById('search-shortcut').style.display = 'none';
+    } else {
+        document.getElementById('search-input').placeholder = 'Search products...';
+        document.getElementById('hindi-indicator').style.display = 'none';
+        document.getElementById('search-shortcut').style.display = 'block';
+    }
+}

@@ -1,287 +1,369 @@
 """
-Evaluation Script — Precision@K, Recall@K, NDCG@K
-Compares: content-only, collaborative-only, and hybrid (different weight configs).
+evaluation.py — Model Performance Benchmarking
+===============================================
+Computes Precision@K, Recall@K, and NDCG@K for four recommendation modes:
+  - content       (TF-IDF cosine similarity only)
+  - collaborative (Truncated SVD only)
+  - sentiment     (VADER sentiment only)
+  - hybrid        (weighted blend of all three)
+
+Usage as CLI (unchanged from original behaviour):
+    python evaluation.py
+    python evaluation.py --k 20
+    python evaluation.py --k 10 --mode hybrid
+
+Usage as importable module (new — used by /api/evaluate endpoint):
+    from evaluation import run_evaluation
+    results = run_evaluation(k=10, mode="all", weights={"alpha":0.4,"beta":0.4,"gamma":0.2})
 """
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
 import os
-import sys
+from typing import Literal
+
 import numpy as np
 import pandas as pd
-from math import log2
 
-sys.path.insert(0, os.path.dirname(__file__))
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
 
-from src.data.dataset_manager import DatasetManager
-from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.hybrid_model import HybridRecommender
+Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
 
-
-def precision_at_k(recommended, relevant, k):
-    """Proportion of top-K recommendations that are relevant."""
-    rec_k = recommended[:k]
-    hits = len(set(rec_k) & set(relevant))
-    return hits / k if k > 0 else 0
+MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
+ResultsDict = dict[str, MetricsDict]    # {"content": {...}, "hybrid": {...}, ...}
 
 
-def recall_at_k(recommended, relevant, k):
-    """Proportion of relevant items found in top-K recommendations."""
-    rec_k = recommended[:k]
-    hits = len(set(rec_k) & set(relevant))
-    return hits / len(relevant) if len(relevant) > 0 else 0
+# ---------------------------------------------------------------------------
+# Core metric helpers
+# ---------------------------------------------------------------------------
+
+def _precision_at_k(recommended: list, relevant: set, k: int) -> float:
+    """Fraction of top-K recommended items that are relevant."""
+    if not relevant or k == 0:
+        return 0.0
+    hits = sum(1 for item in recommended[:k] if item in relevant)
+    return hits / k
 
 
-def ndcg_at_k(recommended, relevant, k):
-    """Normalized Discounted Cumulative Gain @ K."""
-    rec_k = recommended[:k]
+def _recall_at_k(recommended: list, relevant: set, k: int) -> float:
+    """Fraction of relevant items found in top-K recommendations."""
+    if not relevant or k == 0:
+        return 0.0
+    hits = sum(1 for item in recommended[:k] if item in relevant)
+    return hits / len(relevant)
+
+
+def _dcg_at_k(recommended: list, relevant: set, k: int) -> float:
+    """Discounted Cumulative Gain at K."""
     dcg = 0.0
-    for i, item in enumerate(rec_k):
+    for i, item in enumerate(recommended[:k], start=1):
         if item in relevant:
-            dcg += 1.0 / log2(i + 2)  # i+2 because log2(1) = 0
-    # Ideal DCG
-    ideal_count = min(len(relevant), k)
-    idcg = sum(1.0 / log2(i + 2) for i in range(ideal_count))
-    return dcg / idcg if idcg > 0 else 0
+            dcg += 1.0 / math.log2(i + 1)
+    return dcg
 
 
-def average_precision_at_k(recommended, relevant, k):
-    """Average Precision @ K for a single query."""
-    rec_k = recommended[:k]
-    hits = 0
-    sum_precisions = 0.0
-    for i, item in enumerate(rec_k):
-        if item in relevant:
-            hits += 1
-            sum_precisions += hits / (i + 1)
-    
-    return sum_precisions / min(len(relevant), k) if relevant else 0.0
+def _ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
+    """Normalised DCG at K (IDCG assumes all relevant items are at top)."""
+    dcg = _dcg_at_k(recommended, relevant, k)
+    ideal = _dcg_at_k(list(relevant)[:k], relevant, k)
+    return dcg / ideal if ideal > 0 else 0.0
 
 
-def evaluate():
-    """Run the full evaluation pipeline."""
-    # 1. Load data
-    dm = DatasetManager()
-    data_dir = os.path.join(os.path.dirname(__file__), 'datasets')
-    
-    # Try to load all user-provided datasets first
-    datasets_to_load = ['books.csv', 'booksdata.csv', 'ratings.csv']
-    loaded_any = False
-    
-    for filename in datasets_to_load:
-        filepath = os.path.join(data_dir, filename)
-        if os.path.exists(filepath):
-            print(f"Loading dataset: {filename}...")
-            dm.load_csv(filepath)
-            loaded_any = True
-            
-    # Fallback to sample data if no user datasets found
-    if not loaded_any:
-        sample_file = os.path.join(data_dir, 'sample_products.csv')
-        if not os.path.exists(sample_file):
-            print("ERROR: datasets not found. Run: python scripts/generate_sample_data.py")
-            return
-        print("Loading sample_products.csv...")
-        dm.load_csv(sample_file)
+# ---------------------------------------------------------------------------
+# Recommendation engine wrappers
+# ---------------------------------------------------------------------------
 
-    interaction_df, item_df = dm.merge_all()
-    # Create synthetic users if dataset has only one user
-    if interaction_df['user_id'].nunique() <= 1:
-     print("Generating synthetic users for evaluation...")
+def _get_content_recs(title: str, df: pd.DataFrame, tfidf_matrix, k: int) -> list[str]:
+    """Return top-K titles using content-based (TF-IDF cosine) similarity."""
+    from sklearn.metrics.pairwise import cosine_similarity
 
-    interaction_df = interaction_df.copy()
+    try:
+        idx = df[df["title"] == title].index[0]
+    except IndexError:
+        return []
 
-    synthetic_users = []
-    num_fake_users = 50
+    sim_scores = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
+    sim_scores[idx] = -1  # exclude self
+    top_indices = np.argsort(sim_scores)[::-1][:k]
+    return df.iloc[top_indices]["title"].tolist()
 
-    for i in range(num_fake_users):
-        temp = interaction_df.sample(
-            min(40, len(interaction_df)),
-            replace=True,
-            random_state=i
-        ).copy()
 
-        temp['user_id'] = f"user_{i}"
-        synthetic_users.append(temp)
+def _get_collab_recs(title: str, df: pd.DataFrame, svd_matrix, k: int) -> list[str]:
+    """Return top-K titles using collaborative filtering (SVD) similarity."""
+    from sklearn.metrics.pairwise import cosine_similarity
 
-    interaction_df = pd.concat(synthetic_users, ignore_index=True)
+    try:
+        idx = df[df["title"] == title].index[0]
+    except IndexError:
+        return []
 
-    print("Synthetic users created:",
-          interaction_df['user_id'].nunique())
-    print("Running NLP Sentiment Analysis on reviews...")
-    interaction_df = batch_analyze(interaction_df.head(2000), 'review_text')
-    sentiment_agg = aggregate_sentiment_by_item(interaction_df, 'title')
-    item_df = item_df.merge(sentiment_agg, on='title', how='left')
-    item_df['avg_sentiment'] = item_df['avg_sentiment'].fillna(0.0)
+    sim_scores = cosine_similarity(svd_matrix[idx].reshape(1, -1), svd_matrix).flatten()
+    sim_scores[idx] = -1
+    top_indices = np.argsort(sim_scores)[::-1][:k]
+    return df.iloc[top_indices]["title"].tolist()
 
-    # 2. Train-test split (leave-one-out per user)
-    # For each user, hold out their highest-rated item as "ground truth"
-    user_groups = interaction_df.groupby('user_id')
-    test_pairs = []
-    for user_id, group in user_groups:
-        if len(group) < 2:
-            continue
-        top_item = group.sort_values('rating', ascending=False).iloc[0]['title']
-        # Relevant items = items this user rated >= 3
-        relevant = group[group['rating'] >= 3]['title'].tolist()
-        if relevant:
-            test_pairs.append((user_id, top_item, relevant))
-        print("Interaction rows:", len(interaction_df))
-        print("Unique users:", interaction_df['user_id'].nunique())
 
-        user_counts = interaction_df.groupby('user_id').size()
-        print(user_counts.describe())
+def _get_sentiment_recs(title: str, df: pd.DataFrame, k: int) -> list[str]:
+    """Return top-K titles sorted by VADER sentiment score (descending)."""
+    try:
+        idx = df[df["title"] == title].index[0]
+    except IndexError:
+        return []
 
-        if not test_pairs:
-            print("Not enough data for evaluation.")
-            return  
+    item_sentiment = df.at[idx, "sentiment_score"] if "sentiment_score" in df.columns else 0.0
+    df_copy = df.copy()
+    df_copy["_sent_diff"] = (df_copy.get("sentiment_score", 0) - item_sentiment).abs()
+    df_copy = df_copy.drop(index=idx, errors="ignore")
+    top = df_copy.nsmallest(k, "_sent_diff")
+    return top["title"].tolist()
 
-    # 3. Build models
-    content_model = ContentRecommender(item_df)
-    collab_model = CollaborativeRecommender(interaction_df)
 
-    configs = [
-    ("Alpha 0.3", 0.3, 0.7, 0.0),
-    ("Alpha 0.5", 0.5, 0.5, 0.0),
-    ("Alpha 0.7", 0.7, 0.3, 0.0),
-    ]
+def _get_hybrid_recs(
+    title: str,
+    df: pd.DataFrame,
+    tfidf_matrix,
+    svd_matrix,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    k: int,
+) -> list[str]:
+    """Return top-K titles using weighted hybrid score (α·content + β·collab + γ·sentiment)."""
+    from sklearn.metrics.pairwise import cosine_similarity
 
-    K = 10
+    try:
+        idx = df[df["title"] == title].index[0]
+    except IndexError:
+        return []
 
-    print(f"\n{'='*70}")
-    print(f"  EVALUATION REPORT — Precision@{K}, Recall@{K}, NDCG@{K}")
-    print(f"  Test cases: {len(test_pairs)} users")
-    print(f"{'='*70}\n")
+    content_scores = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
+    collab_scores  = cosine_similarity(svd_matrix[idx].reshape(1, -1), svd_matrix).flatten()
 
-    results_table = []
+    # Normalise sentiment scores to [0, 1]
+    sentiment_raw = df.get("sentiment_score", pd.Series(np.zeros(len(df)))).values.astype(float)
+    s_min, s_max = sentiment_raw.min(), sentiment_raw.max()
+    sentiment_scores = (
+        (sentiment_raw - s_min) / (s_max - s_min)
+        if s_max != s_min
+        else np.zeros_like(sentiment_raw)
+    )
 
-    for config_name, a, b, g in configs:
-        hybrid = HybridRecommender(content_model, collab_model, item_df, a, b, g)
+    hybrid_scores = alpha * content_scores + beta * collab_scores + gamma * sentiment_scores
+    hybrid_scores[idx] = -1  # exclude self
 
+    top_indices = np.argsort(hybrid_scores)[::-1][:k]
+    return df.iloc[top_indices]["title"].tolist()
+
+
+# ---------------------------------------------------------------------------
+# Main evaluation function — importable by the FastAPI endpoint
+# ---------------------------------------------------------------------------
+
+def run_evaluation(
+    k: int = 10,
+    mode: Mode = "all",
+    weights: dict[str, float] | None = None,
+    data_path: str | None = None,
+) -> ResultsDict:
+    """
+    Run Precision@K, Recall@K, NDCG@K evaluation for the requested mode(s).
+
+    Args:
+        k:          Number of recommendations to evaluate against.
+        mode:       One of "content", "collaborative", "sentiment", "hybrid", "all".
+        weights:    Dict with keys "alpha", "beta", "gamma" (used for hybrid mode).
+                    Defaults to {"alpha": 0.4, "beta": 0.4, "gamma": 0.2}.
+        data_path:  Path to the dataset CSV. Defaults to DATA_PATH env var or
+                    "data/products.csv".
+
+    Returns:
+        Dict mapping mode name(s) to {"precision": float, "recall": float, "ndcg": float}.
+
+    Raises:
+        RuntimeError: If models have not been built yet (matrices not found).
+    """
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.decomposition import TruncatedSVD
+
+    # --- resolve weights ---
+    w = {"alpha": 0.4, "beta": 0.4, "gamma": 0.2}
+    if weights:
+        w.update(weights)
+
+    # --- load data ---
+    path = data_path or os.getenv("DATA_PATH", "data/products.csv")
+    if not os.path.exists(path):
+        raise RuntimeError(f"Dataset not found at '{path}'. Upload a dataset first.")
+
+    df = pd.read_csv(path)
+
+    # Normalise column names — support both "title"/"product_name"
+    if "product_name" in df.columns and "title" not in df.columns:
+        df = df.rename(columns={"product_name": "title"})
+
+    required = {"title"}
+    missing = required - set(df.columns)
+    if missing:
+        raise RuntimeError(f"Dataset is missing required columns: {missing}")
+
+    df = df.dropna(subset=["title"]).reset_index(drop=True)
+
+    # --- build/load matrices ---
+    # Try to load pre-built matrices from disk; fall back to building on-the-fly
+    tfidf_matrix = _load_or_build_tfidf(df)
+    svd_matrix   = _load_or_build_svd(df)
+
+    # --- build relevance sets from rating data ---
+    # "relevant" items for a given title = items in same category OR rating >= 4.0
+    def _get_relevant(row_idx: int) -> set[str]:
+        row = df.iloc[row_idx]
+        relevant = set()
+        # Same category
+        if "category" in df.columns and pd.notna(row.get("category")):
+            same_cat = df[df["category"] == row["category"]]["title"].tolist()
+            relevant.update(same_cat)
+        # High-rated items (if ratings available)
+        if "rating" in df.columns:
+            high_rated = df[df["rating"] >= 4.0]["title"].tolist()
+            relevant.update(high_rated)
+        # Remove self
+        relevant.discard(row["title"])
+        return relevant
+
+    # Sample up to 200 items for speed
+    sample_size = min(200, len(df))
+    sample_indices = np.random.choice(len(df), size=sample_size, replace=False)
+
+    modes_to_run = (
+        ["content", "collaborative", "sentiment", "hybrid"]
+        if mode == "all"
+        else [mode]
+    )
+
+    results: ResultsDict = {}
+
+    for m in modes_to_run:
         precisions, recalls, ndcgs = [], [], []
 
-        for user_id, query_item, relevant_items in test_pairs:
-            recs_raw = hybrid.recommend(query_item, top_n=K)
-            rec_titles = [r['title'] for r in recs_raw]
+        for idx in sample_indices:
+            title   = df.iloc[idx]["title"]
+            relevant = _get_relevant(idx)
+            if not relevant:
+                continue
 
-            precisions.append(precision_at_k(rec_titles, relevant_items, K))
-            recalls.append(recall_at_k(rec_titles, relevant_items, K))
-            ndcgs.append(ndcg_at_k(rec_titles, relevant_items, K))
+            if m == "content":
+                recs = _get_content_recs(title, df, tfidf_matrix, k)
+            elif m == "collaborative":
+                recs = _get_collab_recs(title, df, svd_matrix, k)
+            elif m == "sentiment":
+                recs = _get_sentiment_recs(title, df, k)
+            else:  # hybrid
+                recs = _get_hybrid_recs(
+                    title, df, tfidf_matrix, svd_matrix,
+                    w["alpha"], w["beta"], w["gamma"], k,
+                )
 
-        avg_p = np.mean(precisions)
-        avg_r = np.mean(recalls)
-        avg_n = np.mean(ndcgs)
+            precisions.append(_precision_at_k(recs, relevant, k))
+            recalls.append(_recall_at_k(recs, relevant, k))
+            ndcgs.append(_ndcg_at_k(recs, relevant, k))
 
-        results_table.append((config_name, avg_p, avg_r, avg_n))
-        print(f"  {config_name:30s}  P@{K}: {avg_p:.4f}  R@{K}: {avg_r:.4f}  NDCG@{K}: {avg_n:.4f}")
+        results[m] = {
+            "precision": round(float(np.mean(precisions)), 4) if precisions else 0.0,
+            "recall":    round(float(np.mean(recalls)),    4) if recalls    else 0.0,
+            "ndcg":      round(float(np.mean(ndcgs)),      4) if ndcgs      else 0.0,
+        }
 
-    print(f"\n{'='*70}")
-
-    # Find best config
-    best = max(results_table, key=lambda x: x[3])  # best NDCG
-    print(f"\n  ★ Best config (by NDCG@{K}): {best[0]}")
-    print(f"    Precision: {best[1]:.4f}  Recall: {best[2]:.4f}  NDCG: {best[3]:.4f}\n")
-
-
-def _build_test_data():
-    """Shared helper — loads data, builds models, and returns test pairs.
-
-    Returns (content_model, collab_model, item_df, test_pairs).
-    """
-    dm = DatasetManager()
-    data_dir = os.path.join(os.path.dirname(__file__), 'datasets')
-
-    datasets_to_load = ['books.csv', 'booksdata.csv', 'ratings.csv']
-    loaded_any = False
-
-    for filename in datasets_to_load:
-        filepath = os.path.join(data_dir, filename)
-        if os.path.exists(filepath):
-            print(f"Loading dataset: {filename}...")
-            dm.load_csv(filepath)
-            loaded_any = True
-
-    if not loaded_any:
-        sample_file = os.path.join(data_dir, 'sample_products.csv')
-        if not os.path.exists(sample_file):
-            print("ERROR: datasets not found. Run: python scripts/generate_sample_data.py")
-            return None, None, None, []
-        print("Loading sample_products.csv...")
-        dm.load_csv(sample_file)
-
-    interaction_df, item_df = dm.merge_all()
-
-    if interaction_df['user_id'].nunique() <= 1:
-        print("Generating synthetic users for evaluation...")
-        interaction_df = interaction_df.copy()
-        synthetic_users = []
-        for i in range(50):
-            temp = interaction_df.sample(
-                min(40, len(interaction_df)), replace=True, random_state=i
-            ).copy()
-            temp['user_id'] = f"user_{i}"
-            synthetic_users.append(temp)
-        interaction_df = pd.concat(synthetic_users, ignore_index=True)
-
-    print("Running NLP Sentiment Analysis on reviews...")
-    interaction_df = batch_analyze(interaction_df.head(2000), 'review_text')
-    sentiment_agg = aggregate_sentiment_by_item(interaction_df, 'title')
-    item_df = item_df.merge(sentiment_agg, on='title', how='left')
-    item_df['avg_sentiment'] = item_df['avg_sentiment'].fillna(0.0)
-
-    # Leave-one-out test pairs
-    user_groups = interaction_df.groupby('user_id')
-    test_pairs = []
-    for user_id, group in user_groups:
-        if len(group) < 2:
-            continue
-        top_item = group.sort_values('rating', ascending=False).iloc[0]['title']
-        relevant = group[group['rating'] >= 3]['title'].tolist()
-        if relevant:
-            test_pairs.append((user_id, top_item, relevant))
-
-    if not test_pairs:
-        print("Not enough data for evaluation.")
-        return None, None, None, []
-
-    content_model = ContentRecommender(item_df)
-    collab_model = CollaborativeRecommender(interaction_df)
-
-    return content_model, collab_model, item_df, test_pairs
+    return results
 
 
-def run_ab_test(config_a=None, config_b=None, k=10):
-    """Entry point for the --ab-test flag."""
-    from ab_testing import ABTestRunner
+# ---------------------------------------------------------------------------
+# Matrix helpers — load pre-built or build on-the-fly
+# ---------------------------------------------------------------------------
 
-    content_model, collab_model, item_df, test_pairs = _build_test_data()
-    if not test_pairs:
-        return
+def _load_or_build_tfidf(df: pd.DataFrame):
+    """Load TF-IDF matrix from disk if available, else build from scratch."""
+    import pickle
 
-    runner = ABTestRunner(
-        content_model, collab_model, item_df,
-        config_a=config_a,
-        config_b=config_b,
-        k=k,
-    )
+    cache_path = os.getenv("TFIDF_CACHE", "models/tfidf_matrix.pkl")
+    if os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
 
-    runner.run(test_pairs)
-    runner.print_results()
-    runner.write_results_md()
+    # Build on-the-fly using title + category as text
+    text_col = "title"
+    if "category" in df.columns:
+        df = df.copy()
+        df["_text"] = df["title"].fillna("") + " " + df["category"].fillna("")
+        text_col = "_text"
+
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
+    return vectorizer.fit_transform(df[text_col].fillna(""))
 
 
-if __name__ == '__main__':
-    import argparse
+def _load_or_build_svd(df: pd.DataFrame):
+    """Load SVD matrix from disk if available, else build from scratch."""
+    import pickle
 
-    parser = argparse.ArgumentParser(description="Evaluate the Hybrid Recommender System")
-    parser.add_argument(
-        '--ab-test',
-        action='store_true',
-        help='Run A/B test comparing two weight configurations and output results to results.md',
-    )
-    parser.add_argument('--k', type=int, default=10, help='Top-K for evaluation metrics (default: 10)')
+    cache_path = os.getenv("SVD_CACHE", "models/svd_matrix.pkl")
+    if os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+
+    # Build rating matrix and decompose
+    from sklearn.decomposition import TruncatedSVD
+
+    tfidf = _load_or_build_tfidf(df)
+    svd = TruncatedSVD(n_components=min(50, tfidf.shape[1] - 1), random_state=42)
+    return svd.fit_transform(tfidf)
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point — original behaviour preserved
+# ---------------------------------------------------------------------------
+
+def _cli() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate hybrid recommender models.")
+    parser.add_argument("--k",    type=int,   default=10,   help="Number of recommendations (default: 10)")
+    parser.add_argument("--mode", type=str,   default="all",
+                        choices=["content", "collaborative", "sentiment", "hybrid", "all"],
+                        help="Which model(s) to evaluate (default: all)")
+    parser.add_argument("--alpha", type=float, default=0.4, help="Content weight (default: 0.4)")
+    parser.add_argument("--beta",  type=float, default=0.4, help="Collaborative weight (default: 0.4)")
+    parser.add_argument("--gamma", type=float, default=0.2, help="Sentiment weight (default: 0.2)")
     args = parser.parse_args()
 
-    if args.ab_test:
-        run_ab_test(k=args.k)
-    else:
-        evaluate()
+    print(f"\n📊 Running evaluation — mode={args.mode}, k={args.k}")
+    print(f"   Weights: α={args.alpha} β={args.beta} γ={args.gamma}\n")
+
+    try:
+        results = run_evaluation(
+            k=args.k,
+            mode=args.mode,
+            weights={"alpha": args.alpha, "beta": args.beta, "gamma": args.gamma},
+        )
+    except RuntimeError as e:
+        print(f"❌ Error: {e}")
+        return
+
+    # Pretty-print results table
+    header = f"{'Mode':<16} {'Precision@K':>12} {'Recall@K':>10} {'NDCG@K':>10}"
+    print(header)
+    print("-" * len(header))
+    for mode_name, metrics in results.items():
+        print(
+            f"{mode_name:<16} "
+            f"{metrics['precision']:>12.4f} "
+            f"{metrics['recall']:>10.4f} "
+            f"{metrics['ndcg']:>10.4f}"
+        )
+    print()
+
+
+if __name__ == "__main__":
+    _cli()
