@@ -50,60 +50,6 @@ def content_model(sample_item_df):
     return ContentRecommender(sample_item_df)
 
 
-"""
-Unit tests for Content-Based Recommender
-Run with: pytest tests/ -v
-"""
-import pytest
-import pandas as pd
-import numpy as np
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from src.model.content_model import ContentRecommender
-
-
-# ─── Fixtures ────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def sample_item_df():
-    """Sample DataFrame for testing ContentRecommender."""
-    return pd.DataFrame({
-        'title': [
-            'Harry Potter',
-            'Lord of the Rings',
-            'The Hobbit',
-            'Game of Thrones',
-            'Dune'
-        ],
-        'description': [
-            'A young wizard discovers his magical heritage',
-            'A fellowship embarks on a quest to destroy a ring',
-            'A hobbit goes on an unexpected journey',
-            'Noble families fight for control of the Iron Throne',
-            'A desert planet holds the most valuable resource',
-        ],
-        'category': [
-            'Fantasy', 'Fantasy', 'Fantasy', 'Fantasy', 'SciFi'
-        ],
-        'combined': [
-            'Harry Potter A young wizard discovers his magical heritage Fantasy',
-            'Lord of the Rings A fellowship embarks on a quest Fantasy',
-            'The Hobbit A hobbit goes on an unexpected journey Fantasy',
-            'Game of Thrones Noble families fight for the Iron Throne Fantasy',
-            'Dune A desert planet holds the most valuable resource SciFi',
-        ],
-    })
-
-
-@pytest.fixture
-def content_model(sample_item_df):
-    """Create ContentRecommender instance with sample data."""
-    return ContentRecommender(sample_item_df)
-
-
 # ─── Tests ───────────────────────────────────────────────────────────────────
 
 class TestContentRecommender:
