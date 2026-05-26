@@ -75,3 +75,24 @@ def test_extreme_sparse_matrix():
     assert model.user_factors.shape == (1, 1)
     assert model.item_factors.shape == (1, 1)
     assert model.predict_rating(1, "Naruto") == 1.0
+
+
+def test_top_n_validation_in_collaborative():
+    import pytest
+    df = sample_data()
+    model = CollaborativeRecommender(df)
+
+    with pytest.raises(ValueError):
+        model.recommend("Naruto", top_n=-1)
+
+    with pytest.raises(ValueError):
+        model.recommend("Naruto", top_n=0)
+
+    with pytest.raises(ValueError):
+        model.recommend("Naruto", top_n="five")
+
+    with pytest.raises(ValueError):
+        model.predict_for_user(1, top_n=-5)
+
+    assert len(model.recommend("Naruto", top_n=999)) <= 100
+    assert len(model.predict_for_user(1, top_n=999)) <= 100

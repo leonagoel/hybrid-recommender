@@ -80,6 +80,10 @@ class CollaborativeRecommender:
         Item-item collaborative recommendations using SVD latent space.
         Returns list of dicts: [{ 'title', 'collab_score' }, ...]
         """
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer.")
+        top_n = min(top_n, 100)
+
         if title not in self._title_to_idx:
             return []
 
@@ -111,6 +115,10 @@ class CollaborativeRecommender:
         Personalized recommendations for a specific user.
         Predicts scores for all unseen items and returns top N.
         """
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer.")
+        top_n = min(top_n, 100)
+
         if user_id not in self._user_to_idx:
             return []
 
