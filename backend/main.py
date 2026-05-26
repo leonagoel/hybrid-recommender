@@ -281,9 +281,9 @@ class PurchaseCreate(BaseModel):
 class FeedbackCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str
-    item: str
-    feedback: str
+    user_id: str = Field(..., min_length=1)
+    item: str = Field(..., min_length=1)
+    feedback: str = Field(..., min_length=1)
 
 
 class RealtimeRecommendationRequest(BaseModel):
