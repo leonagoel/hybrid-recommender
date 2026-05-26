@@ -823,9 +823,9 @@ async function loadSearchResults(query) {
 
     try {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
-        const products = data.results || data.items || [];
+        const products = data.results || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
         state.hasMore = false;
         state.allProducts = [...products];
@@ -1120,7 +1120,7 @@ async function fallbackRecommendationRequest(title) {
 }
 
 function renderRecommendations(data) {
-    const recs = data.recommendations || [];
+    const recs = data.results || data.recommendations || [];
 
     els.recsLoader.hidden = true;
     els.recsStrip.hidden = false;
@@ -1197,7 +1197,7 @@ els.recsStrip.innerHTML=`
 
     try {
         const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         els.recsLoader.hidden = true;
         els.recsStrip.hidden = false;
@@ -1349,7 +1349,7 @@ async function openProductModal(product) {
             `/api/recommend/${encodeURIComponent(product.title)}?top_n=5`
         );
 
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         els.modalRecommendationsList.innerHTML = recs.map((r) => `
             <li>${r.title}</li>
@@ -1687,7 +1687,7 @@ async function loadSearchResults(query) {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
         const products = data.results || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
         renderProducts(products, false);
         els.searchInput.select();
@@ -1788,7 +1788,7 @@ async function loadRecommendations(title) {
 
     try {
         const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         if (!recs.length) {
             els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';

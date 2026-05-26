@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
 Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
@@ -34,7 +36,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
 from dotenv import load_dotenv
 
@@ -59,6 +61,7 @@ from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
 from src.model.issue_triage import triage_issue
+from src.model.federated_learning import train_federated_collaborative_model
 
 from functools import lru_cache
 
@@ -180,6 +183,25 @@ def _set_cache_headers(response: Response, status: str) -> None:
     response.headers["X-Cache"] = status
 
 
+def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    if not contents:
+        raise HTTPException(400, "Uploaded file is empty.")
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
+    if b"\x00" in contents[:4096]:
+        raise HTTPException(400, "Uploaded file appears to be binary.")
+
+    sample = contents[:4096].lstrip()
+    lowered_name = filename.lower()
+    if ext == ".json":
+        if not sample.startswith((b"{", b"[")):
+            raise HTTPException(400, "JSON uploads must contain JSON content.")
+    elif ext == ".csv":
+        lowered_sample = sample[:128].lower()
+        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
+            raise HTTPException(400, "CSV uploads must contain CSV content.")
+        if not lowered_name.endswith(".csv"):
+            raise HTTPException(400, "CSV uploads must use a .csv filename.")
 def _get_rate_limit(limit_env: str, default_limit: int) -> int:
     try:
         limit = int(os.environ.get(limit_env, str(default_limit)))
@@ -413,18 +435,18 @@ class WeightsUpdate(BaseModel):
 class PurchaseCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str
-    product_id: int
-    rating: float = 0.0
+    user_id: str = Field(..., min_length=1)
+    product_id: int = Field(..., gt=0)
+    rating: float = Field(0.0, ge=0.0, le=5.0)
     review_text: str = ""
 
 
 class FeedbackCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str
-    item: str
-    feedback: str
+    user_id: str = Field(..., min_length=1)
+    item: str = Field(..., min_length=1)
+    feedback: str = Field(..., min_length=1)
 
 
 class RealtimeRecommendationRequest(BaseModel):
@@ -433,6 +455,7 @@ class RealtimeRecommendationRequest(BaseModel):
     item_title: str
     top_n: int = 10
     explain: bool = False
+    target_catalog: Optional[str] = None
 
 
 # ── CSRF Token ───────────────────────────────────────────────────────
@@ -472,6 +495,15 @@ def get_csrf_token(response: Response):
     # Return the same token in the body so the frontend can store it in memory
     # and inject it as the X-CSRF-Token header on mutating requests.
     return CSRFTokenResponse(csrfToken=token)
+
+
+class FederatedTrainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    n_factors: int = 20
+    epochs: int = 5
+    lr: float = 0.05
+    reg: float = 0.05
 
 
 # ── Health ────────────────────────────────────────────────────────────
@@ -620,19 +652,42 @@ def search_items(
     response: Response,
     q: str = "",
     limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
 ):
-    rate_limited = _apply_rate_limit(
-        request,
-        response,
-        scope="search",
-        limit_env="RATE_LIMIT_SEARCH_PER_MIN",
-        default_limit=30,
-    )
-    if rate_limited is not None:
-        return rate_limited
-
     query = _normalize_search_query(q)
+    # ── Rate Limiting ──
+    try:
+        rate_limit = int(os.environ.get("RATE_LIMIT_SEARCH_PER_MIN", "60"))
+    except ValueError:
+        rate_limit = 60
+
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    now = time.time()
+
+    with _rate_limit_lock:
+        bucket = _rate_limit_buckets.setdefault(client_ip, {"timestamps": []})
+        bucket["timestamps"] = [t for t in bucket["timestamps"] if now - t < 60]
+
+        if len(bucket["timestamps"]) >= rate_limit:
+            reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
+            reset_time = max(0, reset_time)
+            response.status_code = 429
+            response.headers["x-ratelimit-limit"] = str(rate_limit)
+            response.headers["x-ratelimit-remaining"] = "0"
+            response.headers["x-ratelimit-reset"] = str(reset_time)
+            return {
+                "error": "Rate limit exceeded",
+                "message": "Too many requests. Please try again later.",
+            }
+
+        bucket["timestamps"].append(now)
+        remaining = rate_limit - len(bucket["timestamps"])
+        reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
+        reset_time = max(0, reset_time)
+        response.headers["x-ratelimit-limit"] = str(rate_limit)
+        response.headers["x-ratelimit-remaining"] = str(remaining)
+        response.headers["x-ratelimit-reset"] = str(reset_time)
+
     cache_key = _cache_key("search", query, limit, offset)
     cached = _get_cached_response(cache_key)
     if cached is not None:
@@ -667,7 +722,14 @@ def search_items(
             'review_count': p.get('review_count', 0), 'rank': p.get('rank', 0.0),
         })
 
-    payload = {"results": results, "total": len(results), "query": query, "is_fallback": not query}
+    result_count = len(results)
+    payload = {
+        "results": results,
+        "count": result_count,
+        "total": result_count,
+        "query": query,
+        "is_fallback": not query,
+    }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
@@ -697,6 +759,30 @@ def autocomplete_products(
     except Exception as e:
         logger.error("Autocomplete error: %s", e)
         raise HTTPException(status_code=500, detail="Autocomplete failed")
+
+
+def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if b'\x00' in contents:
+        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
+    try:
+        decoded = contents.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
+    
+    stripped = decoded.strip()
+    if ext == ".csv":
+        if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+            raise HTTPException(status_code=400, detail="CSV uploads must contain CSV content.")
+    elif ext == ".json":
+        if not (stripped.startswith("{") or stripped.startswith("[")):
+            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
+        import json
+        try:
+            json.loads(stripped)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
 
 
 # ── Upload ────────────────────────────────────────────────────────────
@@ -749,6 +835,8 @@ async def upload_dataset(
                     'description': description,
                     'category': str(row.get('category', ''))[:200],
                     'rating': round(rating_val, 2),
+                    'avg_sentiment': 0.0,
+                    'review_count': 0,
                     'metadata': {},
                 })
             if not rows:
@@ -836,7 +924,91 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
     }
 
 
-# ── Recommendations (with rate limiting) ──────────────────────────────────
+@app.post("/api/train/federated")
+def train_federated(req: FederatedTrainRequest):
+    sb = get_supabase()
+    all_products = []
+    page_size = 1000
+    offset = 0
+    while True:
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+        batch = result.data or []
+        all_products.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    if not all_products:
+        raise HTTPException(400, "No products in database. Upload data first.")
+
+    import pandas as pd
+    item_df = pd.DataFrame(all_products)
+    item_df['combined'] = (
+        item_df['title'].astype(str) + ' ' +
+        item_df['description'].fillna('').astype(str) + ' ' +
+        item_df['category'].fillna('').astype(str)
+    )
+    item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
+
+    start_time = time.time()
+    content_model = ContentRecommender(item_df)
+
+    try:
+        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+        purchases = purchases_result.data or []
+    except Exception as e:
+        logger.error("Federated training: purchases load failed: %s", e)
+        raise HTTPException(500, f"Failed to retrieve purchases from database: {str(e)}")
+
+    if len(purchases) <= 10:
+        raise HTTPException(400, "Not enough interaction data for federated training. Need at least 11 interactions.")
+
+    product_title_map = {p['id']: p['title'] for p in all_products}
+    interaction_rows = []
+    for p in purchases:
+        title = product_title_map.get(p['product_id'])
+        if title:
+            interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
+
+    if len(interaction_rows) <= 10:
+        raise HTTPException(400, "Not enough valid interaction rows matching product catalog.")
+
+    interaction_df = pd.DataFrame(interaction_rows)
+    if interaction_df['user_id'].nunique() <= 1:
+        raise HTTPException(400, "Federated training requires at least 2 unique users.")
+
+    try:
+        collab_model = train_federated_collaborative_model(
+            interaction_df,
+            n_factors=req.n_factors,
+            epochs=req.epochs,
+            lr=req.lr,
+            reg=req.reg
+        )
+    except Exception as e:
+        logger.error("Federated training execution failed: %s", e)
+        raise HTTPException(500, f"Federated training execution failed: {str(e)}")
+
+    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
+    build_time = round(time.time() - start_time, 2)
+
+    models["content"] = content_model
+    models["collab"] = collab_model
+    models["hybrid"] = hybrid_model
+    models["item_df"] = item_df
+    models["ready"] = True
+    models["build_time"] = build_time
+    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+    _clear_response_cache()
+
+    return {
+        "message": "Federated collaborative model trained successfully!",
+        "items": len(item_df),
+        "users": int(interaction_df['user_id'].nunique()),
+        "build_time_seconds": build_time,
+    }
+
+
+# ── Recommendations ───────────────────────────────────────────────────
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(
@@ -846,6 +1018,7 @@ def get_recommendations(
     title: Optional[str] = Query(None),
     top_n: int = 10,
     explain: bool = Query(False),
+    target_catalog: Optional[str] = Query(None),
 ):
     rate_limited = _apply_rate_limit(
         request,
@@ -863,21 +1036,27 @@ def get_recommendations(
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain)
+    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
-    recs = models["hybrid"].recommend(query_title, top_n=top_n, explain=explain)
+    recs = models["hybrid"].recommend(
+        query_title, top_n=top_n, explain=explain, target_catalog=target_catalog
+    )
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
 
     payload = {
+        "results": recs,
+        "count": len(recs),
+        "query": query_title,
         "query_item": query_title,
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),
         "explain": explain,
+        "target_catalog": target_catalog,
     }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
@@ -1092,10 +1271,14 @@ def get_categories():
             return {"categories": result.data}
     except Exception:
         pass
-    result = sb.table('products').select('category').limit(5000).execute()
-    cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
-    cats.sort()
-    return {"categories": cats}
+    try:
+        result = sb.table('products').select('category').limit(5000).execute()
+        cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
+        cats.sort()
+        return {"categories": cats}
+    except Exception as e:
+        logger.error("Failed to retrieve categories: %s", e)
+        return {"categories": []}
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
@@ -1129,7 +1312,10 @@ TRENDING_CACHE = {
 
 
 @app.get("/api/trending")
-def get_trending_products(days: int = 7, limit: int = 10):
+def get_trending_products(
+    days: int = Query(7, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=100),
+):
     """
     Get trending products based on recent interactions.
     """
