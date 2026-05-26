@@ -12,10 +12,16 @@ export function getStars(rating) {
  * @returns {boolean}
  */
 export function isSafeRedirect(url) {
-    if (!url) return false;
-    // Allow relative URLs (starts with '/')
-    if (url.startsWith('/')) return true;
-    // Allow same‑origin absolute URLs
+    if (!url || typeof url !== 'string') {
+        return false;
+    }
+
+    // Allow only safe internal relative paths
+    if (url.startsWith('/') && !url.startsWith('//')) {
+        return true;
+    }
+
+    // Allow same-origin absolute URLs only
     try {
         const target = new URL(url, window.location.origin);
         return target.origin === window.location.origin;
