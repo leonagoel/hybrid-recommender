@@ -117,6 +117,23 @@ class TestHandleMissingValuesEdgeCases:
         result = handle_missing_values(df)
         assert len(result) == 3
 
+    def test_mixed_type_columns(self):
+        df = pd.DataFrame({
+            'text_col': ['a', None, 'c'],
+            'num_col': [1.0, None, 3.0]
+        })
+        result = handle_missing_values(df)
+        assert result['text_col'].isnull().sum() == 0
+        assert result['num_col'].isnull().sum() == 0
+
+    def test_numeric_uses_median(self):
+        df = pd.DataFrame({
+            'num_col': [1.0, 2.0, 3.0, None, 5.0]
+        })
+        result = handle_missing_values(df)
+        assert result['num_col'].notna().all()
+        assert result['num_col'].dtype in ['float64', 'int64']
+
 
 class TestRemoveDuplicatesEdgeCases:
     def test_empty_dataframe(self):
