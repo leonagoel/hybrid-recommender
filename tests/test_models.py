@@ -160,6 +160,20 @@ class TestCollaborativeRecommender:
     def test_predict_for_unknown_user_returns_empty(self, collab_model):
         recs = collab_model.predict_for_user('unknown_user_xyz', top_n=3)
         assert recs == []
+    def test_predict_for_user_default_top_n(self, collab_model):
+        recs = collab_model.predict_for_user('u1')
+
+        assert isinstance(recs, list)
+
+    def test_predict_for_user_top_n_limit(self, collab_model):
+        recs = collab_model.predict_for_user('u1', top_n=2)
+
+        assert len(recs) <= 2
+
+    def test_predict_for_user_zero_top_n(self, collab_model):
+        recs = collab_model.predict_for_user('u1', top_n=0)
+
+        assert recs == []
 
     def test_predict_rating_known_user_item(self, collab_model):
         result = collab_model.predict_rating('u1', 'Product A')
@@ -169,7 +183,7 @@ class TestCollaborativeRecommender:
     def test_predict_rating_unknown_returns_none(self, collab_model):
         result = collab_model.predict_rating('ghost_user', 'Product A')
         assert result is None
-
+    
 
 # ─── HybridRecommender ───────────────────────────────────────────────────────
 
