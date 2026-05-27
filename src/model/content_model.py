@@ -2,6 +2,9 @@
 Content-Based Recommender
 Uses SentenceTransformers to generate semantic embeddings of item metadata
 and cosine similarity to find similar items.
+
+Optimizations:
+- Implements chunked batch encoding to prevent Out-Of-Memory (OOM) memory overhead.
 """
 import numpy as np
 import pandas as pd
@@ -10,17 +13,27 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 
 class ContentRecommender:
-    def __init__(self, item_df, model_name='all-MiniLM-L6-v2'):
+    def __init__(self, item_df, model_name='all-MiniLM-L6-v2', batch_size=256):
         """
         item_df: DataFrame with at least 'title' and 'combined' columns.
         'combined' = title + description + category (created by data_adapter).
+        batch_size: Size of slices processed sequentially to prevent RAM spikes.
         """
         self.df = item_df.reset_index(drop=True)
         self.model = SentenceTransformer(model_name)
         
-        # Generate embeddings for all items
+        # Generate embeddings using optimized sequential batching
         texts = self.df['combined'].fillna('').tolist()
-        self.matrix = self.model.encode(texts, show_progress_bar=False)
+        
+        # FIX FOR ISSUE #485: Process text slices sequentially to prevent massive host RAM peaks
+        embeddings_list = []
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            batch_encodings = self.model.encode(batch_texts, show_progress_bar=False)
+            embeddings_list.append(batch_encodings)
+            
+        # Stack slices cleanly into a single final continuous array allocation
+        self.matrix = np.vstack(embeddings_list) if embeddings_list else np.empty((0, 0))
         
         self._title_to_idx = {
             t.lower(): i for i, t in enumerate(self.df['title'])
@@ -121,6 +134,10 @@ class ContentRecommender:
                 'description': str(self.df.iloc[idx].get('description', ''))[:200],
                 'top_reviews': top_reviews,
             })
+
+        return results
+
             if len(results) >= top_n:
                 break
         return results
+

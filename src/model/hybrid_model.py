@@ -36,6 +36,7 @@ class HybridRecommender:
         alpha:          weight for content-based score
         beta:           weight for collaborative score
         gamma:          weight for sentiment score
+        model_kwargs:   Dict containing deep model hyperparameters (e.g., {'n_factors': 50, 'use_implicit': True})
         """
         self.content_model = content_model
         self.collab_model = collab_model
@@ -43,7 +44,22 @@ class HybridRecommender:
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-        # normalization: 'minmax' or 'zscore'
+
+        # Expose model kwargs explicitly as structural configuration dictionaries
+        self.model_kwargs = model_kwargs or {}
+
+        # Apply exposed parameters if dynamic updates are supplied on runtime triggers
+        if self.collab_model and self.model_kwargs:
+            n_factors = self.model_kwargs.get("n_factors")
+            use_implicit = self.model_kwargs.get("use_implicit")
+            
+            # Re-initialize or pass hyperparameters down safely if explicitly specified
+            if n_factors is not None and hasattr(self.collab_model, 'n_factors'):
+                self.collab_model.n_factors = n_factors
+            if use_implicit is not None and hasattr(self.collab_model, 'use_implicit'):
+                self.collab_model.use_implicit = use_implicit
+
+        # # normalization: 'minmax' or 'zscore'
         self.normalization = normalization
         # dynamic weighting matrix (dict of context -> (alpha,beta,gamma))
         self.weight_matrix = weight_matrix or {}
