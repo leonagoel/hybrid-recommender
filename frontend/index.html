@@ -21,7 +21,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="/static/styles.css">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
@@ -159,6 +159,12 @@
             <div class="controls__right">
                 <select id="category-filter" class="category-filter">
                     <option value="All Categories">All Categories</option>
+                </select>
+                <select id="sort-filter" class="category-filter">
+                    <option value="relevance">Relevance</option>
+                    <option value="price-low">Price: Low to High</option>
+                    <option value="price-high">Price: High to Low</option>
+                    <option value="rating">Rating</option>
                 </select>
                 <div class="weight-control" id="weight-controls">
                     <span class="weight-label">Content</span>
@@ -337,7 +343,6 @@
         <img src="https://gssoc.girlscript.tech/badges/postman.png" alt="GSSoC Badge" class="gssoc-badge" />
     </div>
 
-    <script src="app.js"></script>
     <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
   </div>
 </footer>
