@@ -55,6 +55,94 @@ function escapeHtml(value) {
     }[char]));
 }
 
+function getProductKey(product) {
+    return String(
+        product?.id
+        ?? product?.product_id
+        ?? product?.asin
+        ?? product?.title
+        ?? ''
+    );
+}
+
+function getRecentlyViewedProducts() {
+    try {
+        return JSON.parse(localStorage.getItem('recentlyViewed')) || [];
+    } catch {
+        return [];
+    }
+}
+
+function saveRecentlyViewed(product) {
+    if (!product) return;
+
+    const productKey = getProductKey(product);
+    if (!productKey) return;
+
+    let recent = getRecentlyViewedProducts();
+
+    recent = recent.filter((item) => getProductKey(item) !== productKey);
+    recent.unshift({
+        id: product.id ?? product.product_id ?? product.asin ?? product.title,
+        product_id: product.product_id,
+        asin: product.asin,
+        title: product.title || product.name || 'Untitled',
+        name: product.name,
+        category: product.category,
+        description: product.description,
+        image: product.image,
+        price: product.price,
+        rating: product.rating,
+        avg_sentiment: product.avg_sentiment,
+        review_count: product.review_count,
+    });
+    recent = recent.slice(0, 10);
+
+    localStorage.setItem('recentlyViewed', JSON.stringify(recent));
+    renderRecentlyViewed();
+}
+
+function renderRecentlyViewed() {
+    const container = document.getElementById('recently-viewed-container');
+    if (!container) return;
+
+    const products = getRecentlyViewedProducts();
+    container.innerHTML = '';
+
+    if (products.length === 0) {
+        container.innerHTML = '<p class="recently-viewed-empty">No recently viewed products.</p>';
+        return;
+    }
+
+    const fragment = document.createDocumentFragment();
+
+    products.forEach((product) => {
+        const title = product.title || product.name || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(product.category || '');
+        const card = document.createElement('div');
+        card.className = 'recent-product-card';
+        card.innerHTML = `
+            <h4>${safeTitle}</h4>
+            ${safeCategory ? `<span>${safeCategory}</span>` : ''}
+        `;
+        card.addEventListener('click', () => openProductModal(product));
+        fragment.appendChild(card);
+    });
+
+    container.appendChild(fragment);
+}
+
+function bindRecentlyViewedControls() {
+    const clearBtn = document.getElementById('clear-history-btn');
+    if (!clearBtn) return;
+
+    clearBtn.onclick = () => {
+        localStorage.removeItem('recentlyViewed');
+        renderRecentlyViewed();
+    };
+}
+
 /**
  * HybridRec — Frontend Application v3
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
@@ -799,12 +887,16 @@ function renderTrending(items) {
         if (actionButton) {
             actionButton.addEventListener('click', (e) => {
                 e.stopPropagation();
+                saveRecentlyViewed(item);
                 loadRecommendations(title);
                 toast(`Showing recommendations for trending product "${title.substring(0, 40)}"`, 'info');
             });
         }
 
-        card.addEventListener('click', () => loadRecommendations(title));
+        card.addEventListener('click', () => {
+            saveRecentlyViewed(item);
+            loadRecommendations(title);
+        });
         fragment.appendChild(card);
     });
 
@@ -1321,6 +1413,8 @@ async function handleWeightChange() {
 }
 
 async function openProductModal(product) {
+    saveRecentlyViewed(product);
+
     els.modalProductTitle.textContent = product.title || 'Untitled';
 
     els.modalProductCategory.textContent =
@@ -1757,11 +1851,13 @@ function renderProducts(products, append) {
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
             e.stopPropagation();
             const title = e.target.dataset.title;
+            saveRecentlyViewed(p);
             loadRecommendations(title);
             toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
         });
 
         card.addEventListener('click', () => {
+            saveRecentlyViewed(p);
             openProductModal(p);
         });
 
@@ -1842,6 +1938,8 @@ async function init() {
     loadSavedWeights();
     initTypeToSearch();
     initFilterChips();
+    bindRecentlyViewedControls();
+    renderRecentlyViewed();
 
     // Fetch CSRF token first — must complete before any mutating request.
     await initCsrf();
@@ -1929,7 +2027,6 @@ document.querySelectorAll(".product-card").forEach(card => {
     });
 });
 
-document.addEventListener('DOMContentLoaded', init);
 document.addEventListener('DOMContentLoaded', init);
 
 // ── Language Toggle ─────────────────────────────────────────────────

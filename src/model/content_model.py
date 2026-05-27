@@ -5,7 +5,6 @@ and cosine similarity to find similar items.
 """
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
 
@@ -15,6 +14,8 @@ class ContentRecommender:
         item_df: DataFrame with at least 'title' and 'combined' columns.
         'combined' = title + description + category (created by data_adapter).
         """
+        from sentence_transformers import SentenceTransformer
+
         self.df = item_df.reset_index(drop=True)
         self.model = SentenceTransformer(model_name)
         
