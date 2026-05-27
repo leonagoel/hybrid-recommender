@@ -6,6 +6,7 @@ import os
 import sys
 import io
 import time
+from difflib import SequenceMatcher
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -48,6 +49,12 @@ models = {
     "build_time": None,
 }
 
+def similarity(a, b):
+    return SequenceMatcher(
+        None,
+        a.lower(),
+        b.lower()
+    ).ratio()
 
 class WeightsUpdate(BaseModel):
     alpha: float = 0.4
@@ -110,6 +117,43 @@ def search_items(
                 'offset_val': offset,
             }).execute()
             products = result.data or []
+                        # Fuzzy fallback when few results are found
+            if len(products) < 3:
+
+                all_products_result = sb.table('products') \
+                    .select('id, title, description, category, rating, avg_sentiment, review_count') \
+                    .limit(200) \
+                    .execute()
+
+                all_products = all_products_result.data or []
+
+                fuzzy_matches = []
+
+                for item in all_products:
+                    title = item.get("title", "")
+
+                    score = similarity(
+                        q.strip(),
+                        title
+                    )
+
+                    if score >= 0.4:
+                        item["rank"] = score
+                        fuzzy_matches.append(item)
+
+                fuzzy_matches.sort(
+                    key=lambda x: x["rank"],
+                    reverse=True
+                )
+
+                existing_ids = {
+                    p.get("id")
+                    for p in products
+                }
+
+                for item in fuzzy_matches:
+                    if item.get("id") not in existing_ids:
+                        products.append(item)
         except Exception:
             # Fallback: do a LIKE search if FTS parsing fails
             result = sb.table('products') \
@@ -119,8 +163,6 @@ def search_items(
                 .limit(limit) \
                 .execute()
             products = result.data or []
-            for p in products:
-                p['rank'] = 0.0
     else:
         result = sb.table('products') \
             .select('id, title, description, category, rating, avg_sentiment, review_count') \
@@ -151,8 +193,6 @@ def search_items(
         "query": q,
         "is_fallback": not q.strip(),
     }
-
-
 # ── Upload + Import ─────────────────────────────────────────────────
 
 @app.post("/api/upload")
