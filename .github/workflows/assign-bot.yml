@@ -1,0 +1,267 @@
+name: 🤖 Smart Assignment Bot
+
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    # Run daily at 6 AM IST (00:30 UTC) to check stale assignments
+    - cron: '30 0 * * *'
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  # ── Job 1: Handle comments ────────────────────────────────────────────
+  handle-comment:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'issue_comment'
+    steps:
+      - name: Process issue comment commands
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const comment      = context.payload.comment.body.trim();
+            const sender       = context.payload.comment.user.login;
+            const issueNumber  = context.payload.issue.number;
+            const owner        = context.repo.owner;
+            const repo         = context.repo.repo;
+            const isPR         = !!context.payload.issue.pull_request;
+
+            if (isPR) return; // only handle issues
+
+            const issue    = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });
+            const assignees = issue.data.assignees.map(a => a.login);
+            const labels    = issue.data.labels.map(l => l.name);
+            const isGssocApproved = labels.includes('gssoc:approved');
+            const isMaintainer    = sender === owner;
+            const lower = comment.toLowerCase().trim();
+
+            // ── /label command (mentor/PA only) ──────────────────────
+            // Usage: /label type:bug frontend medium
+            const labelMatch = comment.match(/^\/label\s+(.+)/i);
+            if (labelMatch && isMaintainer) {
+              const newLabels = labelMatch[1].trim().split(/\s+/);
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: newLabels });
+              // Remove needs-triage once manually labeled
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: 'needs-triage' });
+              } catch (e) {}
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `🏷️ Labels added: ${newLabels.map(l => `\`${l}\``).join(', ')}\n\n\`needs-triage\` removed — issue is now triaged.`
+              });
+              return;
+            }
+
+            // ── /remove-label command (mentor/PA only) ───────────────
+            const removeLabelMatch = comment.match(/^\/remove-label\s+(.+)/i);
+            if (removeLabelMatch && isMaintainer) {
+              const labelToRemove = removeLabelMatch[1].trim();
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: labelToRemove });
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `🏷️ Label \`${labelToRemove}\` removed.`
+                });
+              } catch (e) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `❌ Could not remove label \`${labelToRemove}\` — it may not exist on this issue.`
+                });
+              }
+              return;
+            }
+
+            // ── /approve-issue (add gssoc:approved to issue) ─────────
+            if (lower === '/approve-issue' && isMaintainer) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['gssoc:approved'] });
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: 'needs-triage' });
+              } catch (e) {}
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `✅ **Issue approved for GSSoC!**\n\n\`gssoc:approved\` label added. Contributors can now request assignment.\n\nTo assign someone: \`/approve-assignment @username\``
+              });
+              return;
+            }
+
+            // ── /approve-assignment @username ─────────────────────────
+            const approveMatch = comment.match(/^\/approve-assignment\s+@?([\w-]+)/i);
+            if (approveMatch) {
+              if (!isMaintainer) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `⛔ @${sender} — Only the project maintainer can approve assignments.`
+                });
+                return;
+              }
+              const targetUser = approveMatch[1];
+              await github.rest.issues.addAssignees({ owner, repo, issue_number: issueNumber, assignees: [targetUser] });
+              try {
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['status:in-progress'] });
+              } catch (e) {}
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: [
+                  `## ✅ Assignment Approved!`,
+                  ``,
+                  `@${targetUser} has been assigned to this issue by @${sender}.`,
+                  ``,
+                  `**Next steps for @${targetUser}:**`,
+                  `1. Fork the repo and create a branch: \`fix/issue-${issueNumber}-short-description\``,
+                  `2. Read [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) carefully`,
+                  `3. Submit your PR within **7 days** — issue may be reassigned if no activity`,
+                  `4. Link this issue in your PR with \`Closes #${issueNumber}\``,
+                  ``,
+                  `Good luck! 🚀`,
+                ].join('\n')
+              });
+              return;
+            }
+
+            // ── /unassign ─────────────────────────────────────────────
+            if (lower === '/unassign') {
+              if (!assignees.includes(sender) && !isMaintainer) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issueNumber,
+                  body: `⚠️ @${sender} — You are not assigned to this issue.`
+                });
+                return;
+              }
+              const toRemove = isMaintainer && !assignees.includes(sender) ? assignees : [sender];
+              await github.rest.issues.removeAssignees({ owner, repo, issue_number: issueNumber, assignees: toRemove });
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: 'status:in-progress' });
+              } catch (e) {}
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `👋 @${toRemove.join(', ')} unassigned from this issue. It's now open for others!\n\n[Browse open issues](../issues?q=is%3Aopen+label%3Agssoc%3Aapproved+no%3Aassignee)`
+              });
+              return;
+            }
+
+            // ── /close (maintainer close with reason) ─────────────────
+            const closeMatch = comment.match(/^\/close\s*(.*)/i);
+            if (closeMatch && isMaintainer) {
+              const reason = closeMatch[1].trim() || 'Closed by maintainer.';
+              await github.rest.issues.update({ owner, repo, issue_number: issueNumber, state: 'closed' });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `🔒 Issue closed.\n\n**Reason:** ${reason}`
+              });
+              return;
+            }
+
+            // ── /duplicate #issue ─────────────────────────────────────
+            const dupMatch = comment.match(/^\/duplicate\s+#(\d+)/i);
+            if (dupMatch && isMaintainer) {
+              const original = dupMatch[1];
+              await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['duplicate'] });
+              await github.rest.issues.update({ owner, repo, issue_number: issueNumber, state: 'closed' });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `🔁 This is a duplicate of #${original}. Closing this issue — please add your comments to the original.`
+              });
+              return;
+            }
+
+            // ── Assignment request keywords ───────────────────────────
+            const requestKeywords = [
+              'i would like to work on this', 'i want to work on this',
+              'can i work on this', 'assign this to me', 'assign me',
+              'i would like to take this', 'i want to take this',
+              'can i take this', 'please assign me',
+              "i'm interested", 'i am interested', "i'd like to work",
+              'i can work on this', 'let me work on this',
+            ];
+            const isRequest = requestKeywords.some(kw => lower.includes(kw));
+            if (!isRequest || sender === owner) return;
+
+            if (!isGssocApproved) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `⚠️ @${sender} — This issue is not yet approved for GSSoC.\n\nPlease wait for a mentor to add \`gssoc:approved\` before requesting assignment. Check back later or browse [approved open issues](../issues?q=is%3Aopen+label%3Agssoc%3Aapproved+no%3Aassignee).`
+              });
+              return;
+            }
+
+            if (assignees.length > 0 && !assignees.includes(sender)) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `⚠️ **Already Assigned**\n\nHi @${sender}! This issue is currently assigned to @${assignees.join(', ')}.\n\nBrowse other open issues: [Available Issues](../issues?q=is%3Aopen+label%3Agssoc%3Aapproved+no%3Aassignee)`
+              });
+              return;
+            }
+
+            if (assignees.includes(sender)) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: `✅ @${sender} — You're already assigned! Submit your PR and link it with \`Closes #${issueNumber}\`.`
+              });
+              return;
+            }
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issueNumber,
+              body: [
+                `## 📌 Assignment Request Recorded`,
+                ``,
+                `Hi @${sender}, your request has been noted and is pending mentor approval.`,
+                ``,
+                `**@${owner}** — please review and assign:`,
+                `\`\`\``,
+                `/approve-assignment @${sender}`,
+                `\`\`\``,
+                ``,
+                `> ⏳ @${sender} — You'll be notified once assigned. This usually takes 24–48 hours.`,
+              ].join('\n')
+            });
+
+  # ── Job 2: Stale assignment checker (daily cron) ──────────────────────
+  stale-check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Check for stale assignments
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const STALE_DAYS = 7;
+            const now = new Date();
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', assignee: '*', per_page: 100
+            });
+
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+              if (issue.assignees.length === 0) continue;
+
+              const updatedAt  = new Date(issue.updated_at);
+              const daysSince  = (now - updatedAt) / (1000 * 60 * 60 * 24);
+
+              if (daysSince >= STALE_DAYS) {
+                const assigneeList = issue.assignees.map(a => `@${a.login}`).join(', ');
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issue.number,
+                  body: [
+                    `## ⏰ Stale Assignment Warning`,
+                    ``,
+                    `Hi ${assigneeList} — this issue has had no activity for **${Math.floor(daysSince)} days**.`,
+                    ``,
+                    `Please update your progress or the issue may be **unassigned in 48 hours** for others to pick up.`,
+                    ``,
+                    `- If you're still working on it, leave a comment with your status`,
+                    `- If you'd like to unassign yourself, comment \`/unassign\``,
+                  ].join('\n')
+                });
+                try {
+                  await github.rest.issues.addLabels({ owner, repo, issue_number: issue.number, labels: ['stale'] });
+                } catch (e) {}
+              }
+            }
