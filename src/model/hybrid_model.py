@@ -27,7 +27,8 @@ def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
 class HybridRecommender:
     def __init__(self, content_model, collab_model=None, item_df=None,
                  alpha=0.4, beta=0.35, gamma=0.25,
-                 normalization='minmax', weight_matrix=None):
+                 normalization='minmax', weight_matrix=None,
+                 fairness_enabled=False, fairness_key='category', fairness_max_share=0.6):
         """
         content_model:  ContentRecommender instance
         collab_model:   CollaborativeRecommender instance (optional)
@@ -35,6 +36,7 @@ class HybridRecommender:
         alpha:          weight for content-based score
         beta:           weight for collaborative score
         gamma:          weight for sentiment score
+        model_kwargs:   Dict containing deep model hyperparameters (e.g., {'n_factors': 50, 'use_implicit': True})
         """
         self.content_model = content_model
         self.collab_model = collab_model
@@ -42,10 +44,33 @@ class HybridRecommender:
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-        # normalization: 'minmax' or 'zscore'
+
+        # Expose model kwargs explicitly as structural configuration dictionaries
+        self.model_kwargs = model_kwargs or {}
+
+        # Apply exposed parameters if dynamic updates are supplied on runtime triggers
+        if self.collab_model and self.model_kwargs:
+            n_factors = self.model_kwargs.get("n_factors")
+            use_implicit = self.model_kwargs.get("use_implicit")
+            
+            # Re-initialize or pass hyperparameters down safely if explicitly specified
+            if n_factors is not None and hasattr(self.collab_model, 'n_factors'):
+                self.collab_model.n_factors = n_factors
+            if use_implicit is not None and hasattr(self.collab_model, 'use_implicit'):
+                self.collab_model.use_implicit = use_implicit
+
+        # # normalization: 'minmax' or 'zscore'
         self.normalization = normalization
         # dynamic weighting matrix (dict of context -> (alpha,beta,gamma))
         self.weight_matrix = weight_matrix or {}
+
+        # Optional fairness-aware re-ranking (disabled by default to preserve legacy ordering)
+        self.fairness_enabled = bool(fairness_enabled)
+        self.fairness_key = fairness_key or 'category'
+        try:
+            self.fairness_max_share = float(fairness_max_share)
+        except Exception:
+            self.fairness_max_share = 1.0
 
         # Build sentiment + rating lookups
         self._sentiment_map = {}
@@ -102,6 +127,65 @@ class HybridRecommender:
 
     def get_weights(self):
         return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
+
+    def set_fairness(self, enabled=None, key=None, max_share=None):
+        if enabled is not None:
+            self.fairness_enabled = bool(enabled)
+        if key is not None:
+            self.fairness_key = key or 'category'
+        if max_share is not None:
+            try:
+                self.fairness_max_share = float(max_share)
+            except Exception:
+                self.fairness_max_share = 1.0
+
+    def get_fairness(self):
+        return {
+            'enabled': self.fairness_enabled,
+            'key': self.fairness_key,
+            'max_share': self.fairness_max_share,
+        }
+
+    def _fair_rerank(self, results, top_n, key, max_share):
+        """
+        Lightweight fairness-aware re-ranking to reduce over-exposure of a single group.
+
+        Keeps hybrid_score ordering as much as possible while enforcing a max-per-group
+        cap in the final top_n list.
+        """
+        if not results or top_n <= 1:
+            return results[:top_n]
+
+        try:
+            max_share = float(max_share)
+        except Exception:
+            max_share = 1.0
+
+        if not (0 < max_share <= 1):
+            max_share = 1.0
+
+        max_per_group = max(1, int(math.ceil(max_share * top_n)))
+        key = key or 'category'
+
+        group_counts = {}
+        selected = []
+        overflow = []
+
+        for item in results:
+            group = str(item.get(key, '') or '').strip().casefold() or 'unknown'
+            current = group_counts.get(group, 0)
+            if current < max_per_group:
+                selected.append(item)
+                group_counts[group] = current + 1
+                if len(selected) >= top_n:
+                    break
+            else:
+                overflow.append(item)
+
+        if len(selected) < top_n:
+            selected.extend(overflow[: (top_n - len(selected))])
+
+        return selected
 
     def _normalize(self, scores):
         """Backward-compatible alias for the configured normalizer."""
@@ -190,7 +274,18 @@ class HybridRecommender:
             return base_a, base_b, base_g
         return a / total, b / total, g / total
 
-    def recommend(self, title, user_id=None, top_n=10, explain=False, target_catalog=None, weights=None):
+    def recommend(
+        self,
+        title,
+        user_id=None,
+        top_n=10,
+        explain=False,
+        target_catalog=None,
+        weights=None,
+        fairness=None,
+        fairness_key=None,
+        fairness_max_share=None,
+    ):
         """
         Get hybrid recommendations for a given item title.
         Returns list of dicts sorted by hybrid_score.
@@ -310,6 +405,12 @@ class HybridRecommender:
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
         if not results:
             return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
+
+        apply_fairness = self.fairness_enabled if fairness is None else bool(fairness)
+        if apply_fairness:
+            key = fairness_key or self.fairness_key
+            max_share = self.fairness_max_share if fairness_max_share is None else fairness_max_share
+            return self._fair_rerank(results, top_n, key, max_share)
 
         return results[:top_n]
 

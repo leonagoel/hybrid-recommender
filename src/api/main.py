@@ -20,6 +20,9 @@ class RecommendationRequest(BaseModel):
     query: str
     user_id: Optional[str] = None
     top_n: int = 10
+    fairness: Optional[bool] = None
+    fairness_key: Optional[str] = None
+    fairness_max_share: Optional[float] = None
 
 content_model = None
 collab_model = None
@@ -57,5 +60,12 @@ def get_recommendations(req: RecommendationRequest):
     if not hybrid_model:
         raise HTTPException(status_code=503, detail="Models not loaded")
         
-    recs = hybrid_model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
+    recs = hybrid_model.recommend(
+        title=req.query,
+        user_id=req.user_id,
+        top_n=req.top_n,
+        fairness=req.fairness,
+        fairness_key=req.fairness_key,
+        fairness_max_share=req.fairness_max_share,
+    )
     return {"recommendations": recs}
