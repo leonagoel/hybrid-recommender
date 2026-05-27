@@ -1773,10 +1773,20 @@ RESPONSIVE FIX
   color: var(--text-muted);
   font-size: 12px;
 }
+}
+
+/* Character counter for search input (issue #32) */
+.search-char-counter {
+    position: absolute;
+    bottom: -20px;
+    left: 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+    pointer-events: none;
+    transition: opacity 0.2s ease;
 
 /* ==========================
 EMPTY RECOMMENDATION STATE
-========================== */
 
 .empty-state{
 
@@ -1863,7 +1873,6 @@ font-size:22px;
 
 /* ==========================
 RECOMMENDATION LOADING
-========================== */
 
 .recommendation-loading{
 

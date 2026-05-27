@@ -53,6 +53,7 @@ class HybridRecommender:
         self._review_count_map = {}
         self._category_map = {}
         self._popularity_map = {}
+        self._catalog_map = {}
 
         if item_df is not None:
             global_avg = item_df['rating'].mean() if 'rating' in item_df.columns else 3.0
@@ -74,6 +75,7 @@ class HybridRecommender:
                     raw_rating, review_count, global_avg
                 )
                 self._category_map[title] = row.get('category', '')
+                self._catalog_map[title] = row.get('catalog', '')
 
             # Popularity rank (0-1 scale, higher = more popular)
             if 'review_count' in item_df.columns:
@@ -188,19 +190,19 @@ class HybridRecommender:
             return base_a, base_b, base_g
         return a / total, b / total, g / total
 
-    def recommend(self, title, user_id=None, top_n=10, explain=False, weights=None):
+    def recommend(self, title, user_id=None, top_n=10, explain=False, target_catalog=None, weights=None):
         """
         Get hybrid recommendations for a given item title.
         Returns list of dicts sorted by hybrid_score.
         """
         # 1. Content-based scores
-        content_recs = self.content_model.recommend(title, top_n=top_n * 3)
+        content_recs = self.content_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
         all_titles = {r['title'] for r in content_recs}
 
         # 2. Collaborative scores
         collab_map = {}
         if self.collab_model:
-            collab_recs = self.collab_model.recommend(title, top_n=top_n * 3)
+            collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
             for r in collab_recs:
                 collab_map[r['title']] = r['collab_score']
                 all_titles.add(r['title'])
@@ -225,7 +227,7 @@ class HybridRecommender:
                 }
 
         if not candidates:
-            return self._cold_start_fallback(title, top_n)
+            return self._cold_start_fallback(title, top_n, target_catalog=target_catalog)
 
         items = list(candidates.values())
 
@@ -412,7 +414,7 @@ class HybridRecommender:
             return 'negative'
         return 'neutral'
 
-    def _cold_start_fallback(self, title, top_n):
+    def _cold_start_fallback(self, title, top_n, target_catalog=None):
         """
         Fallback when no model data exists for the title.
         Returns popular items from the same category or global popularity.
@@ -420,9 +422,11 @@ class HybridRecommender:
         if self.item_df is None:
             return []
 
-        target_cat = self._category_map.get(title, '')
         df = self.item_df
+        if target_catalog and 'catalog' in df.columns:
+            df = df[df['catalog'].str.lower() == target_catalog.lower()]
 
+        target_cat = self._category_map.get(title, '')
         if target_cat:
             cat_items = df[df['category'] == target_cat]
             if len(cat_items) >= top_n:

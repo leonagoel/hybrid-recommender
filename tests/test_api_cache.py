@@ -94,6 +94,10 @@ def test_recommendation_endpoint_sets_hit_after_first_response():
 
     assert first.status_code == 200
     assert second.status_code == 200
+    first_payload = first.json()
+    assert first_payload["query"] == "Product A"
+    assert first_payload["count"] == 1
+    assert first_payload["results"] == first_payload["recommendations"]
     assert first.headers["x-cache"] == "MISS"
     assert second.headers["x-cache"] == "HIT"
     assert second.headers["cache-control"] == main.CACHE_CONTROL_VALUE
