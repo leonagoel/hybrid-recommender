@@ -193,10 +193,18 @@ SUPABASE_SERVICE_KEY=your-service-role-key
 
 ```bash
 # 4 — Start the server
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
+if (-not $env:PORT) { $env:PORT = "8000" }
+
+python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT
 ```
 
 Open **http://localhost:8000**, upload any CSV/JSON from `datasets/`, click **Build Models**, then start typing to search.
+
+Check the active backend version:
+```bash
+curl "http://localhost:8000/api/version"
+```
 
 ### Async Recommendations — Celery Worker Setup
 
@@ -499,6 +507,54 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 streamlit run app.py
 # Browser opens automatically with CSV upload interface
 ```
+---
+### Backend Health Check
+
+Run the utility script to verify whether the backend API server is reachable:
+
+```bash
+python scripts/health_check.py
+```
+
+Example output when backend is running:
+
+```text
+✅ Backend is running
+⏱ Response time: 42 ms
+📦 Response: {'status': 'ok'}
+```
+
+Example output when backend is offline:
+
+```text
+❌ Could not connect to backend server
+```
+
+
+
+### Environment Validation
+
+Run the helper script to verify required environment variables:
+
+```bash
+python scripts/check_env.py
+```
+
+Example output:
+
+```text
+❌ Missing environment variables:
+ - SUPABASE_URL
+ - SUPABASE_ANON_KEY
+ - SUPABASE_SERVICE_KEY
+```
+
+Or:
+
+```text
+✅ Environment setup looks good
+```
+
 
 ---
 

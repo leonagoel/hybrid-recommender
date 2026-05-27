@@ -218,6 +218,11 @@ def get_recommendations(title, k=10):
 
 ### JavaScript — Frontend (`frontend/`)
 
+# 3. Start the backend server
+if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
+if (-not $env:PORT) { $env:PORT = "8000" }
+
+python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT
 - **ES Modules only** (`import`/`export`) — no CommonJS `require()`
 - Follow the module structure from `frontend/js/` (see PR #214):
   - `state.js` — global state only
