@@ -1030,8 +1030,11 @@ def get_recommendations(
     if rate_limited is not None:
         return rate_limited
 
-    if not models["ready"]:
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
+# ----- EDGE CASES SAFE CHECK -----
+    # Agar model ready nahi hai ya database bilkul khali hai
+    if not models or "ready" not in models or not models["ready"]:
+        raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
+    # ---------------------------------
     query_title = title or item_title
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
