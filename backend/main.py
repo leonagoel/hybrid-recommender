@@ -18,6 +18,9 @@ from datetime import datetime, timezone, timedelta
 
 from collections import defaultdict
 
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from fastapi import (
@@ -104,6 +107,25 @@ async def csrf_header_dep(
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+
+# ── App ──────────────────────────────────────────────────────────────
+app = FastAPI(title="Hybrid Recommender API", version="3.0")
+
+@app.on_event("startup")
+def download_nltk_assets():
+    """
+    Ensures NLTK VADER assets are downloaded safely at startup
+    to prevent multi-worker download race conditions.
+    """
+    try:
+        # Check if VADER is already downloaded and working locally
+        SentimentIntensityAnalyzer()
+        logger.info("NLTK VADER lexicon verified successfully.")
+    except LookupError:
+        # If it's missing, download it safely on a single thread before taking traffic
+        logger.info("VADER lexicon missing. Downloading safely at startup...")
+        nltk.download('vader_lexicon', quiet=True)
+        logger.info("NLTK VADER lexicon downloaded successfully.")
 
 @app.get("/health", tags=["meta"])
 async def health_check():
@@ -570,29 +592,20 @@ def dashboard(request: Request):
 
     total_users = 0
     purchase_counts = Counter()
+
     try:
+      user_result = sb.rpc('get_total_users').execute()
+      total_users = user_result.data or 0
 
-        user_rows = sb.table('purchases') \
-          .select('user_id') \
-          .execute().data or []
+      top_products_result = sb.rpc('get_top_product_counts').execute()
 
-        total_users = len({
-          row['user_id']
-          for row in user_rows
-          if row.get('user_id')
-        })
+      purchase_counts = Counter({
+        row['product_id']: row['interaction_count']
+        for row in (top_products_result.data or [])
+      })
 
-        purchase_rows = sb.table('purchases') \
-          .select('product_id') \
-          .limit(50000).execute().data or []
-
-        purchase_counts = Counter(
-          r['product_id']
-          for r in purchase_rows
-          if r.get('product_id') is not None
-        )
     except Exception as e:
-        logger.warning("Dashboard: purchases scan failed: %s", e)
+      logger.warning("Dashboard error: %s", e)
 
     avg_recommendation_score = 0.0
     avg_sentiment_score = 0.0
@@ -1018,6 +1031,8 @@ def get_recommendations(
     top_n: int = 10,
     explain: bool = Query(False),
     user_id: Optional[str] = Query(None),
+    target_catalog: Optional[str] = Query(None),
+    strategy: Optional[str] = Query(None), 
 ):
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
@@ -1034,6 +1049,11 @@ def get_recommendations(
     recs = models["hybrid"].recommend(
         query_title, user_id=user_id, top_n=top_n, explain=explain
     )
+  
+    if not recs and strategy == "popularity" and models["collab"]:
+        recs = models["collab"]._popularity_fallback(top_n)
+    
+    
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
 

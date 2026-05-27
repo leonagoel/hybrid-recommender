@@ -41,12 +41,12 @@ UNSAFE_CACHE_SUFFIXES = {".pkl", ".pickle"}
 
 
 # ---------------------------------------------------------------------------
-# Core metric helpers
+# Core metric helpers with safety guards against ZeroDivisionError
 # ---------------------------------------------------------------------------
 
 def _precision_at_k(recommended: list, relevant: set, k: int) -> float:
     """Fraction of top-K recommended items that are relevant."""
-    if not relevant or k == 0:
+    if not relevant or k == 0 or not recommended:
         return 0.0
     hits = sum(1 for item in recommended[:k] if item in relevant)
     return hits / k
@@ -54,14 +54,19 @@ def _precision_at_k(recommended: list, relevant: set, k: int) -> float:
 
 def _recall_at_k(recommended: list, relevant: set, k: int) -> float:
     """Fraction of relevant items found in top-K recommendations."""
-    if not relevant or k == 0:
+    if not relevant or k == 0 or not recommended:
         return 0.0
     hits = sum(1 for item in recommended[:k] if item in relevant)
-    return hits / len(relevant)
+    
+    # FIX FOR ISSUE #486: Guard cold states to prevent ZeroDivisionError
+    denom = len(relevant)
+    return hits / denom if denom > 0 else 0.0
 
 
 def _dcg_at_k(recommended: list, relevant: set, k: int) -> float:
     """Discounted Cumulative Gain at K."""
+    if not recommended or not relevant or k == 0:
+        return 0.0
     dcg = 0.0
     for i, item in enumerate(recommended[:k], start=1):
         if item in relevant:
@@ -73,7 +78,9 @@ def _ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
     """Normalised DCG at K (IDCG assumes all relevant items are at top)."""
     dcg = _dcg_at_k(recommended, relevant, k)
     ideal = _dcg_at_k(list(relevant)[:k], relevant, k)
-    return dcg / ideal if ideal > 0 else 0.0
+    
+    # FIX FOR ISSUE #486: Handle zero baseline ideal scores gracefully
+    return dcg / ideal if ideal > 0.0 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -175,20 +182,6 @@ def run_evaluation(
 ) -> ResultsDict:
     """
     Run Precision@K, Recall@K, NDCG@K evaluation for the requested mode(s).
-
-    Args:
-        k:          Number of recommendations to evaluate against.
-        mode:       One of "content", "collaborative", "sentiment", "hybrid", "all".
-        weights:    Dict with keys "alpha", "beta", "gamma" (used for hybrid mode).
-                    Defaults to {"alpha": 0.4, "beta": 0.4, "gamma": 0.2}.
-        data_path:  Path to the dataset CSV. Defaults to DATA_PATH env var or
-                    "data/products.csv".
-
-    Returns:
-        Dict mapping mode name(s) to {"precision": float, "recall": float, "ndcg": float}.
-
-    Raises:
-        RuntimeError: If models have not been built yet (matrices not found).
     """
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.decomposition import TruncatedSVD
@@ -223,13 +216,29 @@ def run_evaluation(
         df = batch_analyze(df, text_col=text_col)
 
     # --- build/load matrices ---
-    # Try to load pre-built matrices from disk; fall back to building on-the-fly
     tfidf_matrix = _load_or_build_tfidf(df)
     svd_matrix   = _load_or_build_svd(df)
 
-    # --- build relevance sets from rating data ---
-    # "relevant" items for a given title = items in same category OR rating >= 4.0
-# --- FIXED: True User-Personalization Leave-One-Out Evaluation (#375) ---
+# --- build relevance sets from rating data ---
+    def _get_relevant(row_idx: int) -> set[str]:
+        row = df.iloc[row_idx]
+        relevant = set()
+        # Same category
+        if "category" in df.columns and pd.notna(row.get("category")):
+            same_cat = df[df["category"] == row["category"]]["title"].tolist()
+            relevant.update(same_cat)
+        # High-rated items (if ratings available)
+        if "rating" in df.columns:
+            high_rated = df[df["rating"] >= 4.0]["title"].tolist()
+            relevant.update(high_rated)
+        # Remove self
+        relevant.discard(row["title"])
+        return relevant
+
+    # Sample up to 200 items for speed
+    sample_size = min(200, len(df))
+    sample_indices = np.random.choice(len(df), size=sample_size, replace=False)
+
     modes_to_run = (
         ["content", "collaborative", "sentiment", "hybrid"]
         if mode == "all"
