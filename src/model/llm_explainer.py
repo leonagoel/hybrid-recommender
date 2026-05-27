@@ -159,15 +159,6 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
                 )
             return response.text.strip()
 
-            response_text = getattr(response, "text", None)
-            if response_text:
-                return response_text.strip()
-
-            logger.warning("LLM returned empty response, using fallback")
-            return self._generate_fallback_explanation(
-                recommended_item, query_item, scores, description, category
-            )
-
         except Exception as e:
             logger.error(f"Error generating LLM explanation: {e}. Using fallback explanation.")
             return self._generate_fallback_explanation(

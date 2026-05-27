@@ -14,6 +14,7 @@ from src.data.data_adapter import adapt_data, read_file
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
+from src.model.causal_config import CausalConfig
 from src.model.llm_explainer import get_explainer
 
 
@@ -50,6 +51,40 @@ with st.sidebar:
         "🤖 Enable LLM Explanations",
         value=True,
         help="Generate AI-powered explanations for recommendations"
+    )
+
+    # ── Causal Inference settings ─────────────────────────────────────────
+    st.subheader("🔬 Causal Debiasing")
+    st.caption(
+        "IPS reweighting reduces popularity and category bias. "
+        "Higher λ = stronger correction."
+    )
+
+    # Master toggle — stored in session state so Build Models can read it
+    enable_causal = st.toggle(
+        "Enable Causal Debiasing",
+        value=False,
+        help=(
+            "When ON, items that were over-exposed in training data "
+            "(popular / dominant-category) are downweighted so niche "
+            "but genuinely relevant items surface higher."
+        ),
+    )
+
+    # λ slider — only meaningful when causal is on, but always rendered
+    # so the value is preserved when the user toggles back on
+    causal_lambda = st.slider(
+        "λ — Correction Strength",
+        min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+        disabled=not enable_causal,
+        help="0 = no correction (pure correlation). 1 = full IPS reweighting.",
+    )
+
+    causal_clip = st.slider(
+        "IPS Clip Max",
+        min_value=1.0, max_value=10.0, value=5.0, step=0.5,
+        disabled=not enable_causal,
+        help="Maximum IPS weight cap. Prevents rare items from dominating.",
     )
 
     st.subheader("⚖️ Hybrid Weights")
@@ -172,8 +207,20 @@ else:
                 if meta["has_user_data"] and adapted_df["user_id"].nunique() > 1:
                     collab_model = CollaborativeRecommender(adapted_df)
 
-                # Hybrid model
-                hybrid_model = HybridRecommender(content_model, collab_model, adapted_df)
+                # Build CausalConfig from sidebar settings.
+                # CausalConfig.disabled() is used when the toggle is off so the
+                # debiaser is never constructed, keeping build time identical.
+                causal_cfg = (
+                    CausalConfig(enabled=True, blend_lambda=causal_lambda, clip_max=causal_clip)
+                    if enable_causal
+                    else CausalConfig.disabled()
+                )
+
+                # Hybrid model — pass causal_config for structured configuration
+                hybrid_model = HybridRecommender(
+                    content_model, collab_model, adapted_df,
+                    causal_config=causal_cfg,
+                )
                 hybrid_model.set_weights(alpha, beta, gamma)
 
                 st.session_state.content_model = content_model
@@ -185,6 +232,12 @@ else:
                 else:
                     st.success("✅ Content model trained. "
                                "Collaborative model skipped (dataset needs more than one unique user).")
+
+                # Show causal diagnostics immediately after build
+                if enable_causal and hybrid_model._debiaser is not None:
+                    with st.expander("🔬 Causal Debiaser Diagnostics", expanded=False):
+                        summary = hybrid_model._debiaser.summary()
+                        st.json(summary)
 
             except Exception as e:
                 st.error(f"Model build failed: {e}")
@@ -322,9 +375,20 @@ else:
                         title    = rec.get("title", "Unknown")
                         category = rec.get("category", "")
 
-                        col_rank, col_title, col_hybrid, col_content, col_collab, col_rating = st.columns(
-                            [0.4, 2.5, 1.0, 1.0, 1.0, 1.0]
+                        # Show causal score column only when debiasing was active
+                        causal_active = (
+                            st.session_state.hybrid_model is not None
+                            and st.session_state.hybrid_model.use_causal_debiasing
                         )
+
+                        if causal_active:
+                            col_rank, col_title, col_hybrid, col_content, col_collab, col_causal, col_rating = st.columns(
+                                [0.4, 2.2, 0.9, 0.9, 0.9, 0.9, 0.9]
+                            )
+                        else:
+                            col_rank, col_title, col_hybrid, col_content, col_collab, col_rating = st.columns(
+                                [0.4, 2.5, 1.0, 1.0, 1.0, 1.0]
+                            )
 
                         col_rank.markdown(f"**#{i}**")
 
@@ -336,6 +400,19 @@ else:
                         col_hybrid.metric("Hybrid",  rec.get("hybrid_score",   "—"))
                         col_content.metric("Content", rec.get("content_score",  "—"))
                         col_collab.metric("Collab",  rec.get("collab_score",   "—"))
+                        if causal_active:
+                            # Show original (pre-debiasing) score as delta so the
+                            # user can see how much the causal layer changed the rank
+                            original = rec.get("original_score")
+                            causal   = rec.get("causal_score", rec.get("hybrid_score"))
+                            delta    = round(causal - original, 4) if original is not None else None
+                            col_causal.metric(
+                                "🔬 Causal",
+                                causal,
+                                delta=delta,
+                                delta_color="normal",
+                                help="Debiased score. Delta = causal − original.",
+                            )
                         col_rating.metric("Rating",  rec.get("rating",         "—"))
 
                         # Display LLM explanation in a new row
