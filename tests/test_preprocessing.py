@@ -9,7 +9,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from data_preprocessing import (
+from src.data.data_preprocessing import (
     handle_missing_values,
     remove_duplicates,
     normalize_ratings,
@@ -99,3 +99,57 @@ class TestPreprocess:
     def test_rating_normalized_exists(self, sample_df):
         result = preprocess(sample_df)
         assert 'rating_normalized' in result.columns
+
+
+# ─── Edge Cases ────────────────────────────────────────────────────────────────
+
+class TestHandleMissingValuesEdgeCases:
+    def test_empty_dataframe(self):
+        df = pd.DataFrame(columns=['a', 'b', 'c'])
+        result = handle_missing_values(df)
+        assert len(result) == 0
+
+    def test_all_null_columns(self):
+        df = pd.DataFrame({
+            'col1': [None, None, None],
+            'col2': [None, None, None]
+        })
+        result = handle_missing_values(df)
+        assert len(result) == 3
+
+
+class TestRemoveDuplicatesEdgeCases:
+    def test_empty_dataframe(self):
+        df = pd.DataFrame(columns=['a', 'b'])
+        result = remove_duplicates(df)
+        assert len(result) == 0
+
+    def test_no_duplicates(self):
+        df = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
+        result = remove_duplicates(df)
+        assert len(result) == 3
+
+
+class TestNormalizeRatingsEdgeCases:
+    def test_no_rating_column(self):
+        df = pd.DataFrame({'title': ['a', 'b', 'c']})
+        result = normalize_ratings(df)
+        assert 'rating_normalized' not in result.columns
+
+    def test_all_same_values(self):
+        df = pd.DataFrame({'rating': [3.0, 3.0, 3.0]})
+        result = normalize_ratings(df)
+        assert result['rating_normalized'].min() >= 0.0
+        assert result['rating_normalized'].max() <= 1.0
+
+
+class TestEncodeCategoricalEdgeCases:
+    def test_empty_list_of_columns(self):
+        df = pd.DataFrame({'authors': ['a', 'b', 'c']})
+        result = encode_categorical(df, columns=[])
+        assert 'authors_encoded' not in result.columns
+
+    def test_missing_columns_in_dataframe(self):
+        df = pd.DataFrame({'title': ['a', 'b', 'c']})
+        result = encode_categorical(df, columns=['nonexistent'])
+        assert len(result) == 3

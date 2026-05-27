@@ -108,8 +108,9 @@ def run_recommendation_experiment(
 ) -> Dict[str, object]:
     """Return recommendations plus A/B metadata for an opt-in user request."""
     variant = assign_variant(user_key, experiment_id=experiment_id, variants=variants)
-    with temporary_weights(recommender, variant.weights) as active_weights:
-        recommendations = recommender.recommend(title, top_n=top_n, explain=explain)
+    recommendations = recommender.recommend(
+        title, top_n=top_n, explain=explain, weights=variant.weights
+    )
 
     return {
         "experiment": {
@@ -117,7 +118,7 @@ def run_recommendation_experiment(
             "user_key": str(user_key),
             "variant": variant.name,
             "description": variant.description,
-            "weights": active_weights,
+            "weights": variant.weights,
         },
         "recommendations": recommendations,
     }

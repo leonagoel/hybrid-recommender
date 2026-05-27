@@ -1,3 +1,4 @@
+from __future__ import annotations
 
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
@@ -9,12 +10,20 @@ import io
 import time
 import logging
 import math
+import secrets
+import bleach
 from collections import deque, Counter
 from threading import Lock
+from datetime import datetime, timezone, timedelta
+
+from collections import defaultdict
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from fastapi import (
     FastAPI,
+    Depends,
+    Header,
     UploadFile,
     File,
     HTTPException,
@@ -26,12 +35,10 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from collections import Counter
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
 from dotenv import load_dotenv
-from datetime import datetime
 
 load_dotenv()
 
@@ -41,118 +48,82 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from db import get_supabase, get_supabase_admin
-from data_adapter import adapt_data, read_file
-from nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
-from hybrid_model import HybridRecommender
 from celery.result import AsyncResult
 from celery_app import celery_app
 from tasks import compute_recommendations
-from ab_testing import DEFAULT_EXPERIMENT_ID, run_recommendation_experiment
+
+
+# backend/main.py — corrected imports
+from src.data.db import get_supabase, get_supabase_admin
+from src.data.data_adapter import adapt_data, read_file
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.model.issue_triage import triage_issue
+from src.model.federated_learning import train_federated_collaborative_model
 
 from functools import lru_cache
-from datetime import datetime, timedelta, timezone
 
-# Add src/evaluation to path for importing evaluation module
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'evaluation'))
-from evaluation import run_evaluation
+from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
 
-from pydantic import BaseModel as PydanticBase
-from typing import Optional
 
-class WeightsInput(PydanticBase):
-    alpha: float = 0.4
-    beta:  float = 0.4
-    gamma: float = 0.2
-
-class ModeMetrics(PydanticBase):
-    precision: float
-    recall:    float
-    ndcg:      float
-
-class EvaluationResponse(PydanticBase):
-    k:         int
-    mode:      str
-    timestamp: str
-    weights:   WeightsInput
-    results:   dict[str, ModeMetrics]
-    run_id:    Optional[str] = None
+# ── OpenAPI CSRF header dependency ────────────────────────────────────
+# WHY a Depends() instead of just relying on the middleware?
+#
+# The CSRFMiddleware enforces the token at the ASGI level — it never
+# touches the OpenAPI schema that FastAPI builds from route signatures.
+# Swagger UI only renders parameters that appear in the schema, so the
+# X-CSRF-Token field is invisible to users testing the API interactively.
+#
+# This dependency solves that purely at the documentation layer:
+#   - It declares X-CSRF-Token as a required header parameter on every
+#     route that includes Depends(csrf_header_dep).
+#   - FastAPI adds it to the OpenAPI spec → Swagger UI renders the field.
+#   - The function body does nothing (returns None) because the middleware
+#     has already validated the token before the route handler runs.
+#   - No double-validation, no logic duplication.
+#
+# The `alias="X-CSRF-Token"` preserves the canonical mixed-case header
+# name in the OpenAPI spec so Swagger UI labels it correctly, even though
+# Starlette lowercases all incoming headers internally.
+async def csrf_header_dep(
+    x_csrf_token: str = Header(
+        ...,
+        alias="X-CSRF-Token",
+        description=(
+            "CSRF token obtained from **GET /api/csrf-token**. "
+            "Required on all state-mutating requests (POST / PUT / PATCH / DELETE). "
+            "Must match the value stored in the `csrftoken` cookie."
+        ),
+    ),
+) -> None:
+    """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
+    # The middleware has already validated the token before this runs.
+    # This function exists solely to make the header visible in Swagger UI.
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+
+@app.get("/health", tags=["meta"])
+async def health_check():
+    """
+    Liveness probe used by Docker Compose health check.
+    Returns 200 when the server is ready to accept requests.
+    """
+    return JSONResponse({"status": "ok"})
 
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
 CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
-_response_cache: dict[str, tuple[float, Any]] = {}
-_rate_limit_buckets: dict[str, list[float]] = {}
-
-
-MOCK_PRODUCTS = [
-    {
-        "id": 1,
-        "title": "Acoustic Noise-Cancelling Headphones",
-        "description": "Immerse yourself in pure sound with these premium over-ear headphones featuring active noise cancellation.",
-        "category": "Electronics",
-        "rating": 4.8,
-        "avg_sentiment": 0.85,
-        "review_count": 245,
-        "image": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500&auto=format&fit=crop&q=60"
-    },
-    {
-        "id": 2,
-        "title": "Ergonomic Mechanical Keyboard",
-        "description": "Type in comfort all day with tactile brown switches, customizable RGB backlighting, and a plush wrist rest.",
-        "category": "Electronics",
-        "rating": 4.5,
-        "avg_sentiment": 0.65,
-        "review_count": 189,
-        "image": "https://images.unsplash.com/photo-1587829741301-dc798b83add3?w=500&auto=format&fit=crop&q=60"
-    },
-    {
-        "id": 3,
-        "title": "Minimalist Leather Backpack",
-        "description": "Crafted from full-grain leather, this sleek backpack fits a 15-inch laptop and all your daily essentials.",
-        "category": "Clothing",
-        "rating": 4.7,
-        "avg_sentiment": 0.72,
-        "review_count": 112,
-        "image": "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=500&auto=format&fit=crop&q=60"
-    },
-    {
-        "id": 4,
-        "title": "Stainless Steel Thermal Flask",
-        "description": "Double-wall vacuum insulation keeps your drinks ice cold for 24 hours or piping hot for 12 hours.",
-        "category": "Home & Kitchen",
-        "rating": 4.2,
-        "avg_sentiment": 0.45,
-        "review_count": 320,
-        "image": "https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=500&auto=format&fit=crop&q=60"
-    },
-    {
-        "id": 5,
-        "title": "Smart Fitness Watch",
-        "description": "Track your heart rate, sleep quality, steps, and workouts with this sleek, waterproof smartwatch.",
-        "category": "Electronics",
-        "rating": 3.8,
-        "avg_sentiment": -0.15,
-        "review_count": 420,
-        "image": "https://images.unsplash.com/photo-1579586337278-3befd40fd17a?w=500&auto=format&fit=crop&q=60"
-    },
-    {
-        "id": 6,
-        "title": "Organic Matcha Green Tea Powder",
-        "description": "Premium ceremonial grade matcha sourced directly from Uji, Japan. Rich in antioxidants and natural energy.",
-        "category": "Books",
-        "rating": 4.9,
-        "avg_sentiment": 0.95,
-        "review_count": 85,
-        "image": "https://images.unsplash.com/photo-1536256263959-770b48d82b0a?w=500&auto=format&fit=crop&q=60"
-    }
-]
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
+MAX_SEARCH_QUERY_LENGTH = 120
+_response_cache: dict = {}
+ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
+_rate_limit_buckets: dict = {}
+_rate_limit_lock = Lock()
+_cache_lock = Lock()
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -166,28 +137,45 @@ def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
-def _get_cached_response(key: str) -> Any | None:
-    cached = _response_cache.get(key)
-    if not cached:
-        logger.info("cache_miss", extra={"cache_key": key})
-        return None
-
-    expires_at, value = cached
-    if expires_at <= time.time():
-        _response_cache.pop(key, None)
-        logger.info("cache_expired", extra={"cache_key": key})
-        return None
-
-    logger.info("cache_hit", extra={"cache_key": key})
-    return value
+def _get_cached_response(key: str):
+    with _cache_lock:
+        cached = _response_cache.get(key)
+        if not cached:
+            return None
+        expires_at, value = cached
+        if expires_at <= time.time():
+            _response_cache.pop(key, None)
+            return None
+        return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    with _cache_lock:
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 
 def _clear_response_cache() -> None:
-    _response_cache.clear()
+    with _cache_lock:
+        _response_cache.clear()
+
+
+def _normalize_search_query(query: str) -> str:
+    normalized = " ".join((query or "").split())
+    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.",
+        )
+    return normalized
+
+
+def _escape_like_pattern(value: str) -> str:
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
 
 
 def _set_cache_headers(response: Response, status: str) -> None:
@@ -195,129 +183,144 @@ def _set_cache_headers(response: Response, status: str) -> None:
     response.headers["X-Cache"] = status
 
 
-@app.get("/api/evaluate", response_model=EvaluationResponse, tags=["evaluation"])
-async def evaluate_models(
-    k:     int   = 10,
-    mode:  str   = "all",
-    alpha: float = 0.4,
-    beta:  float = 0.4,
-    gamma: float = 0.2,
-):
-    """
-    Run Precision@K, Recall@K, NDCG@K evaluation for one or all model modes.
+def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    if not contents:
+        raise HTTPException(400, "Uploaded file is empty.")
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
+    if b"\x00" in contents[:4096]:
+        raise HTTPException(400, "Uploaded file appears to be binary.")
 
-    Query params:
-      - k     : number of recommendations to evaluate (default 10)
-      - mode  : "content" | "collaborative" | "sentiment" | "hybrid" | "all"
-      - alpha : content weight   (used only for hybrid)
-      - beta  : collab weight    (used only for hybrid)
-      - gamma : sentiment weight (used only for hybrid)
-
-    Returns metrics per mode and persists the run to Supabase.
-    """
-    # Guard: models must be built before evaluation makes sense
-    if not models["ready"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Models have not been built yet. Upload a dataset and click 'Build Models' first."
-        )
-
-    valid_modes = {"content", "collaborative", "sentiment", "hybrid", "all"}
-    if mode not in valid_modes:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid mode '{mode}'. Choose from: {sorted(valid_modes)}"
-        )
-
-    if not (1 <= k <= 100):
-        raise HTTPException(status_code=422, detail="k must be between 1 and 100.")
-
-    weights = {"alpha": alpha, "beta": beta, "gamma": gamma}
-
+    sample = contents[:4096].lstrip()
+    lowered_name = filename.lower()
+    if ext == ".json":
+        if not sample.startswith((b"{", b"[")):
+            raise HTTPException(400, "JSON uploads must contain JSON content.")
+    elif ext == ".csv":
+        lowered_sample = sample[:128].lower()
+        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
+            raise HTTPException(400, "CSV uploads must contain CSV content.")
+        if not lowered_name.endswith(".csv"):
+            raise HTTPException(400, "CSV uploads must use a .csv filename.")
+def _get_rate_limit(limit_env: str, default_limit: int) -> int:
     try:
-        raw_results = run_evaluation(k=k, mode=mode, weights=weights)
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Evaluation failed: {str(e)}")
+        limit = int(os.environ.get(limit_env, str(default_limit)))
+    except ValueError:
+        return default_limit
+    return max(1, limit)
 
-    timestamp = datetime.now(timezone.utc).isoformat()
-    run_id    = None
 
-    # Persist to Supabase benchmark_runs table
-    try:
-        insert_payload = {
-            "k":         k,
-            "mode":      mode,
-            "weights":   weights,
-            "results":   raw_results,
-            "created_at": timestamp,
-        }
-        sb = get_supabase()
-        db_response = sb.table("benchmark_runs").insert(insert_payload).execute()
-        if db_response.data:
-            run_id = str(db_response.data[0].get("id", ""))
-    except Exception as db_err:
-        # Non-fatal — evaluation result still returned even if DB insert fails
-        print(f"[evaluate] Supabase insert failed (non-fatal): {db_err}")
-
-    return EvaluationResponse(
-        k=k,
-        mode=mode,
-        timestamp=timestamp,
-        weights=WeightsInput(alpha=alpha, beta=beta, gamma=gamma),
-        results={name: ModeMetrics(**metrics) for name, metrics in raw_results.items()},
-        run_id=run_id,
+def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "Rate limit exceeded",
+            "message": "Too many requests. Please try again later.",
+        },
+        headers={
+            "x-ratelimit-limit": str(rate_limit),
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": str(reset_time),
+        },
     )
 
 
-@app.get("/api/evaluate/history", tags=["evaluation"])
-async def get_evaluation_history(limit: int = 5):
-    """
-    Return the last N benchmark runs from Supabase (default: 5).
-    Used to populate the history table in the frontend dashboard.
-    """
-    try:
-        sb = get_supabase()
-        db_response = (
-            sb.table("benchmark_runs")
-            .select("*")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return {"runs": db_response.data or []}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch history: {str(e)}")
+def _apply_rate_limit(
+    request: Request,
+    response: Response,
+    scope: str,
+    limit_env: str,
+    default_limit: int,
+) -> JSONResponse | None:
+    rate_limit = _get_rate_limit(limit_env, default_limit)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    bucket_key = (scope, client_ip)
+    now = time.time()
+
+    with _rate_limit_lock:
+        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
+        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+
+        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = max(0, reset_time)
+
+        if len(timestamps) >= rate_limit:
+            return _rate_limit_exceeded_response(rate_limit, reset_time)
+
+        timestamps.append(now)
+        remaining = rate_limit - len(timestamps)
+        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = max(0, reset_time)
+
+    response.headers["x-ratelimit-limit"] = str(rate_limit)
+    response.headers["x-ratelimit-remaining"] = str(remaining)
+    response.headers["x-ratelimit-reset"] = str(reset_time)
+    return None
 
 
-# CORS — restrict in production; allow localhost for development
-allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
+def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    if not contents:
+        raise HTTPException(400, "Uploaded file is empty.")
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
+    if b"\x00" in contents[:4096]:
+        raise HTTPException(400, "Uploaded file appears to be binary.")
+
+    sample = contents[:4096].lstrip()
+    lowered_name = filename.lower()
+    if ext == ".json":
+        if not sample.startswith((b"{", b"[")):
+            raise HTTPException(400, "JSON uploads must contain JSON content.")
+    elif ext == ".csv":
+        lowered_sample = sample[:128].lower()
+        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
+            raise HTTPException(400, "CSV uploads must contain CSV content.")
+        if not lowered_name.endswith(".csv"):
+            raise HTTPException(400, "CSV uploads must use a .csv filename.")
+
+
+def _extract_bearer_token(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def _require_admin_access(request: Request) -> None:
+    expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
+    if not expected_token:
+        return
+
+    provided_token = (
+        request.headers.get("x-admin-token", "").strip()
+        or _extract_bearer_token(request.headers.get("authorization"))
+    )
+    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
+        raise HTTPException(status_code=401, detail="Admin token required.")
+
+
+# CORS
+allowed_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
+allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_methods=["GET", "POST", "PUT"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    # Explicitly list X-CSRF-Token so browsers allow it in pre-flight.
+    allow_headers=["*", "X-CSRF-Token"],
 )
 
-security = HTTPBearer()
+# CSRF middleware must be registered AFTER CORSMiddleware so that
+# OPTIONS pre-flight requests are resolved by CORS before reaching
+# CSRF validation (OPTIONS is a safe method and is skipped anyway,
+# but ordering keeps the intent explicit).
+app.add_middleware(CSRFMiddleware)
 
-def verify_token(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    token = credentials.credentials
-    if not token:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    try:
-        sb = get_supabase()
-        user = sb.auth.get_user(token)
-        if not user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    except Exception:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return token
-
-# ── Response Time Monitoring ────────────────────────────────────────
+# ── Response Time Monitoring ─────────────────────────────────────────
 SLOW_RESPONSE_THRESHOLD_MS = 500.0
 METRICS_SAMPLE_SIZE = 1000
 response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
@@ -331,7 +334,6 @@ response_metrics_lock = Lock()
 def _percentile(values, percentile):
     if not values:
         return 0.0
-
     sorted_values = sorted(values)
     index = math.ceil((percentile / 100) * len(sorted_values)) - 1
     index = max(0, min(index, len(sorted_values) - 1))
@@ -344,20 +346,20 @@ def record_response_metric(endpoint, method, status_code, response_time_ms):
         if status_code >= 400:
             response_metrics["error_requests"] += 1
         response_time_samples.append(response_time_ms)
+    log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
+    if log_level == logging.WARNING:
+        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
+                       endpoint, method, status_code, response_time_ms, response_time_ms, endpoint)
+    else:
+        logger.info("API request endpoint=%s method=%s status=%s time=%.2fms",
+                    endpoint, method, status_code, response_time_ms)
 
-    log_level = (
-        logging.WARNING
-        if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS
-        else logging.INFO
-    )
-    logger.log(
-        log_level,
-        "API request endpoint=%s method=%s status_code=%s response_time_ms=%.2f",
-        endpoint,
-        method,
-        status_code,
-        response_time_ms,
-    )
+
+def reset_response_metrics():
+    with response_metrics_lock:
+        response_metrics["total_requests"] = 0
+        response_metrics["error_requests"] = 0
+        response_time_samples.clear()
 
 
 def get_response_metrics_snapshot():
@@ -365,14 +367,8 @@ def get_response_metrics_snapshot():
         samples = list(response_time_samples)
         total_requests = response_metrics["total_requests"]
         error_requests = response_metrics["error_requests"]
-
     avg_response_time = sum(samples) / len(samples) if samples else 0.0
-    error_rate = (
-        (error_requests / total_requests) * 100
-        if total_requests
-        else 0.0
-    )
-
+    error_rate = (error_requests / total_requests) * 100 if total_requests else 0.0
     return {
         "avg_response_time": round(avg_response_time, 2),
         "p95_response_time": round(_percentile(samples, 95), 2),
@@ -381,19 +377,11 @@ def get_response_metrics_snapshot():
     }
 
 
-def reset_response_metrics():
-    with response_metrics_lock:
-        response_time_samples.clear()
-        response_metrics["total_requests"] = 0
-        response_metrics["error_requests"] = 0
-
-
 @app.middleware("http")
 async def response_time_middleware(request, call_next):
     start_time = time.perf_counter()
     response = None
     status_code = 500
-
     try:
         response = await call_next(request)
         status_code = response.status_code
@@ -401,17 +389,11 @@ async def response_time_middleware(request, call_next):
     finally:
         response_time_ms = (time.perf_counter() - start_time) * 1000
         if response is not None:
-            response.headers["X-Response-Time"] = (
-                f"{response_time_ms:.2f}ms"
-            )
-        record_response_metric(
-            request.url.path,
-            request.method,
-            status_code,
-            response_time_ms,
-        )
+            response.headers["X-Response-Time"] = f"{response_time_ms:.2f}ms"
+        record_response_metric(request.url.path, request.method, status_code, response_time_ms)
 
-# ── State ────────────────────────────────────────────────────────────
+
+# ── State ─────────────────────────────────────────────────────────────
 models = {
     "content": None,
     "collab": None,
@@ -421,43 +403,11 @@ models = {
     "build_time": None,
     "last_trained_at": None,
 }
-TRENDING_CACHE = {
-    "data": None,
-    "timestamp": None
-}
-
-trending_cache = {}
-TRENDING_CACHE_TTL = 60 * 60  # 1 hour
 
 
-class WeightsUpdate(BaseModel):
-    alpha: float = 0.4
-    beta: float = 0.35
-    gamma: float = 0.25
-
-
-class PurchaseCreate(BaseModel):
-    user_id: str
-    product_id: int
-    rating: float = 0.0
-    review_text: str = ""
-
-class FeedbackCreate(BaseModel):
-    user_id: str
-    item: str
-    feedback: str
-
-
-class RealtimeRecommendationRequest(BaseModel):
-    item_title: str
-    top_n: int = 10
-    explain: bool = False
-    llm_explain: bool = False
-
-
-class RealtimeRecommendationHub:
+class RealtimeConnectionHub:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self.active_connections = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -467,72 +417,145 @@ class RealtimeRecommendationHub:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
 
-    async def broadcast(self, payload: dict):
-        disconnected = []
-        for websocket in self.active_connections:
-            try:
-                await websocket.send_json(payload)
-            except RuntimeError:
-                disconnected.append(websocket)
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            await connection.send_json(message)
 
-        for websocket in disconnected:
-            self.disconnect(websocket)
+realtime_hub = RealtimeConnectionHub()
 
 
-realtime_hub = RealtimeRecommendationHub()
+class WeightsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alpha: float = 0.4
+    beta: float = 0.35
+    gamma: float = 0.25
 
 
-# ── API Metrics ─────────────────────────────────────────────────────
+class PurchaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(..., min_length=1)
+    product_id: int = Field(..., gt=0)
+    rating: float = Field(0.0, ge=0.0, le=5.0)
+    review_text: str = ""
+
+
+class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(..., min_length=1)
+    item: str = Field(..., min_length=1)
+    feedback: str = Field(..., min_length=1)
+
+
+class RealtimeRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_title: str
+    top_n: int = 10
+    explain: bool = False
+    target_catalog: Optional[str] = None
+
+
+# ── CSRF Token ───────────────────────────────────────────────────────
+@app.get(
+    "/api/csrf-token",
+    response_model=CSRFTokenResponse,   # Typed OpenAPI schema — documents the response shape
+    summary="Issue a CSRF token",
+    tags=["Security"],
+)
+def get_csrf_token(response: Response):
+    """
+    Issue a fresh CSRF token using the Double Submit Cookie pattern.
+
+    Call this endpoint once on page load before making any state-mutating
+    request (POST / PUT / PATCH / DELETE).  The token is delivered two ways:
+
+    1. Cookie `csrftoken` — set automatically by the browser on all
+       subsequent same-origin requests.  Readable by JavaScript (not HttpOnly)
+       so the frontend can copy it into the request header.
+
+    2. JSON body `csrfToken` — store this value in memory and attach it as
+       the `X-CSRF-Token` header on every mutating request.
+
+    The middleware validates that both values are present and identical.
+    A missing or mismatched token returns HTTP 403.
+    """
+    # Generate a 256-bit cryptographically secure token.
+    # secrets.token_hex(32) reads from the OS CSPRNG (/dev/urandom on Linux,
+    # BCryptGenRandom on Windows) — never use random.token_hex for security.
+    token = generate_csrf_token()
+
+    # Write the token into the cookie and set Cache-Control: no-store.
+    # set_csrf_cookie mutates the Response object in-place; FastAPI serialises
+    # the Set-Cookie header automatically when the response is sent.
+    set_csrf_cookie(response, token)
+
+    # Return the same token in the body so the frontend can store it in memory
+    # and inject it as the X-CSRF-Token header on mutating requests.
+    return CSRFTokenResponse(csrfToken=token)
+
+
+class FederatedTrainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    n_factors: int = 20
+    epochs: int = 5
+    lr: float = 0.05
+    reg: float = 0.05
+
+
+# ── Health ────────────────────────────────────────────────────────────
+@app.get("/health")
+@app.get("/api/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_loaded": models["ready"],
+    }
+
+
+# ── API Metrics ───────────────────────────────────────────────────────
+@app.get("/api/version")
+def get_version():
+    return {
+        "version": app.version,
+        "service": app.title,
+        "status": "running",
+    }
+
 
 @app.get("/api/metrics")
 def get_api_metrics():
     return get_response_metrics_snapshot()
 
 
-# ── Config (for frontend — serves only public keys) ─────────────────
-
+# ── Config ────────────────────────────────────────────────────────────
 @app.get("/api/config")
 def get_config():
-    """Serve Supabase public config to the frontend. Only exposes the anon key (safe for public use)."""
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
         "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
     }
 
 
-# ── Status ───────────────────────────────────────────────────────────
-
+# ── Status ────────────────────────────────────────────────────────────
 @app.get("/api/status")
 def status():
-    try:
-        sb = get_supabase()
-        count_result = sb.table('products').select('id', count='exact').limit(0).execute()
-        product_count = count_result.count or 0
-        model_ready = models["ready"]
-        build_time = models["build_time"]
-    except Exception:
-        # Fallback to local development mock status when Supabase is not configured
-        product_count = len(MOCK_PRODUCTS)
-        model_ready = True
-        build_time = 0.5
-
     return {
-        "status": "ready" if model_ready else ("has_data" if product_count > 0 else "no_data"),
-        "product_count": product_count,
-        "model_ready": model_ready,
-        "build_time": build_time,
+        "status": "healthy",
+        "model_ready": models["ready"],
+        "message": "Hybrid Recommender API running",
     }
 
 
-# ── Dashboard (admin metrics — issue #71) ───────────────────────────
-
+# ── Dashboard ─────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
-def dashboard(
-    token: str = Depends(verify_token)
-):
-    """Aggregate metrics for the admin dashboard."""
+def dashboard(request: Request):
+    _require_admin_access(request)
     sb = get_supabase()
-
     try:
         product_count = sb.table('products').select('id', count='exact').limit(0).execute().count or 0
     except Exception as e:
@@ -545,35 +568,38 @@ def dashboard(
         logger.warning("Dashboard: interaction count failed: %s", e)
         interaction_count = 0
 
-    # Distinct users from purchases (capped scan)
     total_users = 0
-    purchase_counts: Counter = Counter()
+    purchase_counts = Counter()
     try:
+
+        user_rows = sb.table('purchases') \
+          .select('user_id') \
+          .execute().data or []
+
+        total_users = len({
+          row['user_id']
+          for row in user_rows
+          if row.get('user_id')
+        })
+
         purchase_rows = sb.table('purchases') \
-            .select('user_id, product_id') \
-            .limit(50000).execute().data or []
-        total_users = len({r['user_id'] for r in purchase_rows if r.get('user_id')})
+          .select('product_id') \
+          .limit(50000).execute().data or []
+
         purchase_counts = Counter(
-            r['product_id'] for r in purchase_rows if r.get('product_id') is not None
+          r['product_id']
+          for r in purchase_rows
+          if r.get('product_id') is not None
         )
     except Exception as e:
         logger.warning("Dashboard: purchases scan failed: %s", e)
 
-    # Averages over products
     avg_recommendation_score = 0.0
     avg_sentiment_score = 0.0
     try:
-        prod_stats = sb.table('products') \
-            .select('rating, avg_sentiment') \
-            .limit(50000).execute().data or []
-        ratings = [
-            float(p['rating']) for p in prod_stats
-            if p.get('rating') not in (None, 0)
-        ]
-        sentiments = [
-            float(p['avg_sentiment']) for p in prod_stats
-            if p.get('avg_sentiment') is not None
-        ]
+        prod_stats = sb.table('products').select('rating, avg_sentiment').limit(50000).execute().data or []
+        ratings = [float(p['rating']) for p in prod_stats if p.get('rating') not in (None, 0)]
+        sentiments = [float(p['avg_sentiment']) for p in prod_stats if p.get('avg_sentiment') is not None]
         if ratings:
             avg_recommendation_score = round(sum(ratings) / len(ratings), 4)
         if sentiments:
@@ -581,35 +607,26 @@ def dashboard(
     except Exception as e:
         logger.warning("Dashboard: averages query failed: %s", e)
 
-    # Top 5 by purchase count; fallback to top-rated when no purchases
     top_products = []
     try:
         if purchase_counts:
             top_ids = [pid for pid, _ in purchase_counts.most_common(5)]
-            prod_result = sb.table('products') \
-                .select('id, title, category, rating') \
-                .in_('id', top_ids).execute().data or []
+            prod_result = sb.table('products').select('id, title, category, rating').in_('id', top_ids).execute().data or []
             prod_map = {p['id']: p for p in prod_result}
             for pid in top_ids:
                 p = prod_map.get(pid)
                 if p:
                     top_products.append({
-                        'id': p['id'],
-                        'title': p.get('title', ''),
+                        'id': p['id'], 'title': p.get('title', ''),
                         'category': p.get('category', ''),
                         'rating': round(float(p.get('rating', 0) or 0), 2),
                         'interactions': purchase_counts[pid],
                     })
         if not top_products:
-            fallback = sb.table('products') \
-                .select('id, title, category, rating') \
-                .order('rating', desc=True) \
-                .order('review_count', desc=True) \
-                .limit(5).execute().data or []
+            fallback = sb.table('products').select('id, title, category, rating').order('rating', desc=True).limit(5).execute().data or []
             for p in fallback:
                 top_products.append({
-                    'id': p['id'],
-                    'title': p.get('title', ''),
+                    'id': p['id'], 'title': p.get('title', ''),
                     'category': p.get('category', ''),
                     'rating': round(float(p.get('rating', 0) or 0), 2),
                     'interactions': 0,
@@ -627,236 +644,176 @@ def dashboard(
         "model_last_trained": models.get("last_trained_at"),
     }
 
-@app.get("/api/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "model_loaded": models["ready"]
-    }
 
-# ── Search (PostgreSQL FTS) ─────────────────────────────────────────
+# ── Search ────────────────────────────────────────────────────────────
 @app.get("/api/search")
 def search_items(
     request: Request,
     response: Response,
     q: str = "",
-    limit: int = 8,
-    offset: int = 0
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=10000),
 ):
-    """
-    Search products using simple case‑insensitive title matching.
-    """
-    # Rate limiting (unchanged)
-    limit_val_str = os.getenv("RATE_LIMIT_SEARCH_PER_MIN")
-    if limit_val_str:
-        try:
-            limit_val = int(limit_val_str)
-            client_ip = request.client.host if request.client else "unknown"
-            now = time.time()
-            if client_ip not in _rate_limit_buckets:
-                _rate_limit_buckets[client_ip] = []
-            _rate_limit_buckets[client_ip] = [t for t in _rate_limit_buckets[client_ip] if now - t < 60]
-            if len(_rate_limit_buckets[client_ip]) >= limit_val:
-                headers = {
-                    "x-ratelimit-limit": str(limit_val),
-                    "x-ratelimit-remaining": "0",
-                    "x-ratelimit-reset": str(int(now + 60)),
-                }
-                return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"}, headers=headers)
-            _rate_limit_buckets[client_ip].append(now)
-            remaining = limit_val - len(_rate_limit_buckets[client_ip])
-            response.headers["x-ratelimit-limit"] = str(limit_val)
-            response.headers["x-ratelimit-remaining"] = str(remaining)
-            response.headers["x-ratelimit-reset"] = str(int(now + 60))
-        except ValueError:
-            pass
+    query = _normalize_search_query(q)
+    # ── Rate Limiting ──
+    try:
+        rate_limit = int(os.environ.get("RATE_LIMIT_SEARCH_PER_MIN", "60"))
+    except ValueError:
+        rate_limit = 60
 
-    cache_key = _cache_key("search", q, limit, offset)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    now = time.time()
+
+    with _rate_limit_lock:
+        bucket = _rate_limit_buckets.setdefault(client_ip, {"timestamps": []})
+        bucket["timestamps"] = [t for t in bucket["timestamps"] if now - t < 60]
+
+        if len(bucket["timestamps"]) >= rate_limit:
+            reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
+            reset_time = max(0, reset_time)
+            response.status_code = 429
+            response.headers["x-ratelimit-limit"] = str(rate_limit)
+            response.headers["x-ratelimit-remaining"] = "0"
+            response.headers["x-ratelimit-reset"] = str(reset_time)
+            return {
+                "error": "Rate limit exceeded",
+                "message": "Too many requests. Please try again later.",
+            }
+
+        bucket["timestamps"].append(now)
+        remaining = rate_limit - len(bucket["timestamps"])
+        reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
+        reset_time = max(0, reset_time)
+        response.headers["x-ratelimit-limit"] = str(rate_limit)
+        response.headers["x-ratelimit-remaining"] = str(remaining)
+        response.headers["x-ratelimit-reset"] = str(reset_time)
+
+    cache_key = _cache_key("search", query, limit, offset)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
-    try:
-        sb = get_supabase()
-        query = q.strip()
-
-        if query:
-            result = sb.table('products') \
-                .select('id, title, description, category, rating, avg_sentiment, review_count') \
-                .ilike('title', f'%{query}%') \
-                .order('rating', desc=True) \
-                .limit(limit) \
-                .offset(offset) \
-                .execute()
+    sb = get_supabase()
+    if query:
+        try:
+            result = sb.rpc('search_products', {
+                'query_text': query, 'match_count': limit, 'offset_val': offset,
+            }).execute()
             products = result.data or []
-        else:
-            result = sb.table('products') \
-                .select('id, title, description, category, rating, avg_sentiment, review_count') \
-                .order('rating', desc=True) \
-                .order('review_count', desc=True) \
-                .limit(limit) \
-                .offset(offset) \
-                .execute()
+        except Exception as e:
+            logger.warning("FTS failed for '%s': %s", query, e)
+            escaped_query = _escape_like_pattern(query)
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{escaped_query}%').order('rating', desc=True).limit(limit).execute()
             products = result.data or []
+            for p in products:
+                p['rank'] = 0.0
+    else:
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).order('review_count', desc=True).limit(limit).offset(offset).execute()
+        products = result.data or []
 
-        results = []
-        for p in products:
-            results.append({
-                'id': p.get('id'),
-                'title': p.get('title', ''),
-                'description': str(p.get('description', ''))[:200],
-                'category': p.get('category', ''),
-                'rating': p.get('rating', 0.0),
-                'avg_sentiment': p.get('avg_sentiment', 0.0),
-                'review_count': p.get('review_count', 0),
-                'rank': 0.0,
-                'image': p.get('image', ''),
-            })
+    results = []
+    for p in products:
+        results.append({
+            'id': p.get('id'), 'title': p.get('title', ''),
+            'description': str(p.get('description', ''))[:200],
+            'category': p.get('category', ''), 'rating': p.get('rating', 0.0),
+            'avg_sentiment': p.get('avg_sentiment', 0.0),
+            'review_count': p.get('review_count', 0), 'rank': p.get('rank', 0.0),
+        })
 
-    except Exception as e:
-        logger.warning("Supabase search failed, falling back to mock products: %s", e)
-        query_clean = q.strip().lower()
-        if query_clean:
-            filtered = [p for p in MOCK_PRODUCTS if query_clean in p["title"].lower()]
-        else:
-            filtered = MOCK_PRODUCTS
-        paginated = filtered[offset: offset + limit]
-        results = []
-        for p in paginated:
-            results.append({
-                'id': p['id'],
-                'title': p['title'],
-                'description': p['description'],
-                'category': p['category'],
-                'rating': p['rating'],
-                'avg_sentiment': p['avg_sentiment'],
-                'review_count': p['review_count'],
-                'rank': 0.0,
-                'image': p['image'],
-            })
-
+    result_count = len(results)
     payload = {
         "results": results,
-        "total": len(results),
-        "query": q,
-        "is_fallback": not bool(q.strip()),
+        "count": result_count,
+        "total": result_count,
+        "query": query,
+        "is_fallback": not query,
     }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
 
+
+# ── Autocomplete ──────────────────────────────────────────────────────
 @app.get("/api/autocomplete")
 def autocomplete_products(
     q: str = Query("", min_length=1),
     limit: int = Query(5, ge=1, le=10),
 ):
-    """
-    Return top matching product titles for autocomplete suggestions.
-    """
-    query = q.strip()
-
+    sb = get_supabase()
+    query = _normalize_search_query(q)
     if not query:
         return {"suggestions": []}
-
     try:
-        sb = get_supabase()
-        result = (
-            sb.table('products')
-            .select('title')
-            .ilike('title', f'%{query}%')
-            .limit(limit)
-            .execute()
-        )
-
+        escaped_query = _escape_like_pattern(query)
+        result = sb.table('products').select('title').ilike('title', f'%{escaped_query}%').limit(limit).execute()
         suggestions = []
         seen = set()
-
         for item in result.data or []:
             title = item.get('title', '').strip()
-
             if title and title.lower() not in seen:
                 suggestions.append(title)
                 seen.add(title.lower())
-
-        return {
-            "suggestions": suggestions[:limit]
-        }
-
+        return {"suggestions": suggestions[:limit]}
     except Exception as e:
-        logger.warning(f"Supabase offline or autocomplete failed, falling back to mock products: {e}")
-        query_clean = query.lower()
-        matched = [
-            p["title"].strip() for p in MOCK_PRODUCTS
-            if query_clean in p["title"].lower()
-        ]
-        suggestions = []
-        seen = set()
-        for title in matched:
-            if title.lower() not in seen:
-                suggestions.append(title)
-                seen.add(title.lower())
-        return {
-            "suggestions": suggestions[:limit]
-        }
+        logger.error("Autocomplete error: %s", e)
+        raise HTTPException(status_code=500, detail="Autocomplete failed")
 
 
-# ── Upload + Import ─────────────────────────────────────────────────
+def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if b'\x00' in contents:
+        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
+    try:
+        decoded = contents.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
+    
+    stripped = decoded.strip()
+    if ext == ".csv":
+        if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+            raise HTTPException(status_code=400, detail="CSV uploads must contain CSV content.")
+    elif ext == ".json":
+        if not (stripped.startswith("{") or stripped.startswith("[")):
+            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
+        import json
+        try:
+            json.loads(stripped)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
 
+
+# ── Upload ────────────────────────────────────────────────────────────
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
-    token: str = Depends(verify_token)
+    _csrf: None = Depends(csrf_header_dep),
 ):
-    """Upload a CSV or JSON dataset and import into Supabase."""
-    import math
     filename = file.filename or "data.csv"
-    filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
-    
     ext = os.path.splitext(filename)[1].lower()
-
     if ext not in ('.csv', '.json'):
         raise HTTPException(400, "Only CSV and JSON files are supported.")
-    
-    ALLOWED_MIME_TYPES = {
-    "text/csv",
-    "application/json",
-    "application/vnd.ms-excel"
-}
-    if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(400, "Invalid file type.")
-    MAX_FILE_SIZE = 5 * 1024 * 1024
-
     try:
         contents = await file.read()
-        if not contents:
-            raise HTTPException(400, "Uploaded file is empty.")
-
-        if len(contents) > MAX_FILE_SIZE:
-            raise HTTPException(400, "File size exceeds 5 MB limit.")
-    
+        _validate_upload_bytes(filename, ext, contents)
         buf = io.BytesIO(contents)
         raw_df = read_file(buf, file_format=ext.replace('.', ''))
         adapted_df, meta = adapt_data(raw_df)
         adapted_df = adapted_df.drop_duplicates(subset='title', keep='first')
-
-        # Use admin client if available, otherwise fall back to anon
         try:
             sb = get_supabase_admin()
         except RuntimeError:
             sb = get_supabase()
-
         batch_size = 500
         total = len(adapted_df)
         imported = 0
         errors = []
-
         for start in range(0, total, batch_size):
             chunk = adapted_df.iloc[start:start + batch_size]
             rows = []
             for _, row in chunk.iterrows():
-                # Safely convert rating — handle NaN, inf, None
                 raw_rating = row.get('rating', 0)
                 try:
                     rating_val = float(raw_rating)
@@ -864,84 +821,123 @@ async def upload_dataset(
                         rating_val = 0.0
                 except (ValueError, TypeError):
                     rating_val = 0.0
-
                 title = str(row.get('title', 'Unknown')).strip()
                 if not title or title == 'nan' or title == 'Unknown':
                     continue
+# --- sanitize HTML tags ---
+                title = bleach.clean(title, strip=True)[:500]
+
+                description = str(row.get('description', ''))
+                description = bleach.clean(description, strip=True)[:2000]
 
                 rows.append({
-                    'title': title[:500],
-                    'description': str(row.get('description', ''))[:2000],
+                    'title': title,
+                    'description': description,
                     'category': str(row.get('category', ''))[:200],
                     'rating': round(rating_val, 2),
+                    'avg_sentiment': 0.0,
+                    'review_count': 0,
                     'metadata': {},
                 })
-
             if not rows:
                 continue
-
             try:
-                sb.table('products').upsert(
-                    rows, on_conflict='title', ignore_duplicates=True
-                ).execute()
+                sb.table('products').upsert(rows, on_conflict='title', ignore_duplicates=True).execute()
                 imported += len(rows)
             except Exception as e:
                 errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
-
-        models["ready"] = False  # Force rebuild
+        models["ready"] = False
         _clear_response_cache()
-
         result = {
             "message": f"Imported {imported:,} products from {filename}",
-            "imported": imported,
-            "total_rows": total,
-            "meta": {
-                "has_user_data": meta['has_user_data'],
-                "has_reviews": meta['has_reviews'],
-            },
+            "imported": imported, "total_rows": total,
+            "meta": {"has_user_data": meta['has_user_data'], "has_reviews": meta['has_reviews']},
         }
         if errors:
-            result["warnings"] = errors[:5]  # Return first 5 errors
-            logger.warning("Imported dataset with %d batch warnings", len(errors))
-
-        logger.info("Imported %d products from %s", imported, filename)
+            result["warnings"] = errors[:5]
         return result
     except HTTPException:
         raise
     except Exception as e:
         logger.error("Upload failed for %s: %s", filename, e, exc_info=True)
-        # Don't leak internal details — log server-side, return generic message
         raise HTTPException(400, "Upload failed. Check file format and try again.")
 
 
+# ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
-def build_models(
-    token: str = Depends(verify_token)
-):
-    """Build recommendation models from Supabase data."""
-    sb = None
+def build_models(_csrf: None = Depends(csrf_header_dep)):
+    sb = get_supabase()
     all_products = []
-    try:
-        sb = get_supabase()
-        # Fetch products
-        page_size = 1000
-        offset = 0
-        while True:
-            result = sb.table('products') \
-                .select('id, title, description, category, rating, avg_sentiment, review_count') \
-                .range(offset, offset + page_size - 1) \
-                .execute()
-            batch = result.data or []
-            all_products.extend(batch)
-            if len(batch) < page_size:
-                break
-            offset += page_size
-    except Exception as e:
-        logger.warning("Supabase database fetch failed in build_models, falling back to mock products: %s", e)
-        all_products = MOCK_PRODUCTS
-
+    page_size = 1000
+    offset = 0
+    while True:
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+        batch = result.data or []
+        all_products.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
     if not all_products:
-        logger.warning("Model build requested with no products in database")
+        raise HTTPException(400, "No products in database. Upload data first.")
+    import pandas as pd
+    item_df = pd.DataFrame(all_products)
+    item_df['combined'] = (
+        item_df['title'].astype(str) + ' ' +
+        item_df['description'].fillna('').astype(str) + ' ' +
+        item_df['category'].fillna('').astype(str)
+    )
+    item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
+    start_time = time.time()
+    content_model = ContentRecommender(item_df)
+    collab_model = None
+    try:
+        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+        purchases = purchases_result.data or []
+        if len(purchases) > 10:
+            product_title_map = {p['id']: p['title'] for p in all_products}
+            interaction_rows = []
+            for p in purchases:
+                title = product_title_map.get(p['product_id'])
+                if title:
+                    interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
+            if len(interaction_rows) > 10:
+                interaction_df = pd.DataFrame(interaction_rows)
+                if interaction_df['user_id'].nunique() > 1:
+                    collab_model = CollaborativeRecommender(interaction_df)
+    except Exception as e:
+        logger.warning("Collaborative model data load failed: %s", e)
+    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
+    build_time = round(time.time() - start_time, 2)
+    models["content"] = content_model
+    models["collab"] = collab_model
+    models["hybrid"] = hybrid_model
+    models["item_df"] = item_df
+    models["ready"] = True
+    models["build_time"] = build_time
+    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+    _clear_response_cache()
+    return {
+        "message": "Models built successfully!",
+        "items": len(item_df),
+        "has_collaborative": collab_model is not None,
+        "build_time_seconds": build_time,
+    }
+
+
+@app.post("/api/train/federated")
+def train_federated(req: FederatedTrainRequest):
+    sb = get_supabase()
+    all_products = []
+    page_size = 1000
+    offset = 0
+    while True:
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+        batch = result.data or []
+        all_products.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    if not all_products:
         raise HTTPException(400, "No products in database. Upload data first.")
 
     import pandas as pd
@@ -954,43 +950,45 @@ def build_models(
     item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
 
     start_time = time.time()
-
-    # Content model
     content_model = ContentRecommender(item_df)
 
-    # Collaborative model (from purchases)
-    collab_model = None
-    if sb is not None:
-        try:
-            purchases_result = sb.table('purchases') \
-                .select('user_id, product_id, rating') \
-                .limit(50000) \
-                .execute()
-            purchases = purchases_result.data or []
+    try:
+        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+        purchases = purchases_result.data or []
+    except Exception as e:
+        logger.error("Federated training: purchases load failed: %s", e)
+        raise HTTPException(500, f"Failed to retrieve purchases from database: {str(e)}")
 
-            if len(purchases) > 10:
-                # Map product_id → title
-                product_title_map = {p['id']: p['title'] for p in all_products}
-                interaction_rows = []
-                for p in purchases:
-                    title = product_title_map.get(p['product_id'])
-                    if title:
-                        interaction_rows.append({
-                            'user_id': p['user_id'],
-                            'title': title,
-                            'rating': p.get('rating', 3.0),
-                        })
+    if len(purchases) <= 10:
+        raise HTTPException(400, "Not enough interaction data for federated training. Need at least 11 interactions.")
 
-                if len(interaction_rows) > 10:
-                    interaction_df = pd.DataFrame(interaction_rows)
-                    if interaction_df['user_id'].nunique() > 1:
-                        collab_model = CollaborativeRecommender(interaction_df)
-        except Exception as e:
-            logger.warning("Collaborative model data load failed: %s", e)
+    product_title_map = {p['id']: p['title'] for p in all_products}
+    interaction_rows = []
+    for p in purchases:
+        title = product_title_map.get(p['product_id'])
+        if title:
+            interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
 
-    # Hybrid model
+    if len(interaction_rows) <= 10:
+        raise HTTPException(400, "Not enough valid interaction rows matching product catalog.")
+
+    interaction_df = pd.DataFrame(interaction_rows)
+    if interaction_df['user_id'].nunique() <= 1:
+        raise HTTPException(400, "Federated training requires at least 2 unique users.")
+
+    try:
+        collab_model = train_federated_collaborative_model(
+            interaction_df,
+            n_factors=req.n_factors,
+            epochs=req.epochs,
+            lr=req.lr,
+            reg=req.reg
+        )
+    except Exception as e:
+        logger.error("Federated training execution failed: %s", e)
+        raise HTTPException(500, f"Federated training execution failed: {str(e)}")
+
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
-
     build_time = round(time.time() - start_time, 2)
 
     models["content"] = content_model
@@ -1002,246 +1000,181 @@ def build_models(
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
     _clear_response_cache()
 
-    logger.info(
-        "Built recommendation models for %d items in %.2f seconds",
-        len(item_df),
-        build_time,
-    )
-
     return {
-        "message": "Models built successfully!",
+        "message": "Federated collaborative model trained successfully!",
         "items": len(item_df),
-        "has_collaborative": collab_model is not None,
+        "users": int(interaction_df['user_id'].nunique()),
         "build_time_seconds": build_time,
     }
 
 
-# ── Recommendations (Async via Celery) ────────────────────────────
-
-@app.post("/api/recommend")
-def post_recommendations(
-    item_title: str = Query(..., description="Item title to get recommendations for"),
-    top_n: int = Query(10, ge=1, le=50),
-    explain: bool = Query(False),
-):
-    """
-    Dispatch recommendation computation to a Celery worker.
-    Returns task_id immediately (202 Accepted).
-    Poll GET /api/task/{task_id} for results.
-    """
-    if not models["ready"]:
-        raise HTTPException(400, "Models not built. Build first via POST /api/build.")
-
-    # Dispatch to background worker — non-blocking
-    task = compute_recommendations.delay(item_title, top_n=top_n, explain=explain)
-
-    logger.info(
-        "Dispatched recommendation task: task_id=%s item=%s",
-        task.id,
-        item_title,
-    )
-
-    from fastapi.responses import JSONResponse
-    return JSONResponse(
-        status_code=202,
-        content={
-            "task_id": task.id,
-            "status": "PENDING",
-            "message": f"Recommendation task queued. Poll GET /api/task/{task.id} for results.",
-        },
-    )
-
-
-@app.get("/api/task/{task_id}")
-def get_task_status(task_id: str):
-    """
-    Poll the status of an async recommendation task.
-
-    States:
-      PENDING  — task queued, not yet started
-      STARTED  — worker has picked it up
-      SUCCESS  — results ready in 'result' field
-      FAILURE  — task failed; see 'error' field
-    """
-    try:
-        result = AsyncResult(task_id, app=celery_app)
-        state = result.state
-
-        if state == "PENDING":
-            return {
-                "task_id": task_id,
-                "status": "PENDING",
-                "message": "Task is queued and waiting for a worker.",
-            }
-
-        if state == "STARTED":
-            return {
-                "task_id": task_id,
-                "status": "STARTED",
-                "message": "Worker is processing the recommendation.",
-            }
-
-        if state == "SUCCESS":
-            return {
-                "task_id": task_id,
-                "status": "SUCCESS",
-                "result": result.get(),
-            }
-
-        if state == "FAILURE":
-            # Isolate error string — never leak full traceback to client
-            try:
-                error_msg = str(result.result)
-            except Exception:
-                error_msg = "An unexpected error occurred."
-
-            return {
-                "task_id": task_id,
-                "status": "FAILURE",
-                "error": error_msg,
-            }
-
-        # Catch-all for RETRY, REVOKED, etc.
-        return {
-            "task_id": task_id,
-            "status": state,
-            "message": "Task is in an intermediate state.",
-        }
-
-    except Exception as exc:
-        logger.error("Task status check failed for task_id=%s: %s", task_id, exc)
-        raise HTTPException(500, "Could not retrieve task status.")
-
-
-# ── Legacy sync recommend (kept for backward compatibility) ─────────
-
+# ── Recommendations ───────────────────────────────────────────────────
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(
+    request: Request,               # added for rate limiting
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
     top_n: int = 10,
     explain: bool = Query(False),
-    llm_explain: bool = Query(False),
+    target_catalog: Optional[str] = Query(None),
 ):
-    """Get hybrid recommendations for an item."""
+    rate_limited = _apply_rate_limit(
+        request,
+        response,
+        scope="recommend",
+        limit_env="RATE_LIMIT_RECOMMEND_PER_MIN",
+        default_limit=20,
+    )
+    if rate_limited is not None:
+        return rate_limited
+
+    if not models["ready"]:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
     query_title = title or item_title
-    cache_key = _cache_key("recommend", query_title or "", top_n, explain, llm_explain)
+    if not query_title:
+        raise HTTPException(422, "Query parameter 'title' is required.")
+
+    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
-    payload = _recommendation_payload(
-        query_title, top_n=top_n, explain=explain, llm_explain=llm_explain
+    recs = models["hybrid"].recommend(
+        query_title, top_n=top_n, explain=explain, target_catalog=target_catalog
     )
+    if not recs:
+        raise HTTPException(404, "Item not found or no recommendations.")
+
+    payload = {
+        "results": recs,
+        "count": len(recs),
+        "query": query_title,
+        "query_item": query_title,
+        "recommendations": recs,
+        "weights": models["hybrid"].get_weights(),
+        "explain": explain,
+        "target_catalog": target_catalog,
+    }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
 
 
-def _recommendation_payload(
-    item_title: Optional[str], top_n: int = 10, explain: bool = False, llm_explain: bool = False
-):
-    """Build a recommendation response shared by HTTP and real-time transports."""
+@app.get("/api/user_recommend")
+def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
+    """Get hybrid recommendations for a user."""
     if not models["ready"]:
-        if not os.getenv("PYTEST_CURRENT_TEST"):
-            try:
-                get_supabase()
-            except Exception:
-                recs = [
-                    {"title": p["title"], "hybrid_score": round(0.98 - i * 0.05, 2)}
-                    for i, p in enumerate(MOCK_PRODUCTS)
-                    if p["title"] != item_title
-                ][:top_n]
-                return {
-                    "query_item": item_title,
-                    "recommendations": recs,
-                    "weights": {"alpha": 0.4, "beta": 0.35, "gamma": 0.25},
-                    "explain": explain,
-                    "llm_explain": llm_explain,
-                }
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-
-    query_title = item_title
-    if not query_title:
-        raise HTTPException(422, "Query parameter 'title' is required.")
-
-    recs = models["hybrid"].recommend(query_title, top_n=top_n, explain=explain)
+    
+    recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
     if not recs:
-        raise HTTPException(404, "Item not found or no recommendations.")
-    weights = models["hybrid"].get_weights()
-    payload = {
-        "query_item": query_title,
+        raise HTTPException(404, "User not found or no recommendations.")
+        
+    return {
+        "query_user": user_id,
         "recommendations": recs,
-        "weights": weights,
+        "weights": models["hybrid"].get_weights(),
         "explain": explain,
-        "llm_explain": llm_explain,
     }
-    return payload
 
-def _json_scalar(val: Any) -> Any:
-    """Convert numpy or pandas datatypes to standard JSON-compatible Python types."""
-    import numpy as np
-    import pandas as pd
-    if pd.isna(val):
-        return None
-    if isinstance(val, (np.integer, np.int64, np.int32)):
-        return int(val)
-    if isinstance(val, (np.floating, np.float64, np.float32)):
-        return float(val)
-    if hasattr(val, "item"):
-        return val.item()
-    return val
+@app.websocket("/ws/recommendations")
+async def websocket_recommendations(websocket: WebSocket):
+    await realtime_hub.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            item_title = data.get("item_title")
+            top_n = data.get("top_n", 10)
+            explain = data.get("explain", False)
+            user_id = data.get("user_id")
+
+            if not models.get("ready") or not models.get("hybrid"):
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Models not built yet."
+                })
+                continue
+
+            recs = models["hybrid"].recommend(item_title, user_id=user_id, top_n=top_n, explain=explain)
+            await websocket.send_json({
+                "type": "recommendations",
+                "query_item": item_title,
+                "recommendations": recs
+            })
+    except WebSocketDisconnect:
+        realtime_hub.disconnect(websocket)
+    except Exception as e:
+        logger.error("WebSocket error: %s", e)
+        try:
+            realtime_hub.disconnect(websocket)
+        except Exception:
+            pass
 
 
+@app.post("/api/realtime/behavior")
+def realtime_behavior(
+    req: RealtimeRecommendationRequest,
+    _csrf: None = Depends(csrf_header_dep),
+):
+    if not models.get("ready") or not models.get("hybrid"):
+        raise HTTPException(status_code=400, detail="Models not built yet. Train the models first.")
+
+    recs = models["hybrid"].recommend(req.item_title, top_n=req.top_n, explain=req.explain)
+    return {
+        "type": "recommendations",
+        "query_item": req.item_title,
+        "recommendations": recs
+    }
+
+
+def _json_scalar(value):
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+# ── Similar Items ─────────────────────────────────────────────────────
 @app.get("/api/similar/{item_id}")
 def get_similar_items(
+    request: Request,
+    response: Response,
     item_id: str,
     top_n: int = Query(10, ge=1, le=100),
-    category: Optional[str] = Query(
-        None,
-        description="Optional category name to restrict similar items.",
-    ),
+    category: Optional[str] = Query(None),
     explain: bool = Query(False),
 ):
-    """Get similar products by item id, optionally scoped to one category."""
+    rate_limited = _apply_rate_limit(
+        request,
+        response,
+        scope="similar",
+        limit_env="RATE_LIMIT_SIMILAR_PER_MIN",
+        default_limit=20,
+    )
+    if rate_limited is not None:
+        return rate_limited
+
     if not models["ready"] or models["item_df"] is None:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-
     item_df = models["item_df"]
     if "id" not in item_df.columns:
         raise HTTPException(400, "Model data does not include product ids.")
-
     id_matches = item_df[item_df["id"].astype(str) == str(item_id)]
     if id_matches.empty:
         raise HTTPException(404, "Item not found.")
-
     source = id_matches.iloc[0]
     source_title = str(source.get("title", ""))
     source_category = source.get("category", "")
     requested_category = category.strip() if category else None
-
-    # Fetch a wider candidate pool before filtering so category filters still
-    # have enough results to fill the requested page.
     candidate_limit = top_n if requested_category is None else min(top_n * 5, 100)
-    recs = models["hybrid"].recommend(
-        source_title,
-        top_n=candidate_limit,
-        explain=explain,
-    )
+    recs = models["hybrid"].recommend(source_title, top_n=candidate_limit, explain=explain)
     if requested_category is not None:
-        recs = [
-            rec
-            for rec in recs
-            if str(rec.get("category", "")).casefold() == requested_category.casefold()
-        ]
+        recs = [r for r in recs if str(r.get("category", "")).casefold() == requested_category.casefold()]
     recs = recs[:top_n]
-
     if not recs:
         raise HTTPException(404, "No similar items found.")
-
     return {
         "query_item": {
             "id": _json_scalar(source.get("id")),
@@ -1255,50 +1188,40 @@ def get_similar_items(
     }
 
 
-@app.websocket("/ws/recommendations")
-async def recommendations_websocket(websocket: WebSocket):
-    """Stream recommendations whenever the browser reports a new interaction."""
-    await realtime_hub.connect(websocket)
-    try:
-        while True:
-            message = await websocket.receive_json()
-            request = RealtimeRecommendationRequest(**message)
-            top_n = max(1, min(50, request.top_n))
-            payload = _recommendation_payload(
-                request.item_title,
-                top_n=top_n,
-                explain=request.explain,
-                llm_explain=request.llm_explain,
-            )
-            await websocket.send_json({"type": "recommendations", **payload})
-    except WebSocketDisconnect:
-        realtime_hub.disconnect(websocket)
-    except HTTPException as exc:
-        await websocket.send_json({"type": "error", "status_code": exc.status_code, "detail": exc.detail})
-        realtime_hub.disconnect(websocket)
-    except Exception as exc:
-        logger.exception("Recommendation websocket failed: %s", exc)
-        await websocket.send_json({"type": "error", "status_code": 500, "detail": "Recommendation stream failed."})
-        realtime_hub.disconnect(websocket)
+# ── Similarity Matrix ─────────────────────────────────────────────────
+@app.get("/api/similarity-matrix")
+def similarity_matrix(items: str = Query(...)):
+    if not models["ready"] or models["content"] is None:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
+    titles = [t.strip() for t in items.split(",") if t.strip()]
+    if len(titles) < 2:
+        raise HTTPException(400, "Provide at least 2 comma-separated item titles.")
+    if len(titles) > 20:
+        raise HTTPException(400, "Maximum 20 items allowed per request.")
+    content_model = models["content"]
+    from sklearn.metrics.pairwise import cosine_similarity as cos_sim
+    indices = []
+    valid_titles = []
+    not_found = []
+    for title in titles:
+        idx = content_model._title_to_idx.get(title.lower())
+        if idx is not None:
+            indices.append(idx)
+            valid_titles.append(content_model.df.iloc[idx]['title'])
+        else:
+            not_found.append(title)
+    if len(valid_titles) < 2:
+        raise HTTPException(404, f"Need at least 2 valid items. Not found: {not_found}")
+    sub_matrix = content_model.matrix[indices]
+    sim = cos_sim(sub_matrix, sub_matrix)
+    matrix = [[round(float(sim[i][j]), 4) for j in range(len(valid_titles))] for i in range(len(valid_titles))]
+    result = {"labels": valid_titles, "matrix": matrix, "size": len(valid_titles)}
+    if not_found:
+        result["not_found"] = not_found
+    return result
 
 
-@app.post("/api/realtime/behavior")
-async def realtime_behavior_update(event: RealtimeRecommendationRequest):
-    """HTTP fallback for clients that cannot keep a WebSocket connection open."""
-    top_n = max(1, min(50, event.top_n))
-    payload = _recommendation_payload(
-        event.item_title,
-        top_n=top_n,
-        explain=event.explain,
-        llm_explain=event.llm_explain,
-    )
-    message = {"type": "recommendations", **payload}
-    await realtime_hub.broadcast(message)
-    return message
-
-
-# ── Weights ─────────────────────────────────────────────────────────
-
+# ── Weights ───────────────────────────────────────────────────────────
 @app.get("/api/weights")
 def get_weights():
     if not models["ready"]:
@@ -1309,8 +1232,8 @@ def get_weights():
 @app.put("/api/weights")
 def update_weights(
     w: WeightsUpdate,
-    token: str = Depends(verify_token)
-    ):
+    _csrf: None = Depends(csrf_header_dep),
+):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
     models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
@@ -1318,227 +1241,304 @@ def update_weights(
     return {"message": "Weights updated", "weights": models["hybrid"].get_weights()}
 
 
-# ── Items ───────────────────────────────────────────────────────────
-
+# ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
 def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
-    """List products from Supabase with cursor-style pagination.
-
-    Supports ``?page=1&limit=20`` for infinite-scroll on the frontend.
-    Returns a ``has_more`` flag so the client knows when to stop fetching.
-    """
-    try:
-        sb = get_supabase()
-        offset = (page - 1) * limit
-        result = sb.table('products') \
-            .select('id, title, description, category, rating, avg_sentiment, review_count') \
-            .order('rating', desc=True) \
-            .range(offset, offset + limit - 1) \
-            .execute()
-
-        count_result = sb.table('products').select('id', count='exact').limit(0).execute()
-        total = count_result.count or 0
-
-        items = []
-        for p in (result.data or []):
-            items.append({
-                'id': p.get('id'),
-                'title': p.get('title', ''),
-                'category': p.get('category', ''),
-                'rating': round(float(p.get('rating', 0)), 2),
-                'avg_sentiment': round(float(p.get('avg_sentiment', 0)), 4),
-                'description': str(p.get('description', ''))[:200],
-            })
-    except Exception as e:
-        logger.warning("Supabase offline in list_items, falling back to mock products: %s", e)
-        total = len(MOCK_PRODUCTS)
-        offset = (page - 1) * limit
-        paginated = MOCK_PRODUCTS[offset : offset + limit]
-        items = []
-        for p in paginated:
-            items.append({
-                'id': p['id'],
-                'title': p['title'],
-                'category': p['category'],
-                'rating': round(float(p['rating']), 2),
-                'avg_sentiment': round(float(p['avg_sentiment']), 4),
-                'description': str(p['description'])[:200],
-            })
-
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "limit": limit,
-        "has_more": (offset + len(items)) < total,
-    }
+    sb = get_supabase()
+    offset = (page - 1) * limit
+    result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).range(offset, offset + limit - 1).execute()
+    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+    total = count_result.count or 0
+    items = []
+    for p in (result.data or []):
+        items.append({
+            'id': p.get('id'), 'title': p.get('title', ''),
+            'category': p.get('category', ''),
+            'rating': round(float(p.get('rating', 0)), 2),
+            'avg_sentiment': round(float(p.get('avg_sentiment', 0)), 4),
+            'description': str(p.get('description', ''))[:200],
+        })
+    return {"items": items, "total": total, "page": page, "limit": limit, "has_more": (offset + len(items)) < total}
 
 
-# ── Similarity Matrix ──────────────────────────────────────────────
-
-@app.get("/api/similarity-matrix")
-def similarity_matrix(items: str = Query(..., description="Comma-separated product titles")):
-    """Compute an NxN cosine similarity matrix for the given product titles.
-
-    Uses the content model's TF-IDF vectors to calculate pairwise cosine
-    similarity scores.  Accepts up to 20 items to keep response size
-    manageable.
-
-    Example::
-
-        GET /api/similarity-matrix?items=ProductA,ProductB,ProductC
-    """
-    if not models["ready"] or models["content"] is None:
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
-
-    titles = [t.strip() for t in items.split(",") if t.strip()]
-    if len(titles) < 2:
-        raise HTTPException(400, "Provide at least 2 comma-separated item titles.")
-    if len(titles) > 20:
-        raise HTTPException(400, "Maximum 20 items allowed per request.")
-
-    content_model = models["content"]
-    from sklearn.metrics.pairwise import cosine_similarity as cos_sim
-
-    # Resolve indices and filter out unknown titles
-    indices = []
-    valid_titles = []
-    not_found = []
-    for title in titles:
-        idx = content_model._title_to_idx.get(title.lower())
-        if idx is not None:
-            indices.append(idx)
-            valid_titles.append(content_model.df.iloc[idx]['title'])  # canonical case
-        else:
-            not_found.append(title)
-
-    if len(valid_titles) < 2:
-        raise HTTPException(
-            404,
-            f"Need at least 2 valid items. Not found: {not_found}",
-        )
-
-    # Compute NxN similarity from the TF-IDF matrix rows
-    sub_matrix = content_model.matrix[indices]
-    sim = cos_sim(sub_matrix, sub_matrix)
-
-    # Build JSON-serializable matrix (rounded to 4 decimals)
-    matrix = [[round(float(sim[i][j]), 4) for j in range(len(valid_titles))]
-              for i in range(len(valid_titles))]
-
-    result = {
-        "labels": valid_titles,
-        "matrix": matrix,
-        "size": len(valid_titles),
-    }
-    if not_found:
-        result["not_found"] = not_found
-
-    return result
-
-
-# ── Categories ──────────────────────────────────────────────────────
-
+# ── Categories ────────────────────────────────────────────────────────
 @app.get("/api/categories")
 def get_categories():
-    """Get all unique categories."""
+    sb = get_supabase()
     try:
-        sb = get_supabase()
         result = sb.rpc('get_categories', {}).execute()
         if result.data:
             return {"categories": result.data}
-
-        # Fallback: distinct query
+    except Exception:
+        pass
+    try:
         result = sb.table('products').select('category').limit(5000).execute()
         cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
         cats.sort()
         return {"categories": cats}
-    except Exception:
-        # Fallback when Supabase is not configured
-        return {"categories": ["Electronics", "Clothing", "Home & Kitchen", "Books"]}
-
-
-# ── Purchases ───────────────────────────────────────────────────────
-
-@app.get("/api/purchases/{user_id}")
-def get_user_purchases(
-    user_id: str, 
-    limit: int = 50,
-    token: str = Depends(verify_token)
-):
-    """Get purchase history for a user (via anon client — RLS enforced)."""
-    try:
-        sb = get_supabase()
-        result = sb.table('purchases') \
-            .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)') \
-            .eq('user_id', user_id) \
-            .order('purchased_at', desc=True) \
-            .limit(limit) \
-            .execute()
-        return {"purchases": result.data or []}
     except Exception as e:
-        logger.warning("Supabase offline in get_user_purchases, falling back to empty list: %s", e)
-        return {"purchases": []}
+        logger.error("Failed to retrieve categories: %s", e)
+        return {"categories": []}
+
+
+# ── Purchases ─────────────────────────────────────────────────────────
+@app.get("/api/purchases/{user_id}")
+def get_user_purchases(user_id: str, limit: int = 50):
+    sb = get_supabase()
+    result = sb.table('purchases').select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)').eq('user_id', user_id).order('purchased_at', desc=True).limit(limit).execute()
+    return {"purchases": result.data or []}
 
 
 @app.post("/api/purchases")
 def create_purchase(
     data: PurchaseCreate,
-    token: str = Depends(verify_token)
+    _csrf: None = Depends(csrf_header_dep),
 ):
-    """Record a purchase (validated input)."""
-    try:
-        sb = get_supabase()
-        result = sb.table('purchases').insert({
-            'user_id': data.user_id,
-            'product_id': data.product_id,
-            'rating': max(0, min(5, data.rating)),
-            'review_text': data.review_text[:1000],
-        }).execute()
-        _clear_response_cache()
-        return {"purchase": result.data}
-    except Exception as e:
-        logger.warning("Supabase offline in create_purchase, returning mock purchase details: %s", e)
-        import datetime
-        mock_data = [{
-            'id': 1,
-            'user_id': data.user_id,
-            'product_id': data.product_id,
-            'rating': max(0, min(5, data.rating)),
-            'review_text': data.review_text[:1000],
-            'purchased_at': datetime.datetime.now().isoformat()
-        }]
-        return {"purchase": mock_data}
-# ── Dashboard ───────────────────────────────────────────────────────
+    sb = get_supabase()
+    result = sb.table('purchases').insert({
+        'user_id': data.user_id,
+        'product_id': data.product_id,
+        'rating': max(0, min(5, data.rating)),
+        'review_text': data.review_text[:1000],
+    }).execute()
+    _clear_response_cache()
+    return {"purchase": result.data}
+# ── Trending Products ───────────────────────────────────────────────
 
-@app.get("/health")
-def health_check():
+TRENDING_CACHE = {
+    "data": None,
+    "timestamp": None,
+}
+
+
+@app.get("/api/trending")
+def get_trending_products(
+    days: int = Query(7, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=100),
+):
     """
-    Returns server status. Useful for uptime monitors and Docker health checks.
+    Get trending products based on recent interactions.
     """
-    import os
-    return {
-        "status": "ok",
-        "version": os.getenv("APP_VERSION", "1.0.0")
+
+    # Cache for 1 hour
+    now = datetime.utcnow()
+
+    if (
+        TRENDING_CACHE["data"] is not None and
+        TRENDING_CACHE["timestamp"] is not None and
+        (now - TRENDING_CACHE["timestamp"]).seconds < 3600
+    ):
+        return TRENDING_CACHE["data"]
+
+    sb = get_supabase()
+
+    cutoff_date = (now - timedelta(days=days)).isoformat()
+
+    result = sb.table("purchases") \
+        .select("""
+            product_id,
+            rating,
+            purchased_at,
+            products (
+                id,
+                title,
+                category,
+                rating,
+                avg_sentiment,
+                review_count
+            )
+        """) \
+        .gte("purchased_at", cutoff_date) \
+        .execute()
+
+    rows = result.data or []
+
+    if not rows:
+        return {"results": []}
+
+    from collections import defaultdict
+
+    stats = defaultdict(lambda: {
+        "count": 0,
+        "ratings": [],
+        "product": None,
+    })
+
+    for row in rows:
+        product = row.get("products")
+
+        if not product:
+            continue
+
+        pid = product["id"]
+
+        stats[pid]["count"] += 1
+        stats[pid]["ratings"].append(row.get("rating", 0))
+        stats[pid]["product"] = product
+
+    # Bayesian ranking
+    ranked = []
+
+    global_avg = sum(
+        sum(v["ratings"]) / max(len(v["ratings"]), 1)
+        for v in stats.values()
+    ) / max(len(stats), 1)
+
+    m = 5  # minimum votes threshold
+
+    for pid, data in stats.items():
+        count = data["count"]
+        avg_rating = (
+            sum(data["ratings"]) / max(len(data["ratings"]), 1)
+        )
+
+        bayesian_rating = (
+            (count / (count + m)) * avg_rating
+            + (m / (count + m)) * global_avg
+        )
+
+        score = bayesian_rating * count
+
+        ranked.append({
+            "id": data["product"]["id"],
+            "title": data["product"]["title"],
+            "category": data["product"].get("category", ""),
+            "rating": data["product"].get("rating", 0),
+            "avg_sentiment": data["product"].get("avg_sentiment", 0),
+            "review_count": data["product"].get("review_count", 0),
+            "interaction_count": count,
+            "bayesian_rating": round(bayesian_rating, 3),
+            "trending_score": round(score, 3),
+        })
+
+    ranked.sort(
+        key=lambda x: x["trending_score"],
+        reverse=True
+    )
+
+    response = {
+        "results": ranked[:limit],
+        "days": days,
+        "limit": limit,
     }
 
+    TRENDING_CACHE["data"] = response
+    TRENDING_CACHE["timestamp"] = now
 
+    return response
 
+# ── Feedback ──────────────────────────────────────────────────────────
 @app.post("/api/feedback")
 def submit_feedback(
     data: FeedbackCreate,
-    token: str = Depends(verify_token)
-    ):
-
+    _csrf: None = Depends(csrf_header_dep),
+):
     return {
         "message": "Feedback submitted successfully",
-        "feedback": {
-            "user_id": data.user_id,
-            "item": data.item,
-            "feedback": data.feedback
-        }
+        "feedback": {"user_id": data.user_id, "item": data.item, "feedback": data.feedback}
     }
-# ── Frontend Serving ────────────────────────────────────────────────
+
+
+# ── Export Dataset ────────────────────────────────────────────────────
+@app.get("/api/export/dataset")
+def export_dataset(columns: Optional[str] = Query(None)):
+    if not models["ready"] or models["item_df"] is None:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
+    import pandas as pd
+    from fastapi.responses import StreamingResponse
+    df = models["item_df"].copy()
+    if columns:
+        cols = [c.strip() for c in columns.split(",") if c.strip() in df.columns]
+        if cols:
+            df = df[cols]
+    output = io.StringIO()
+    df.to_csv(output, index=False)
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=dataset.csv"}
+    )
+
+
+# ── GitHub Webhook Triage ─────────────────────────────────────────────
+import hmac
+import hashlib
+
+def _verify_github_signature(request_body: bytes, signature_header: str | None) -> None:
+    secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        return
+    if not signature_header:
+        raise HTTPException(status_code=401, detail="Signature header X-Hub-Signature-256 missing.")
+    if not signature_header.startswith("sha256="):
+        raise HTTPException(status_code=400, detail="Invalid signature format.")
+        
+    expected_signature = hmac.new(
+        secret.encode(),
+        request_body,
+        hashlib.sha256
+    ).hexdigest()
+    
+    provided_signature = signature_header.partition("sha256=")[2].strip()
+    if not hmac.compare_digest(expected_signature, provided_signature):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature.")
+
+
+@app.post("/api/webhook/github")
+async def github_webhook(request: Request):
+    body_bytes = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256")
+    _verify_github_signature(body_bytes, signature)
+    
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+        
+    event = request.headers.get("X-GitHub-Event")
+    action = payload.get("action")
+    
+    issue_number = None
+    title = None
+    body = None
+    repo_full_name = None
+    should_triage = False
+    
+    if event == "issues" and action == "opened":
+        issue = payload.get("issue", {})
+        issue_number = issue.get("number")
+        title = issue.get("title", "")
+        body = issue.get("body", "")
+        repo_full_name = payload.get("repository", {}).get("full_name")
+        should_triage = True
+        
+    elif event == "issue_comment" and action == "created":
+        comment = payload.get("comment", {})
+        comment_body = comment.get("body", "").strip()
+        if comment_body.startswith("!retriage"):
+            issue = payload.get("issue", {})
+            issue_number = issue.get("number")
+            title = issue.get("title", "")
+            body = issue.get("body", "")
+            repo_full_name = payload.get("repository", {}).get("full_name")
+            should_triage = True
+            
+    if should_triage and issue_number and repo_full_name:
+        token = os.environ.get("GITHUB_TOKEN", "").strip()
+        triage_res = await triage_issue(
+            issue_number=issue_number,
+            title=title,
+            body=body,
+            repo_full_name=repo_full_name,
+            token=token
+        )
+        return {"status": "success", "action": "triaged", "details": triage_res}
+        
+    return {"status": "skipped", "reason": f"No triage actions required for event '{event}' action '{action}'."}
+
+
+# ── Frontend Serving ──────────────────────────────────────────────────
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
 
 if os.path.isdir(frontend_dir):

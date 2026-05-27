@@ -78,7 +78,71 @@ jobs:
               console.log('Could not request review:', e.message);
             }
 
-  # ── Triggered when you add status:approved label ─────────────────────
+  copy-issue-labels:
+    if: github.event.action == 'opened' || github.event.action == 'reopened'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Copy level/type/area labels from linked issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const body = pr.body || '';
+            const title = pr.title || '';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = pr.number;
+
+            // Search in body first (Closes/Fixes/Resolves #123)
+            let match = body.match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
+
+            // Fallback 1: any #123 mention in body
+            if (!match) match = body.match(/#(\d+)/);
+
+            // Fallback 2: any #123 mention in PR title
+            if (!match) match = title.match(/#(\d+)/);
+
+            if (!match) {
+              console.log('No linked issue found in body or title. Skipping.');
+              return;
+            }
+
+            const issueNumber = parseInt(match[1]);
+            console.log('Linked issue #' + issueNumber);
+
+            let issue;
+            try {
+              const { data } = await github.rest.issues.get({
+                owner, repo, issue_number: issueNumber
+              });
+              issue = data;
+            } catch(e) {
+              console.log('Could not fetch issue #' + issueNumber + ':', e.message);
+              return;
+            }
+
+            const issueLabels = issue.labels.map(l => l.name);
+            console.log('Issue labels:', issueLabels);
+
+            const labelsToCopy = issueLabels.filter(l =>
+              l.startsWith('level:') ||
+              l.startsWith('type:') ||
+              l === 'frontend' ||
+              l === 'backend' ||
+              l === 'ml/ai'
+            );
+
+            if (labelsToCopy.length === 0) {
+              console.log('No relevant labels to copy.');
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: prNumber, labels: labelsToCopy
+            });
+            console.log('Copied labels:', labelsToCopy);
+
   auto-merge-on-label:
     if: github.event.action == 'labeled' && github.event.label.name == 'status:approved'
     runs-on: ubuntu-latest
@@ -92,7 +156,6 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // Fetch fresh PR state
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
 
             console.log('PR state:', pr.state);
@@ -109,7 +172,6 @@ jobs:
               return;
             }
 
-            // Remove review-needed label
             try {
               await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: 'status:review-needed' });
             } catch(e) {}
@@ -124,7 +186,6 @@ jobs:
               return;
             }
 
-            // Merge!
             try {
               await github.rest.pulls.merge({
                 owner,

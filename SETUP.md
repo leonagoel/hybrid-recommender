@@ -50,8 +50,27 @@ python scripts/seed_mock_data.py --users 50 --purchases 2000  # Custom amounts
 
 ### 5. Start the Server
 ```bash
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
+if (-not $env:PORT) { $env:PORT = "8000" }
+
+python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT --reload
 ```
+## Windows Local Setup (Recommended)
+
+If you encounter dependency issues on Windows, it is recommended to create a clean conda environment.
+
+### Create Environment
+
+```bash
+conda create -n hybridrec python=3.10 -y
+conda activate hybridrec
+
+pip install -r requirements.txt
+pip install sentence-transformers
+
+## Run your streamlit app easy way to run the app 
+$env:PYTHONPATH="."
+streamlit run src/api/app.py
 
 ### 6. Run with Docker
 Build the container image from the repository root:
@@ -66,7 +85,54 @@ docker run --env-file .env -p 8000:8000 hybrid-recommender
 
 The API will be available at [http://localhost:8000](http://localhost:8000).
 
-### 7. Open the App
+### 7. Run with Docker Compose (Recommended for Contributors)
+
+Docker Compose starts the full stack — backend API **and** static frontend —
+with a single command.
+
+#### Prerequisites
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Compose)
+
+#### Steps
+
+**1. Copy and fill in your environment file**
+```bash
+cp .env.example .env
+# Edit .env with your Supabase credentials
+```
+
+**2. Start the full stack**
+```bash
+docker-compose up --build
+```
+`--build` forces a fresh image build. Omit it on subsequent runs when code hasn't changed.
+
+**3. Access the app**
+
+| Service  | URL                         |
+|----------|-----------------------------|
+| Frontend | http://localhost:3000        |
+| Backend  | http://localhost:8000        |
+| API Docs | http://localhost:8000/docs   |
+| Health   | http://localhost:8000/health |
+
+**4. Stop the stack**
+```bash
+docker-compose down
+```
+
+#### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `.env file not found` | Run `cp .env.example .env` and fill in credentials |
+| Backend unhealthy | Check `docker-compose logs backend` |
+| Port 8000 already in use | Change `"8000:8000"` to `"8001:8000"` in `docker-compose.yml` |
+| Dataset not found | Make sure `datasets/` folder exists in project root |
+
+---
+
+### 8. Open the App
 Navigate to: [http://localhost:8000](http://localhost:8000)
 
 ## Architecture
@@ -101,4 +167,4 @@ hybrid-recommender/
 - **Recommendations:** Hybrid (Content + Collaborative + Sentiment)
 - **Upload:** CSV and JSON format support
 - **UI:** Amazon-like modern design with animations
-- **Streamlit UI:** Upload a CSV locally, build models, and get recommendations — no Supabase or server setup needed (`streamlit run app.py`)
+- **Streamlit UI:** Upload a CSV locally, build models, and get recommendations — no Supabase or server setup needed (`streamlit run src/api/app.py`)

@@ -45,10 +45,41 @@ function initThemeToggle() {
 
 document.addEventListener('DOMContentLoaded', initThemeToggle);
 
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char]));
+}
+
 /**
  * HybridRec — Frontend Application v3
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
  */
+
+// ── CSRF Token ──────────────────────────────────────────────────────
+// Fetched once from /api/csrf-token and kept in memory.
+// Every mutating request (POST / PUT / PATCH / DELETE) must include it
+// as the X-CSRF-Token header to satisfy the Double Submit Cookie check.
+let _csrfToken = null;
+
+async function initCsrf() {
+    try {
+        const res = await fetch('/api/csrf-token');
+        if (!res.ok) throw new Error(`CSRF fetch failed: ${res.status}`);
+        const data = await res.json();
+        _csrfToken = data.csrfToken || null;
+    } catch (e) {
+        console.warn('CSRF init failed:', e.message);
+    }
+}
+
+function _csrfHeaders() {
+    return _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {};
+}
 
 // ── Supabase Client ─────────────────────────────────────────────────
 // Loaded dynamically from backend — no hardcoded credentials
@@ -92,6 +123,7 @@ const state = {
     scrollObserver: null,
     compareList: [],
     heatmapSelected: [],
+    activeChips: new Set(['all']),
     filters: {
         category: '',
         rating: '',
@@ -145,6 +177,15 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    productModal: $('product-modal'),
+    productModalClose: $('product-modal-close'),
+    modalProductTitle: $('modal-product-title'),
+    modalProductCategory: $('modal-product-category'),
+    modalProductRating: $('modal-product-rating'),
+    modalProductSentiment: $('modal-product-sentiment'),
+    modalProductDescription: $('modal-product-description'),
+    modalProductScore: $('modal-product-score'),
+    modalRecommendationsList: $('modal-recommendations-list'),
     categoryFilter: $('category-filter'),
     ratingFilter: $('rating-filter'),
     sentimentFilter: $('sentiment-filter'),
@@ -252,6 +293,18 @@ function renderStars(rating) {
     return html;
 }
 
+function formatReviewCount(count) {
+    if (!count || count === 0) {
+        return "No reviews yet";
+    }
+
+    if (count >= 1000) {
+        return `(${(count / 1000).toFixed(1)}k reviews)`;
+    }
+
+    return `(${count} reviews)`;
+}
+
 function sentimentBadge(score) {
     if (score > CONFIG.SENTIMENT_POSITIVE) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
     if (score < CONFIG.SENTIMENT_NEGATIVE) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
@@ -259,6 +312,13 @@ function sentimentBadge(score) {
 }
 
 function applyFilters(products) {
+    // Pre-calculate chip states to avoid recomputing for every product
+    const hasAll = state.activeChips.has('all');
+    const activeCategories = Array.from(state.activeChips).filter(c => c.startsWith('category:')).map(c => c.split(':')[1]);
+    const hasTopRated = state.activeChips.has('rating:top-rated');
+    const hasPositive = state.activeChips.has('sentiment:positive');
+    const hasTrending = state.activeChips.has('special:trending');
+
     return products.filter((p) => {
 
         const matchesCategory =
@@ -281,11 +341,26 @@ function applyFilters(products) {
             !state.filters.sentiment ||
             sentiment === state.filters.sentiment;
 
-        return (
-            matchesCategory &&
-            matchesRating &&
-            matchesSentiment
-        );
+        let traditionalMatch = matchesCategory && matchesRating && matchesSentiment;
+
+        // Chip logic
+        if (hasAll) {
+            return traditionalMatch;
+        }
+
+        let pass = true;
+
+        // Categories OR logic
+        if (activeCategories.length > 0) {
+            if (!activeCategories.includes(p.category)) pass = false;
+        }
+
+        // Ratings & Sentiments AND logic
+        if (hasTopRated && (p.rating || 0) < 4.0) pass = false;
+        if (hasPositive && sentiment !== 'positive') pass = false;
+        if (hasTrending && (p.rating || 0) < 4.2) pass = false;
+
+        return traditionalMatch && pass;
     });
 }
 
@@ -345,7 +420,7 @@ const API = {
     async post(url, data) {
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -354,7 +429,7 @@ const API = {
     async put(url, data) {
         const res = await fetch(url, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -475,10 +550,12 @@ function renderSearchDropdown(results, query) {
     }
 
     els.searchDropdown.innerHTML = results
-        .map((title, index) => `
+        .map((title, index) => {
+            const safeTitle = escapeHtml(title);
+            return `
             <div
                 class="search-result ${index === state.selectedSearchIdx ? 'active' : ''}"
-                data-title="${title}"
+                data-title="${safeTitle}"
                 data-idx="${index}"
             >
                 <span class="search-result__icon">🔍</span>
@@ -488,7 +565,8 @@ function renderSearchDropdown(results, query) {
                     </div>
                 </div>
             </div>
-        `)
+        `;
+        })
         .join('');
 
     els.searchDropdown.classList.add('active');
@@ -503,9 +581,11 @@ function renderSearchDropdown(results, query) {
 }
 
 function highlightMatch(text, query) {
-    if (!query) return text;
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<strong>$1</strong>');
+    const safeText = escapeHtml(text);
+    if (!query) return safeText;
+    const safeQuery = escapeHtml(query);
+    const regex = new RegExp(`(${safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return safeText.replace(regex, '<strong>$1</strong>');
 }
 
 function selectSearchResult(title) {
@@ -631,13 +711,14 @@ async function loadProducts(append = false) {
 
     if (!append) {
         setPageMeta(
-            'All Products', 
+            'All Products',
             'Browse all products on HybridRec — personalised recommendations just for you.'
         );
     }
 
     if (!append) {
         els.productGrid.innerHTML = '';
+        showSkeletons(els.productGrid, 8);
         els.skeletonLoader.hidden = false;
         els.infiniteEnd.hidden = true;
         state.page = 1;
@@ -704,6 +785,10 @@ function renderTrending(items) {
     const fragment = document.createDocumentFragment();
 
     items.forEach((item, index) => {
+        const title = item.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(item.category || '');
+        const safeDescription = escapeHtml(item.description || 'No description available.');
         const card = document.createElement('div');
         card.className = 'product-card trending-card';
         card.style.animationDelay = `${index * 35}ms`;
@@ -712,9 +797,9 @@ function renderTrending(items) {
                 ${categoryIcon(item.category)}
             </div>
             <div class="product-card__body">
-                ${item.category ? `<span class="product-card__category">${item.category}</span>` : ''}
-                <h3 class="product-card__title">${item.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${item.description || 'No description available.'}</p>
+                ${item.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title">${safeTitle}</h3>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(item.rating || 0)}</div>
@@ -724,7 +809,7 @@ function renderTrending(items) {
                 </div>
             </div>
             <div class="product-card__actions">
-                <button class="btn--add-cart" data-title="${item.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     View Trending
                 </button>
             </div>
@@ -734,12 +819,12 @@ function renderTrending(items) {
         if (actionButton) {
             actionButton.addEventListener('click', (e) => {
                 e.stopPropagation();
-                loadRecommendations(item.title);
-                toast(`Showing recommendations for trending product "${item.title.substring(0, 40)}"`, 'info');
+                loadRecommendations(title);
+                toast(`Showing recommendations for trending product "${title.substring(0, 40)}"`, 'info');
             });
         }
 
-        card.addEventListener('click', () => loadRecommendations(item.title));
+        card.addEventListener('click', () => loadRecommendations(title));
         fragment.appendChild(card);
     });
 
@@ -763,7 +848,7 @@ async function loadSearchResults(query) {
         if (requestId !== state.searchRequestId) return;
         const products = data.results || data.items || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
         state.hasMore = false;
         state.allProducts = [...products];
@@ -833,12 +918,12 @@ function renderProducts(products, options = {}) {
                     </defs>
                     <circle cx="100" cy="100" r="70" fill="url(#blue-grad)" filter="blur(8px)" opacity="0.15" />
                     <circle cx="120" cy="80" r="40" fill="url(#amber-grad)" filter="blur(6px)" opacity="0.1" />
-                    
+
                     <path d="M50 80 L65 140 H135 L150 80" stroke="var(--text-muted)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
                     <path d="M40 80 H160" stroke="var(--text-muted)" stroke-width="4" stroke-linecap="round" />
-                    
+
                     <circle cx="130" cy="65" r="28" stroke="var(--primary)" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
-                    
+
                     <g class="search-glass">
                         <circle cx="130" cy="65" r="16" stroke="var(--accent)" stroke-width="3.5" fill="var(--bg-card)"/>
                         <path d="M142 77 L158 93" stroke="var(--accent)" stroke-width="3.5" stroke-linecap="round"/>
@@ -861,7 +946,7 @@ function renderProducts(products, options = {}) {
                 </button>
             </div>
         `;
-        
+
         const clearBtn = document.getElementById('empty-state-clear-btn');
         if (clearBtn) {
             clearBtn.addEventListener('click', resetAllFiltersAndSearch);
@@ -873,24 +958,28 @@ function renderProducts(products, options = {}) {
 
     products.forEach((p, i) => {
         state.products.push(p);
+        const title = p.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(p.category || '');
+        const safeDescription = escapeHtml(p.description || 'No description available.');
         const card = document.createElement('div');
         card.className = p.image ? 'product-card' : 'product-card product-card--skeleton';
         card.style.animationDelay = `${i * 50}ms`;
-        const isChecked = state.heatmapSelected.includes(p.title);
+        const isChecked = state.heatmapSelected.includes(title);
         card.innerHTML = `
            <div class="product-card__image">
-            <button class="wishlist-btn" data-title="${p.title}">
-                ${isWishlisted(p.title) ? '❤️' : '🤍'}
+            <button class="wishlist-btn" data-title="${safeTitle}">
+                ${isWishlisted(title) ? '❤️' : '🤍'}
             </button>
 
             ${categoryIcon(p.category)}
             </div>
             <div class="product-card__body">
-                ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title" title="${p.title || 'Untitled'}">
-                ${p.title || 'Untitled'}
+                ${p.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title" title="${safeTitle}">
+                ${safeTitle}
                 </h3>
-                <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__price">
                 ₹${p.price || 0}
                 </div>
@@ -904,20 +993,20 @@ function renderProducts(products, options = {}) {
             </div>
             <div class="product-card__actions">
                 <label class="compare-label">
-                    <input type="checkbox" class="compare-checkbox" data-title="${p.title}" ${isChecked ? 'checked' : ''}>
+                    <input type="checkbox" class="compare-checkbox" data-title="${safeTitle}" ${isChecked ? 'checked' : ''}>
                     Heatmap
                 </label>
                 <label class="compare-label">
-                    <input type="checkbox" class="side-compare-checkbox" data-title="${p.title}">
+                    <input type="checkbox" class="side-compare-checkbox" data-title="${safeTitle}">
                     Compare
                 </label>
-                <button class="btn--add-cart" data-title="${p.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     Get Recommendations
                 </button>
             </div>
         `;
         if (p.image) {
-            const imgEl = createLazyImage(p.image, p.title);
+            const imgEl = createLazyImage(p.image, title);
             card.querySelector('.product-card__image').appendChild(imgEl);
         }
 
@@ -939,7 +1028,7 @@ function renderProducts(products, options = {}) {
             e.stopPropagation();
             toggleWishlist(p);
             });
-    
+
             const title = e.target.dataset.title;
             loadRecommendations(title);
             toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
@@ -978,7 +1067,7 @@ function renderProducts(products, options = {}) {
         }
 
         card.addEventListener('click', () => {
-            loadRecommendations(p.title);
+            loadRecommendations(title);
         });
 
         fragment.appendChild(card);
@@ -1056,24 +1145,25 @@ async function fallbackRecommendationRequest(title) {
 }
 
 function renderRecommendations(data) {
-    const recs = data.recommendations || [];
+    const recs = data.results || data.recommendations || [];
 
     els.recsLoader.hidden = true;
     els.recsStrip.hidden = false;
 
     if (!recs.length) {
-    els.recsStrip.innerHTML = `
-        <div class="empty-recommendations">
-            <span class="empty-icon" aria-hidden="true">🔍</span>
-            <p>No recommendations found. Try a different product!</p>
-        </div>
-    `;
-    return;
-}
+        els.recsStrip.innerHTML = "";
+        document.getElementById("empty-state").hidden = false;
+        return;
+    }
 
-    els.recsStrip.innerHTML = recs.map((r) => `
-        <div class="rec-card" data-title="${r.title}">
-            <div class="rec-card__title">${r.title}</div>
+    document.getElementById("empty-state").hidden = true;
+
+    els.recsStrip.innerHTML = recs.map((r) => {
+        const title = r.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        return `
+        <div class="rec-card" data-title="${safeTitle}">
+            <div class="rec-card__title">${safeTitle}</div>
             <div class="rec-card__rating">
                 <div class="star-rating">${renderStars(r.rating || 0)}</div>
                 <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
@@ -1084,7 +1174,8 @@ function renderRecommendations(data) {
                 · Collab: ${(r.collab_score || 0).toFixed(2)}
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
 
     els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
         card.addEventListener('click', () => {
@@ -1109,12 +1200,29 @@ async function loadRecommendations(title) {
     els.recsSection.hidden = false;
     setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
+    document
+.getElementById(
+"empty-state"
+)
+.hidden=true;
+
+els.recsStrip.innerHTML=`
+<div class="recommendation-loading">
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+</div>
+`;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
 
     try {
         const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         els.recsLoader.hidden = true;
         els.recsStrip.hidden = false;
@@ -1146,7 +1254,13 @@ async function handleUpload(file) {
     form.append('file', file);
 
     try {
-        const res = await fetch('/api/upload', { method: 'POST', body: form });
+        // FormData POST — Content-Type is set automatically by the browser.
+        // We only inject the CSRF header manually.
+        const res = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { ..._csrfHeaders() },
+            body: form,
+        });
         if (!res.ok) throw new Error('Upload failed');
         const data = await res.json();
         toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
@@ -1231,22 +1345,49 @@ async function handleWeightChange() {
     } catch {}
 }
 
-function populateCategoryFilter(products) {
+async function openProductModal(product) {
+    els.modalProductTitle.textContent = product.title || 'Untitled';
 
-    const categories = [...new Set(
-        products
-            .map(p => p.category)
-            .filter(Boolean)
-    )];
+    els.modalProductCategory.textContent =
+        `Category: ${product.category || 'Unknown'}`;
 
-    els.categoryFilter.innerHTML = `
-        <option value="">All Categories</option>
-        ${categories.map(cat =>
-            `<option value="${cat}">${cat}</option>`
-        ).join('')}
-    `;
+    els.modalProductRating.textContent =
+        `Rating: ${(product.rating || 0).toFixed(1)}`;
+
+    els.modalProductSentiment.textContent =
+        `Sentiment: ${(product.avg_sentiment || 0).toFixed(2)}`;
+
+    els.modalProductDescription.textContent =
+        product.description || 'No description available.';
+
+    els.modalProductScore.textContent =
+        (product.hybrid_score || 0).toFixed(3);
+
+    els.modalRecommendationsList.innerHTML =
+        '<li>Loading recommendations...</li>';
+
+    els.productModal.hidden = false;
+
+    // Fetch top recommendations
+    try {
+        const data = await API.get(
+            `/api/recommend/${encodeURIComponent(product.title)}?top_n=5`
+        );
+
+        const recs = data.results || data.recommendations || [];
+
+        els.modalRecommendationsList.innerHTML = recs.map((r) => `
+            <li>${r.title}</li>
+        `).join('');
+    } catch {
+        els.modalRecommendationsList.innerHTML =
+            '<li>No recommendations available.</li>';
+    }
 }
 
+function closeProductModal() {
+    els.productModal.hidden = true;
+}
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
@@ -1401,7 +1542,6 @@ function renderHeatmap(labels, matrix) {
 
 // ── Infinite Scroll (Intersection Observer) ─────────────────────────
 function setupScrollObserver() {
-    try{
     // Tear down any previous observer to avoid duplicates / leaks
     destroyScrollObserver();
 
@@ -1420,90 +1560,62 @@ function setupScrollObserver() {
             threshold: 0,
         }
     );
-    
+
     state.scrollObserver.observe(els.scrollSentinel);
 }
 
-function destroyScrollObserver() {
-    if (state.scrollObserver) {
-        state.scrollObserver.disconnect();
-        state.scrollObserver = null;
-    }
-}
-
-function addToSearchHistory(query) {
-    if (!state.searchHistory) state.searchHistory = [];
-    state.searchHistory = [query, ...state.searchHistory.filter(q => q !== query)].slice(0, 10);
-    renderSearchHistory();
-}
-
-function renderSearchHistory() {
-    if (!state.searchHistory || !state.searchHistory.length) {
-        els.searchHistory.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted);font-size:13px;">No search history</div>';
+// ── Search ──────────────────────────────────────────────────────────
+async function handleSearch(query) {
+    if (!query || query.length < 1) {
+        els.typingIndicator.hidden = true;
+        closeSearchDropdown();
         return;
     }
 
-    els.searchHistory.innerHTML = `
-        <div class="search-history__list">
-            ${state.searchHistory.map(query => `
-                <div class="search-history__item" data-query="${query}">
-                    <span style="font-size:14px;">🕐</span>
-                    <span>${query}</span>
-                </div>
-            `).join('')}
-        </div>
-        <button id="clear-history-btn" class="btn btn--link" style="width:100%;padding:12px;border-top:1px solid var(--border);border-radius:0;font-size:12px;">
-            Clear History
-        </button>
-    `;
-    
-    els.searchHistory.classList.add('active');
-
-    // Click history item
-    els.searchHistory.querySelectorAll('.search-history__item')
-        .forEach((el) => {
-            el.addEventListener('click', () => {
-                const query = el.dataset.query;
-                els.searchInput.value = query;
-                loadSearchResults(query);
-                handleSearch(query);
-            });
-        });
-
-    // Clear history
-    const clearBtn = document.getElementById('clear-history-btn');
-
-    if (clearBtn) {
-        clearBtn.addEventListener('click', () => {
-            state.searchHistory = [];
-            renderSearchHistory();
-        });
-    }
+    clearTimeout(state.searchTimer);
+    els.typingIndicator.hidden = false;
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
+            state.searchResults = data.results || [];
+            state.selectedSearchIdx = -1;
+            renderSearchDropdown(state.searchResults, query);
+            els.typingIndicator.hidden = true;
+        } catch {
+            closeSearchDropdown();
+            els.typingIndicator.hidden = true;
+        }
+    }, 300);
 }
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
         els.searchDropdown.innerHTML = `
             <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
-                No results for "${query}"
+                No results for "${escapeHtml(query)}"
             </div>`;
         els.searchDropdown.classList.add('active');
         return;
     }
 
-    els.searchDropdown.innerHTML = results.map((r, i) => `
+    els.searchDropdown.innerHTML = results.map((r, i) => {
+        const title = r.title || '';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(r.category || '');
+        return `
         <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
-             data-title="${r.title}" data-idx="${i}">
+             data-title="${safeTitle}" data-idx="${i}">
             <span style="font-size:20px;">${categoryIcon(r.category)}</span>
             <div class="search-result__info">
-                <div class="search-result__title">${highlightMatch(r.title, query)}</div>
+                <div class="search-result__title">${highlightMatch(title, query)}</div>
                 <div class="search-result__meta">
                     ★ ${(r.rating || 0).toFixed(1)}
                     ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
                 </div>
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
     els.searchDropdown.classList.add('active');
 
     // Click handlers
@@ -1516,9 +1628,11 @@ function renderSearchDropdown(results, query) {
 }
 
 function highlightMatch(text, query) {
-    if (!query) return text;
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<strong>$1</strong>');
+    const safeText = escapeHtml(text);
+    if (!query) return safeText;
+    const safeQuery = escapeHtml(query);
+    const regex = new RegExp(`(${safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return safeText.replace(regex, '<strong>$1</strong>');
 }
 
 function selectSearchResult(title) {
@@ -1558,7 +1672,7 @@ function handleSearchKeydown(e) {
 async function loadProducts(append = false) {
     if (!append) {
         els.productGrid.innerHTML = '';
-        els.skeletonLoader.hidden = false;
+        els.skeletonLoader.hidden = true;
         state.page = 1;
     }
 
@@ -1598,9 +1712,10 @@ async function loadSearchResults(query) {
         const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
         const products = data.results || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
         renderProducts(products, false);
+        els.searchInput.select();
         els.productGrid.classList.remove('fade-in');
 
         requestAnimationFrame(() => {
@@ -1625,27 +1740,39 @@ function renderProducts(products, append) {
         );
     filteredProducts.forEach((p, i) => {
         state.products.push(p);
+        const title = p.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(p.category || '');
+        const safeDescription = escapeHtml(p.description || 'No description available.');
+        const safeImage = escapeHtml(p.image || '');
         const card = document.createElement('div');
         card.className = 'product-card';
         card.style.animationDelay = `${i * 50}ms`;
         card.innerHTML = `
             <div class="product-card__image">
-                ${categoryIcon(p.category)}
+            ${
+                !p.image || p.image === 'undefined'
+                ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
+                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" />`
+             }
             </div>
             <div class="product-card__body">
-                ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                ${p.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title">${safeTitle}</h3>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
                         <span class="rating-value">${(p.rating || 0).toFixed(1)}</span>
                     </div>
+                    <div class="product-review-count">
+                        ${formatReviewCount(p.review_count)}
+                    </div>
                     ${sentimentBadge(p.avg_sentiment || 0)}
                 </div>
             </div>
             <div class="product-card__actions">
-                <button class="btn--add-cart" data-title="${p.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     Get Recommendations
                 </button>
             </div>
@@ -1660,7 +1787,7 @@ function renderProducts(products, append) {
         });
 
         card.addEventListener('click', () => {
-            loadRecommendations(p.title);
+            openProductModal(p);
         });
 
         fragment.appendChild(card);
@@ -1686,16 +1813,19 @@ async function loadRecommendations(title) {
 
     try {
         const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         if (!recs.length) {
             els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
             return;
         }
 
-        els.recsStrip.innerHTML = recs.map((r) => `
-            <div class="rec-card" data-title="${r.title}">
-                <div class="rec-card__title">${r.title}</div>
+        els.recsStrip.innerHTML = recs.map((r) => {
+            const title = r.title || 'Untitled';
+            const safeTitle = escapeHtml(title);
+            return `
+            <div class="rec-card" data-title="${safeTitle}">
+                <div class="rec-card__title">${safeTitle}</div>
                 <div class="rec-card__rating">
                     <div class="star-rating">${renderStars(r.rating || 0)}</div>
                     <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
@@ -1706,7 +1836,8 @@ async function loadRecommendations(title) {
                     · Collab: ${(r.collab_score || 0).toFixed(2)}
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
 
         // Click to chain recommendations
         els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
@@ -1722,167 +1853,7 @@ async function loadRecommendations(title) {
     }
 }
 
-// ── Upload & Build ──────────────────────────────────────────────────
-async function handleUpload(file) {
-    toast(`Uploading ${file.name}...`, 'info');
-    const form = new FormData();
-    form.append('file', file);
 
-    try {
-        const res = await fetch('/api/upload', { method: 'POST', body: form });
-        if (!res.ok) throw new Error('Upload failed');
-        const data = await res.json();
-        toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
-        checkStatus();
-    } catch (err) {
-        toast('Upload failed: ' + err.message, 'error');
-    }
-}
-
-async function handleBuild() {
-    els.buildBtn.disabled = true;
-    els.buildBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin">
-            <path d="M21 12a9 9 0 11-6.219-8.56"/>
-        </svg>
-        Building...`;
-
-    try {
-        const data = await API.post('/api/build', {});
-        state.modelReady = true;
-        toast(`Models built in ${data.build_time_seconds}s — ${data.items?.toLocaleString()} items`, 'success');
-        updateStatus('ready', `Ready — ${data.items?.toLocaleString()} products`);
-        loadProducts();
-    } catch (err) {
-        toast('Build failed: ' + err.message, 'error');
-    } finally {
-        els.buildBtn.disabled = false;
-        els.buildBtn.innerHTML = `
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-            </svg>
-            Build Models`;
-    }
-}
-
-// ── Status ──────────────────────────────────────────────────────────
-async function checkStatus() {
-    try {
-        const data = await API.get('/api/status');
-        const count = data.product_count || 0;
-
-        if (data.model_ready) {
-            state.modelReady = true;
-            updateStatus('ready', `Ready — ${count.toLocaleString()} products`);
-            loadProducts();
-        } else if (count > 0) {
-            updateStatus('has-data', `${count.toLocaleString()} products — Build models to start`);
-            loadProducts();
-        } else {
-            updateStatus('', 'No data — Upload a CSV or JSON dataset');
-            els.skeletonLoader.hidden = true;
-            els.productGrid.innerHTML = `
-                <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
-                    <div style="font-size:48px;margin-bottom:16px;">📦</div>
-                    <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">No products yet</div>
-                    <div style="font-size:13px;">Upload a CSV or JSON dataset to get started</div>
-                </div>`;
-        }
-    } catch {
-        updateStatus('error', 'Backend offline');
-    }
-}
-
-function updateStatus(cls, text) {
-    els.statusDot.className = `status-dot ${cls}`;
-    els.statusText.textContent = text;
-}
-
-// ── Weight Controls ─────────────────────────────────────────────────
-async function handleWeightChange() {
-    const a = parseInt(els.weightAlpha.value);
-    const b = parseInt(els.weightBeta.value);
-    const g = parseInt(els.weightGamma.value);
-
-    try {
-        await API.put('/api/weights', { alpha: a / 100, beta: b / 100, gamma: g / 100 });
-    } catch {}
-}
-
-// ── Event Listeners ─────────────────────────────────────────────────
-function bindEvents() {
-    // Search
-    els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
-    els.searchInput.addEventListener('keydown', handleSearchKeydown);
-    els.searchInput.addEventListener('focus', () => {
-    if (els.searchInput.value) {
-        handleSearch(els.searchInput.value);
-    } else {
-        renderSearchHistory();
-    }
-});
-    els.categoryFilter.addEventListener('change', (e) => {
-    state.selectedCategory = e.target.value;
-
-    if (els.searchInput.value.trim()) {
-        loadSearchResults(els.searchInput.value);
-    } else {
-        loadProducts();
-    }
-});
-
-    // Close dropdown on outside click
-    document.addEventListener('click', (e) => {
-       if (!e.target.closest('.header__search')) {
-    closeSearchDropdown();
-    els.searchHistory.classList.remove('active');
-}
-});
-
-    // Auth
-    els.authBtn.addEventListener('click', () => {
-        if (state.isGuest) {
-            els.authModal.hidden = false;
-        } else {
-            // Logged in → sign out
-            sbClient.auth.signOut().then(() => {
-                state.user = null;
-                state.isGuest = true;
-                els.authLabel.textContent = 'Sign In';
-                toast('Signed out', 'info');
-                initAuth(); // Re-login as guest
-            });
-        }
-    });
-
-    els.authForm.addEventListener('submit', handleAuth);
-    els.authToggleBtn.addEventListener('click', toggleAuthMode);
-    els.modalClose.addEventListener('click', () => { els.authModal.hidden = true; });
-    els.authModal.addEventListener('click', (e) => {
-        if (e.target === els.authModal) els.authModal.hidden = true;
-    });
-
-    // Upload
-    els.uploadBtn.addEventListener('click', () => els.fileInput.click());
-    els.fileInput.addEventListener('change', (e) => {
-        if (e.target.files[0]) handleUpload(e.target.files[0]);
-        e.target.value = '';
-    });
-
-    // Build
-    els.buildBtn.addEventListener('click', handleBuild);
-
-    // Load more
-    els.loadMoreBtn.addEventListener('click', () => {
-        state.page++;
-        loadProducts(true);
-    });
-
-    // Weights
-    [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
-        slider.addEventListener('change', handleWeightChange);
-    });
-}
 
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
@@ -1892,7 +1863,13 @@ document.head.appendChild(spinStyle);
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
+    initDebugMode();
+    loadSavedWeights();
     initTypeToSearch();
+    initFilterChips();
+
+    // Fetch CSRF token first — must complete before any mutating request.
+    await initCsrf();
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
@@ -1921,4 +1898,122 @@ async function loadCategories() {
     }
 }
 
+// Store previous scroll position
+let previousScrollPosition = 0;
+
+// Create back button dynamically
+const backButton = document.createElement("button");
+backButton.id = "backToResultsBtn";
+backButton.innerHTML = "← Back to Results";
+document.body.appendChild(backButton);
+
+// Hide initially
+backButton.style.display = "none";
+
+// Product grid container
+const productGrid = document.querySelector(".product-grid");
+
+// Example function when opening product detail
+function openProductDetail(productId) {
+    // Save current scroll position
+    previousScrollPosition = window.scrollY;
+
+    // Open detail logic
+    const detailView = document.querySelector(".product-detail");
+    detailView.classList.add("active");
+
+    // Show button
+    backButton.style.display = "flex";
+}
+
+// Close detail function
+function closeProductDetail() {
+    const detailView = document.querySelector(".product-detail");
+    detailView.classList.remove("active");
+
+    // Hide button
+    backButton.style.display = "none";
+
+    // Restore scroll position smoothly
+    window.scrollTo({
+        top: previousScrollPosition,
+        behavior: "smooth"
+    });
+}
+
+// Back button click
+backButton.addEventListener("click", () => {
+    closeProductDetail();
+});
+
+// Example existing product card click listeners
+document.querySelectorAll(".product-card").forEach(card => {
+    card.addEventListener("click", () => {
+        const productId = card.dataset.id;
+        openProductDetail(productId);
+    });
+});
+
 document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', init);
+
+// ── Language Toggle ─────────────────────────────────────────────────
+let currentLang = 'EN';
+
+function toggleLanguage() {
+    currentLang = currentLang === 'EN' ? 'HI' : 'EN';
+    document.getElementById('lang-toggle').textContent = currentLang;
+
+    if (currentLang === 'HI') {
+        document.getElementById('search-input').placeholder = 'हिंदी में खोजें...';
+        document.getElementById('hindi-indicator').style.display = 'inline';
+        document.getElementById('search-shortcut').style.display = 'none';
+    } else {
+        document.getElementById('search-input').placeholder = 'Search products...';
+        document.getElementById('hindi-indicator').style.display = 'none';
+        document.getElementById('search-shortcut').style.display = 'block';
+    }
+}
+
+// -- Filter Chips ----------------------------------------------------
+function initFilterChips() {
+    const chipsContainer = document.getElementById('filter-chips');
+    if (!chipsContainer) return;
+
+    const chips = chipsContainer.querySelectorAll('.chip');
+
+    chips.forEach(chip => {
+        chip.addEventListener('click', (e) => {
+            const filterVal = e.currentTarget.dataset.filter;
+
+            if (filterVal === 'all') {
+                state.activeChips.clear();
+                state.activeChips.add('all');
+            } else {
+                state.activeChips.delete('all');
+
+                if (state.activeChips.has(filterVal)) {
+                    state.activeChips.delete(filterVal);
+                } else {
+                    state.activeChips.add(filterVal);
+                }
+
+                if (state.activeChips.size === 0) {
+                    state.activeChips.add('all');
+                }
+            }
+
+            // Update UI
+            chips.forEach(c => {
+                if (state.activeChips.has(c.dataset.filter)) {
+                    c.classList.add('active');
+                } else {
+                    c.classList.remove('active');
+                }
+            });
+
+            // Re-render
+            renderProducts(state.allProducts, false);
+        });
+    });
+}
