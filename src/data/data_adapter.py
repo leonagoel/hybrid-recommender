@@ -137,6 +137,9 @@ def detect_column(columns, keywords):
     for key in keywords:
         for col in columns:
             if key in col.lower():
+                # Avoid false positive where customer_rating is matched as user column
+                if key == 'customer' and ('rating' in col.lower() or 'score' in col.lower()):
+                    continue
                 return col
                 
     return None
@@ -391,9 +394,7 @@ def adapt_data(df):
         ['purchases', 'orders', 'bought', 'transactions']
     )
 
-    is_interaction_data = (
-        user_col is not None or rating_col is not None or item_id_col is not None
-    )
+    is_interaction_data = user_col is not None
     if is_interaction_data:
         validate_recommender_inputs(
             df,
