@@ -153,12 +153,13 @@ body {
     flex: 1;
     max-width: 640px;
     position: relative;
+    min-width: 240px;
 }
 
 .header__search .search-icon {
     position: absolute;
     left: 14px;
-    top: 50%;
+    top: 21px;
     transform: translateY(-50%);
     color: var(--text-muted);
     pointer-events: none;
@@ -168,7 +169,7 @@ body {
 #search-input {
     width: 100%;
     height: 42px;
-    padding: 0 44px;
+    padding: 0 96px 0 44px;
     border: 2px solid transparent;
     border-radius: var(--radius-full);
     background: rgba(255,255,255,0.12);
@@ -181,6 +182,7 @@ body {
 
 #search-input::placeholder {
     color: rgba(255,255,255,0.45);
+    transition: opacity 160ms ease;
 }
 
 #search-input:focus {
@@ -188,10 +190,14 @@ body {
     border-color: var(--accent);
 }
 
+#search-input:focus::placeholder {
+    opacity: 0;
+}
+
 .search-shortcut {
     position: absolute;
-    right: 14px;
-    top: 50%;
+    right: 48px;
+    top: 21px;
     transform: translateY(-50%);
     font-size: 11px;
     color: rgba(255,255,255,0.35);
@@ -331,6 +337,13 @@ body {
     flex-shrink: 0;
     display: flex;
     align-items: center;
+    gap: 10px;
+}
+
+.hindi-indicator {
+    color: rgba(255,255,255,0.62);
+    font-size: 12px;
+    white-space: nowrap;
 }
 
 /* ── Buttons ─────────────────────────────────────────────────────── */
@@ -1700,12 +1713,18 @@ RESPONSIVE FIX
 
 /* Search history dropdown (issue #22) */
 .history-btn {
+  position: absolute;
+  right: 12px;
+  top: 21px;
+  transform: translateY(-50%);
+  z-index: 3;
   background: none;
   border: none;
   font-size: 1.2rem;
   cursor: pointer;
   padding: 0 8px;
   color: var(--text-muted);
+  line-height: 1;
   transition: var(--transition);
 }
 .history-btn:hover {

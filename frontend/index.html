@@ -21,7 +21,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="/static/styles.css">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
@@ -38,22 +38,19 @@
                 <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
-                <input type="text" id="search-input" placeholder="Search products..." autocomplete="off" spellcheck="false">
+                <input type="text" id="search-input" aria-label="Search products" placeholder="Search for products..." autocomplete="off" spellcheck="false">
                 <div class="search-char-counter" id="search-char-counter" style="display: none;">0/100</div>
-                <input type="text" id="search-input" aria-label="Search products" placeholder="Search products..." autocomplete="off" spellcheck="false">
                 
                 <!-- Search history button and dropdown (issue #22) -->
                 <button id="search-history-btn" class="history-btn" aria-label="Search history">⏱️</button>
                 <div id="search-history-dropdown" class="search-history-dropdown" style="display: none;">
                     <div class="history-header">
                         <span>Recent Searches</span>
-                        <button id="clear-history-btn" class="clear-history-btn">Clear</button>
+                        <button id="clear-search-history-btn" class="clear-history-btn">Clear</button>
                     </div>
                     <ul id="history-list"></ul>
                 </div>
 
-                <button id="lang-toggle" class="btn btn--ghost" onclick="toggleLanguage()">EN</button>
-                <span id="hindi-indicator" style="display:none; color: #888; font-size: 12px;">Searching in Hindi</span>
                 <span class="search-shortcut" id="search-shortcut">Press / to search</span>
                 <div class="search-dropdown" id="search-dropdown"></div>
                 <div class="typing-indicator" id="typing-indicator" hidden>
@@ -63,6 +60,8 @@
             </div>
             </div>
             <div class="header__actions">
+                <button id="lang-toggle" class="btn btn--ghost" onclick="toggleLanguage()">EN</button>
+                <span id="hindi-indicator" class="hindi-indicator" hidden>Searching in Hindi</span>
                 <a href="/static/wishlist.html" class="btn btn--outline btn--sm wishlist-btn">
                     ❤️ Wishlist
                 </a>
@@ -337,7 +336,6 @@
         <img src="https://gssoc.girlscript.tech/badges/postman.png" alt="GSSoC Badge" class="gssoc-badge" />
     </div>
 
-    <script src="app.js"></script>
     <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
   </div>
 </footer>

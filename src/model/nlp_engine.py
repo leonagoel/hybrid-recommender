@@ -6,15 +6,24 @@ import nltk
 import pandas as pd
 import numpy as np
 
-# Download VADER lexicon (only on first run)
-try:
-    nltk.data.find('sentiment/vader_lexicon.zip')
-except LookupError:
-    nltk.download('vader_lexicon', quiet=True)
-
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-_analyzer = SentimentIntensityAnalyzer()
+_analyzer = None
+
+
+def get_analyzer():
+    global _analyzer
+
+    if _analyzer is not None:
+        return _analyzer
+
+    try:
+        nltk.data.find('sentiment/vader_lexicon.zip')
+    except LookupError:
+        nltk.download('vader_lexicon', quiet=True)
+
+    _analyzer = SentimentIntensityAnalyzer()
+    return _analyzer
 
 
 def analyze_sentiment(text: str) -> float:
@@ -27,7 +36,7 @@ def analyze_sentiment(text: str) -> float:
     """
     if not text or not isinstance(text, str) or text.strip() == '':
         return 0.0
-    scores = _analyzer.polarity_scores(text)
+    scores = get_analyzer().polarity_scores(text)
     return scores['compound']
 
 

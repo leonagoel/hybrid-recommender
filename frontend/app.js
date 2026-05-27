@@ -1944,7 +1944,7 @@ function toggleLanguage() {
         document.getElementById('hindi-indicator').style.display = 'inline';
         document.getElementById('search-shortcut').style.display = 'none';
     } else {
-        document.getElementById('search-input').placeholder = 'Search products...';
+        document.getElementById('search-input').placeholder = 'Search for products...';
         document.getElementById('hindi-indicator').style.display = 'none';
         document.getElementById('search-shortcut').style.display = 'block';
     }

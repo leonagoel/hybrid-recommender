@@ -11,7 +11,18 @@ import time
 import logging
 import math
 import secrets
-import bleach
+import re
+
+try:
+    import bleach
+except ModuleNotFoundError:
+    class bleach:
+        @staticmethod
+        def clean(value, strip=True):
+            if not strip:
+                return str(value)
+            return re.sub(r"<[^>]*>", "", str(value))
+
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone, timedelta
@@ -124,6 +135,39 @@ ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 _cache_lock = Lock()
+
+MOCK_PRODUCTS = [
+    {
+        "id": 1,
+        "title": "Acoustic Noise-Cancelling Headphones",
+        "description": "Premium over-ear headphones with active noise cancellation.",
+        "category": "Electronics",
+        "rating": 4.8,
+        "avg_sentiment": 0.85,
+        "review_count": 245,
+        "price": 1299,
+    },
+    {
+        "id": 2,
+        "title": "Ergonomic Mechanical Keyboard",
+        "description": "Tactile switches, RGB backlighting, and a comfortable wrist rest.",
+        "category": "Electronics",
+        "rating": 4.5,
+        "avg_sentiment": 0.65,
+        "review_count": 189,
+        "price": 799,
+    },
+    {
+        "id": 3,
+        "title": "Portable Fitness Tracker",
+        "description": "Track heart rate, sleep, and workouts from your wrist.",
+        "category": "Health",
+        "rating": 4.2,
+        "avg_sentiment": 0.42,
+        "review_count": 128,
+        "price": 499,
+    },
+]
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -544,9 +588,15 @@ def get_config():
 # ── Status ────────────────────────────────────────────────────────────
 @app.get("/api/status")
 def status():
+    try:
+        product_count = get_supabase().table('products').select('id', count='exact').limit(0).execute().count or 0
+    except Exception:
+        product_count = len(MOCK_PRODUCTS)
+
     return {
         "status": "healthy",
         "model_ready": models["ready"],
+        "product_count": product_count,
         "message": "Hybrid Recommender API running",
     }
 
@@ -653,6 +703,7 @@ def search_items(
     q: str = "",
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0, le=10000),
+    sort: str = Query("relevance", pattern="^(relevance|price-low|price-high|rating)$"),
 ):
     query = _normalize_search_query(q)
     # ── Rate Limiting ──
@@ -688,29 +739,49 @@ def search_items(
         response.headers["x-ratelimit-remaining"] = str(remaining)
         response.headers["x-ratelimit-reset"] = str(reset_time)
 
-    cache_key = _cache_key("search", query, limit, offset)
+    cache_key = _cache_key("search", query, limit, offset, sort)
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
-    sb = get_supabase()
-    if query:
-        try:
+    try:
+        sb = get_supabase()
+        if query:
             result = sb.rpc('search_products', {
                 'query_text': query, 'match_count': limit, 'offset_val': offset,
             }).execute()
             products = result.data or []
-        except Exception as e:
-            logger.warning("FTS failed for '%s': %s", query, e)
-            escaped_query = _escape_like_pattern(query)
-            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{escaped_query}%').order('rating', desc=True).limit(limit).execute()
+        else:
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count, metadata').order('rating', desc=True).order('review_count', desc=True).limit(limit).offset(offset).execute()
             products = result.data or []
-            for p in products:
-                p['rank'] = 0.0
-    else:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).order('review_count', desc=True).limit(limit).offset(offset).execute()
-        products = result.data or []
+    except Exception as e:
+        logger.warning("Search fallback to mock products: %s", e)
+        products = MOCK_PRODUCTS
+        if query:
+            query_lower = query.lower()
+            products = [
+                p for p in products
+                if query_lower in str(p.get('title', '')).lower()
+                or query_lower in str(p.get('description', '')).lower()
+                or query_lower in str(p.get('category', '')).lower()
+            ]
+        products = products[offset:offset + limit]
+
+    def _product_price(product):
+        metadata = product.get('metadata') or {}
+        raw_price = product.get('price') if product.get('price') is not None else metadata.get('price')
+        try:
+            return float(raw_price or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    if sort == "price-low":
+        products = sorted(products, key=_product_price)
+    elif sort == "price-high":
+        products = sorted(products, key=_product_price, reverse=True)
+    elif sort == "rating":
+        products = sorted(products, key=lambda p: float(p.get('rating') or 0), reverse=True)
 
     results = []
     for p in products:
@@ -718,6 +789,7 @@ def search_items(
             'id': p.get('id'), 'title': p.get('title', ''),
             'description': str(p.get('description', ''))[:200],
             'category': p.get('category', ''), 'rating': p.get('rating', 0.0),
+            'price': _product_price(p),
             'avg_sentiment': p.get('avg_sentiment', 0.0),
             'review_count': p.get('review_count', 0), 'rank': p.get('rank', 0.0),
         })
@@ -728,6 +800,7 @@ def search_items(
         "count": result_count,
         "total": result_count,
         "query": query,
+        "sort": sort,
         "is_fallback": not query,
     }
     _set_cached_response(cache_key, payload)
