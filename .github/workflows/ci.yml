@@ -1,4 +1,4 @@
-name: CI — Lint & Smoke Test
+name: CI — Lint, Smoke & E2E Testing Suite
 
 on:
   pull_request:
@@ -56,3 +56,34 @@ jobs:
           SUPABASE_URL: "https://placeholder.supabase.co"
           SUPABASE_ANON_KEY: "placeholder"
           SUPABASE_SERVICE_KEY: "placeholder"
+
+  # FIX FOR ISSUE #493: New automated job guarantees full test suite runs on every incoming PR
+  e2e-tests:
+    name: End-to-End API Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Project Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download NLTK data
+        run: |
+          python -c "import nltk; nltk.download('vader_lexicon')"
+
+      - name: Execute pytest Checkpoint
+        env:
+          SUPABASE_URL: "https://placeholder.supabase.co"
+          SUPABASE_ANON_KEY: "placeholder"
+          SUPABASE_SERVICE_KEY: "placeholder"
+          REDIS_URL: "redis://localhost:6379/0"
+          DATA_PATH: "data/products.csv"
+        run: |
+          pytest tests/test_e2e_api_suite.py -v --tb=short
