@@ -127,6 +127,9 @@ def preprocess_sentiment_data(df):
 
 def detect_column(columns, keywords):
     """Detect a column by matching against a list of keywords (case-insensitive)."""
+    if not keywords:
+        return None
+
     # First pass: exact matches
     for key in keywords:
         for col in columns:
