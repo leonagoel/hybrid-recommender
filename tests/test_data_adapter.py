@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.data.data_adapter import (
     detect_column,
     validate_dataframe,
+    validate_recommender_inputs,
     read_file,
     adapt_data,
     preprocess_books_data,
@@ -70,6 +71,68 @@ class TestValidateDataframe:
         df = pd.DataFrame({"a": [1, 2, 3]})
         with pytest.raises(ValueError, match="at least 2 columns"):
             validate_dataframe(df)
+
+
+class TestValidateRecommenderInputs:
+    """Test validate_recommender_inputs function."""
+
+    def test_valid_recommender_inputs(self):
+        """Test validation passes with correct columns and types."""
+        df = pd.DataFrame({
+            "user_id": ["u1", "u2"],
+            "item_id": ["i1", "i2"],
+            "rating": [5.0, 4.0]
+        })
+        assert validate_recommender_inputs(
+            df,
+            user_col="user_id",
+            item_id_col="item_id",
+            rating_col="rating"
+        ) is True
+
+    def test_missing_required_columns_raises(self):
+        """Test that missing required columns raise ValueError."""
+        df = pd.DataFrame({
+            "item_id": ["i1", "i2"],
+            "rating": [5.0, 4.0]
+        })
+        with pytest.raises(ValueError, match="missing required column"):
+            validate_recommender_inputs(
+                df,
+                user_col=None,
+                item_id_col="item_id",
+                rating_col="rating"
+            )
+
+    def test_blank_values_raises(self):
+        """Test that blank string values or nulls raise ValueError."""
+        df = pd.DataFrame({
+            "user_id": ["u1", "   "],
+            "item_id": ["i1", "i2"],
+            "rating": [5.0, 4.0]
+        })
+        with pytest.raises(ValueError, match="invalid value"):
+            validate_recommender_inputs(
+                df,
+                user_col="user_id",
+                item_id_col="item_id",
+                rating_col="rating"
+            )
+
+    def test_non_numeric_rating_raises(self):
+        """Test that non-numeric rating values raise ValueError."""
+        df = pd.DataFrame({
+            "user_id": ["u1", "u2"],
+            "item_id": ["i1", "i2"],
+            "rating": ["five", "4.0"]
+        })
+        with pytest.raises(ValueError, match="must be numeric"):
+            validate_recommender_inputs(
+                df,
+                user_col="user_id",
+                item_id_col="item_id",
+                rating_col="rating"
+            )
 
 
 class TestReadFile:

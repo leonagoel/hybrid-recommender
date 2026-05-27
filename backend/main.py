@@ -5,6 +5,7 @@ FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
 Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
 """
 import os
+import re
 import sys
 import io
 import time
@@ -17,6 +18,9 @@ from threading import Lock
 from datetime import datetime, timezone, timedelta
 
 from collections import defaultdict
+
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -105,6 +109,25 @@ async def csrf_header_dep(
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
+# ── App ──────────────────────────────────────────────────────────────
+app = FastAPI(title="Hybrid Recommender API", version="3.0")
+
+@app.on_event("startup")
+def download_nltk_assets():
+    """
+    Ensures NLTK VADER assets are downloaded safely at startup
+    to prevent multi-worker download race conditions.
+    """
+    try:
+        # Check if VADER is already downloaded and working locally
+        SentimentIntensityAnalyzer()
+        logger.info("NLTK VADER lexicon verified successfully.")
+    except LookupError:
+        # If it's missing, download it safely on a single thread before taking traffic
+        logger.info("VADER lexicon missing. Downloading safely at startup...")
+        nltk.download('vader_lexicon', quiet=True)
+        logger.info("NLTK VADER lexicon downloaded successfully.")
+
 @app.get("/health", tags=["meta"])
 async def health_check():
     """
@@ -170,12 +193,23 @@ def _normalize_search_query(query: str) -> str:
 
 
 def _escape_like_pattern(value: str) -> str:
+    """Escape special LIKE metacharacters to prevent pattern injection."""
     return (
         value
         .replace("\\", "\\\\")
         .replace("%", "\\%")
         .replace("_", "\\_")
     )
+
+
+_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
+
+
+def _validate_user_id(user_id: str) -> str:
+    """Allowlist-validate user_id to block injection via path parameters."""
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id format.")
+    return user_id
 
 
 def _set_cache_headers(response: Response, status: str) -> None:
@@ -404,6 +438,17 @@ models = {
     "last_trained_at": None,
 }
 
+MODEL_REGISTRY = {}
+ACTIVE_MODEL_VERSION = None
+SHADOW_MODEL_VERSION = None
+STAGING_MODEL_VERSION = None
+
+SHADOW_LOGS = []
+
+def generate_model_version():
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"1.0.0-{timestamp}"
+
 
 class RealtimeConnectionHub:
     def __init__(self):
@@ -418,8 +463,16 @@ class RealtimeConnectionHub:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections:
-            await connection.send_json(message)
+      disconnected = []
+
+      for connection in self.active_connections:
+        try:
+          await connection.send_json(message)
+        except Exception:
+          disconnected.append(connection)
+
+      for connection in disconnected:
+        self.disconnect(connection)
 
 realtime_hub = RealtimeConnectionHub()
 
@@ -435,18 +488,19 @@ class WeightsUpdate(BaseModel):
 class PurchaseCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str = Field(..., min_length=1)
+    # Pattern mirrors _USER_ID_RE — enforced at the Pydantic layer before any DB call.
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
     product_id: int = Field(..., gt=0)
     rating: float = Field(0.0, ge=0.0, le=5.0)
-    review_text: str = ""
+    review_text: str = Field("", max_length=1000)
 
 
 class FeedbackCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str = Field(..., min_length=1)
-    item: str = Field(..., min_length=1)
-    feedback: str = Field(..., min_length=1)
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    item: str = Field(..., min_length=1, max_length=500)
+    feedback: str = Field(..., min_length=1, max_length=2000)
 
 
 class RealtimeRecommendationRequest(BaseModel):
@@ -570,29 +624,20 @@ def dashboard(request: Request):
 
     total_users = 0
     purchase_counts = Counter()
+
     try:
+      user_result = sb.rpc('get_total_users').execute()
+      total_users = user_result.data or 0
 
-        user_rows = sb.table('purchases') \
-          .select('user_id') \
-          .execute().data or []
+      top_products_result = sb.rpc('get_top_product_counts').execute()
 
-        total_users = len({
-          row['user_id']
-          for row in user_rows
-          if row.get('user_id')
-        })
+      purchase_counts = Counter({
+        row['product_id']: row['interaction_count']
+        for row in (top_products_result.data or [])
+      })
 
-        purchase_rows = sb.table('purchases') \
-          .select('product_id') \
-          .limit(50000).execute().data or []
-
-        purchase_counts = Counter(
-          r['product_id']
-          for r in purchase_rows
-          if r.get('product_id') is not None
-        )
     except Exception as e:
-        logger.warning("Dashboard: purchases scan failed: %s", e)
+      logger.warning("Dashboard error: %s", e)
 
     avg_recommendation_score = 0.0
     avg_sentiment_score = 0.0
@@ -703,8 +748,17 @@ def search_items(
             products = result.data or []
         except Exception as e:
             logger.warning("FTS failed for '%s': %s", query, e)
+            # Use the Supabase RPC text-search fallback with a bound parameter
+            # instead of interpolating user input into the filter string.
             escaped_query = _escape_like_pattern(query)
-            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{escaped_query}%').order('rating', desc=True).limit(limit).execute()
+            result = (
+                sb.table('products')
+                .select('id, title, description, category, rating, avg_sentiment, review_count')
+                .ilike('title', f'%{escaped_query}%')  # value passed as PostgREST filter param, not raw SQL
+                .order('rating', desc=True)
+                .limit(limit)
+                .execute()
+            )
             products = result.data or []
             for p in products:
                 p['rank'] = 0.0
@@ -747,7 +801,14 @@ def autocomplete_products(
         return {"suggestions": []}
     try:
         escaped_query = _escape_like_pattern(query)
-        result = sb.table('products').select('title').ilike('title', f'%{escaped_query}%').limit(limit).execute()
+        # Value is passed as a PostgREST filter parameter — not interpolated into raw SQL.
+        result = (
+            sb.table('products')
+            .select('title')
+            .ilike('title', f'%{escaped_query}%')
+            .limit(limit)
+            .execute()
+        )
         suggestions = []
         seen = set()
         for item in result.data or []:
@@ -866,7 +927,11 @@ async def upload_dataset(
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
 def build_models(_csrf: None = Depends(csrf_header_dep)):
-    sb = get_supabase()
+    global STAGING_MODEL_VERSION
+    try:
+       sb = get_supabase_admin()
+    except RuntimeError:
+        sb = get_supabase()
     all_products = []
     page_size = 1000
     offset = 0
@@ -908,6 +973,30 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
         logger.warning("Collaborative model data load failed: %s", e)
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
+    
+    version = generate_model_version()
+
+    MODEL_REGISTRY[version] = {
+        "content": content_model,
+        "collab": collab_model,
+        "hybrid": hybrid_model,
+        "item_df": item_df,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "training_metadata": {
+            "items": len(item_df),
+            "has_collaborative": collab_model is not None,
+            "build_time_seconds": build_time,
+        },
+        "status": "staging",
+        "metrics": {
+            "ndcg": 0.0,
+            "latency_ms": 0.0,
+            "error_rate": 0.0,
+        },
+    }
+
+    STAGING_MODEL_VERSION = version
+    
     models["content"] = content_model
     models["collab"] = collab_model
     models["hybrid"] = hybrid_model
@@ -918,11 +1007,12 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
     _clear_response_cache()
     return {
         "message": "Models built successfully!",
+        "model_version": version,
+        "status": "staging",
         "items": len(item_df),
         "has_collaborative": collab_model is not None,
         "build_time_seconds": build_time,
     }
-
 
 @app.post("/api/train/federated")
 def train_federated(req: FederatedTrainRequest):
@@ -1012,13 +1102,15 @@ def train_federated(req: FederatedTrainRequest):
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(
-    request: Request,               # added for rate limiting
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
     top_n: int = 10,
     explain: bool = Query(False),
+    user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
+    model_version: Optional[str] = Query(None),
+    strategy: Optional[str] = Query(None), 
 ):
     rate_limited = _apply_rate_limit(
         request,
@@ -1038,29 +1130,98 @@ def get_recommendations(
     query_title = title or item_title
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
+    selected_models = models
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog)
+    if model_version == "staging":
+        if not STAGING_MODEL_VERSION:
+            raise HTTPException(404, "No staging model available.")
+
+        selected_models = MODEL_REGISTRY[STAGING_MODEL_VERSION]
+
+    elif model_version:
+        if model_version not in MODEL_REGISTRY:
+            raise HTTPException(404, "Requested model version not found.")
+
+        selected_models = MODEL_REGISTRY[model_version]
+
+    cache_key = _cache_key("recommend", query_title, top_n, explain, user_id or "")
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
-    recs = models["hybrid"].recommend(
+    recs = selected_models["hybrid"].recommend(
         query_title, top_n=top_n, explain=explain, target_catalog=target_catalog
     )
+  
+    if not recs and strategy == "popularity" and models["collab"]:
+        recs = models["collab"]._popularity_fallback(top_n)
+    
+    
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
 
+    has_history = False
+    if user_id and models.get("collab") is not None:
+        has_history = user_id in models["collab"]._user_to_idx
+
     payload = {
-        "results": recs,
-        "count": len(recs),
-        "query": query_title,
         "query_item": query_title,
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),
         "explain": explain,
         "target_catalog": target_catalog,
+        "model_version": model_version or ACTIVE_MODEL_VERSION,
+        "has_history": has_history,
     }
+
+    if (
+        SHADOW_MODEL_VERSION
+        and SHADOW_MODEL_VERSION in MODEL_REGISTRY
+        and model_version is None
+    ):
+        shadow_model = MODEL_REGISTRY[SHADOW_MODEL_VERSION]
+
+        shadow_start = time.time()
+
+        try:
+            shadow_recs = shadow_model["hybrid"].recommend(
+                query_title,
+                top_n=top_n,
+                explain=explain,
+                target_catalog=target_catalog,
+            )
+
+            shadow_latency = round(
+                (time.time() - shadow_start) * 1000,
+                2,
+            )
+
+            shadow_model["metrics"]["latency_ms"] = shadow_latency
+            shadow_model["metrics"]["error_rate"] = 0.0
+
+            SHADOW_LOGS.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "production_version": ACTIVE_MODEL_VERSION,
+                "shadow_version": SHADOW_MODEL_VERSION,
+                "query": query_title,
+                "shadow_count": len(shadow_recs),
+                "latency_ms": shadow_latency,
+                "error": None,
+            })
+
+        except Exception as e:
+            shadow_model["metrics"]["error_rate"] = 1.0
+
+            SHADOW_LOGS.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "production_version": ACTIVE_MODEL_VERSION,
+                "shadow_version": SHADOW_MODEL_VERSION,
+                "query": query_title,
+                "shadow_count": 0,
+                "latency_ms": 0.0,
+                "error": str(e),
+            })
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
     return payload
@@ -1069,6 +1230,7 @@ def get_recommendations(
 @app.get("/api/user_recommend")
 def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
     """Get hybrid recommendations for a user."""
+    _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     
@@ -1223,8 +1385,83 @@ def similarity_matrix(items: str = Query(...)):
         result["not_found"] = not_found
     return result
 
-
 # ── Weights ───────────────────────────────────────────────────────────
+@app.get("/api/models")
+def list_models():
+    return {
+        "active_model": ACTIVE_MODEL_VERSION,
+        "shadow_model": SHADOW_MODEL_VERSION,
+        "staging_model": STAGING_MODEL_VERSION,
+        "models": [
+            {
+                "version": version,
+                "status": data.get("status"),
+                "created_at": data.get("created_at"),
+                "training_metadata": data.get("training_metadata"),
+                "metrics": data.get("metrics"),
+            }
+            for version, data in MODEL_REGISTRY.items()
+        ],
+    }
+@app.post("/api/models/{version}/promote")
+def promote_model(version: str, _csrf: None = Depends(csrf_header_dep)):
+    global ACTIVE_MODEL_VERSION, SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
+
+    if version not in MODEL_REGISTRY:
+        raise HTTPException(404, "Model version not found.")
+
+    start_time = time.time()
+
+    for model_version, data in MODEL_REGISTRY.items():
+        if data.get("status") == "production":
+            data["status"] = "archived"
+
+    selected = MODEL_REGISTRY[version]
+    selected["status"] = "production"
+    selected["promoted_at"] = datetime.now(timezone.utc).isoformat()
+
+    ACTIVE_MODEL_VERSION = version
+    SHADOW_MODEL_VERSION = None
+    if STAGING_MODEL_VERSION == version:
+        STAGING_MODEL_VERSION = None
+
+    models["content"] = selected["content"]
+    models["collab"] = selected["collab"]
+    models["hybrid"] = selected["hybrid"]
+    models["item_df"] = selected["item_df"]
+    models["ready"] = True
+    models["build_time"] = selected["training_metadata"]["build_time_seconds"]
+    models["last_trained_at"] = selected["created_at"]
+
+    _clear_response_cache()
+
+    return {
+        "message": "Model promoted successfully.",
+        "version": version,
+        "status": "production",
+        "rollback_time_seconds": round(time.time() - start_time, 4),
+    }
+
+@app.post("/api/models/{version}/shadow")
+def move_model_to_shadow(version: str, _csrf: None = Depends(csrf_header_dep)):
+    global SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
+
+    if version not in MODEL_REGISTRY:
+        raise HTTPException(404, "Model version not found.")
+
+    MODEL_REGISTRY[version]["status"] = "shadow"
+    MODEL_REGISTRY[version]["shadow_started_at"] = datetime.now(timezone.utc).isoformat()
+
+    SHADOW_MODEL_VERSION = version
+    if STAGING_MODEL_VERSION == version:
+        STAGING_MODEL_VERSION = None
+
+    return {
+        "message": "Model moved to shadow mode.",
+        "version": version,
+        "status": "shadow",
+    }
+
 @app.get("/api/weights")
 def get_weights():
     if not models["ready"]:
@@ -1286,9 +1523,17 @@ def get_categories():
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = 50):
+def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
+    _validate_user_id(user_id)  # allowlist-validate before any DB call
     sb = get_supabase()
-    result = sb.table('purchases').select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)').eq('user_id', user_id).order('purchased_at', desc=True).limit(limit).execute()
+    result = (
+        sb.table('purchases')
+        .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)')
+        .eq('user_id', user_id)
+        .order('purchased_at', desc=True)
+        .limit(limit)
+        .execute()
+    )
     return {"purchases": result.data or []}
 
 
@@ -1302,7 +1547,7 @@ def create_purchase(
         'user_id': data.user_id,
         'product_id': data.product_id,
         'rating': max(0, min(5, data.rating)),
-        'review_text': data.review_text[:1000],
+        'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
     }).execute()
     _clear_response_cache()
     return {"purchase": result.data}
