@@ -1181,6 +1181,7 @@ def train_federated(req: FederatedTrainRequest):
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(
+    request: Request,
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
