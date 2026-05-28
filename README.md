@@ -648,3 +648,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to get started — all skill levels welco
 </div>
 
 ---
+## Knowledge Graph Embeddings
+
+This project now supports semantic item relationships using
+TransE-style knowledge graph embeddings.
+
+Features:
+- Semantic similarity learning
+- Graph-based recommendation enrichment
+- Hybrid recommendation integration
+- Category/author relationship modeling
+
+Run:
+
+```bash
+python scripts/generate_kg_embeddings.py
+
+---
+

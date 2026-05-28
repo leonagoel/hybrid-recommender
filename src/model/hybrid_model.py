@@ -30,11 +30,23 @@ def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
 
 
 class HybridRecommender:
-    def __init__(self, content_model, collab_model=None, item_df=None,
-                 alpha=0.4, beta=0.35, gamma=0.25,
-                 normalization='minmax', weight_matrix=None,
-                 use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None):
+    def __init__(
+        self,
+        content_model,
+        collab_model=None,
+        kg_model=None,
+        item_df=None,
+        alpha=0.35,
+        beta=0.30,
+        gamma=0.20,
+        delta=0.15,
+        normalization='minmax',
+        weight_matrix=None,
+        use_causal_debiasing=False,
+        causal_lambda=0.5,
+        causal_clip=5.0,
+        causal_config=None
+    ):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -58,6 +70,8 @@ class HybridRecommender:
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        self.kg_model = kg_model
+        self.delta = delta
 
         # Expose model kwargs explicitly as structural configuration dictionaries
         self.model_kwargs = model_kwargs or {}
@@ -363,17 +377,26 @@ class HybridRecommender:
         collab_scores = self._normalize_scores(collab_raws)
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
-        # 5. Determine active weights dynamically (weights param overrides)
-        if weights is not None:
-            a = weights.get("alpha", self.alpha)
-            b = weights.get("beta", self.beta)
-            g = weights.get("gamma", self.gamma)
-            # normalize provided weights
-            tot = a + b + g
-            if tot > 0:
-                a, b, g = a / tot, b / tot, g / tot
+        kg_scores = []
+        t
+        if self.kg_model:
+            l
+            kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
+           
+            kg_map = {
+                item['title']: item['kg_score']
+                for item in kg_recs
+            }
+
+            for item in items:
+                kg_scores.append(kg_map.get(item['title'], 0.0))
+
+            kg_scores = self._normalize_scores(kg_scores)
+
         else:
-            a, b, g = self._get_active_weights(self.alpha, self.beta, self.gamma, user_id=user_id, candidate_titles=all_titles)
+            kg_scores = [0.0] * len(items)
+
+        
 
         # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
