@@ -63,7 +63,7 @@ _PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Paths that are explicitly exempt from CSRF validation even when they use a
 # protected method.  Add paths here only when you have a strong reason (e.g.
 # a webhook endpoint that is validated by a shared secret instead).
-_EXEMPT_PATHS: set[str] = set()
+_EXEMPT_PATHS: set[str] = {"/api/feedback"}
 
 
 # ── Token helpers ─────────────────────────────────────────────────────────────

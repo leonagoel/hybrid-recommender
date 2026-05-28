@@ -214,3 +214,7 @@ __marimo__/
 
 # Requirements for development and testing
 requirements-dev.txt
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
