@@ -12,3 +12,4 @@ python-dotenv
 tqdm
 torch
 transformers
+celery
