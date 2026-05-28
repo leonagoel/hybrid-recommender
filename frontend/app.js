@@ -114,6 +114,8 @@ const state = {
     isLoading: false,
     hasMore: true,
     searchTimer: null,
+    searchRequestId: 0,
+    isSearchLoading: false,
     autocompleteResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
@@ -134,7 +136,9 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
     searchInput: $('search-input'),
+    searchContainer: $('search-container'),
     searchDropdown: $('search-dropdown'),
+    searchSpinner: $('search-spinner'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
@@ -183,6 +187,7 @@ const els = {
     modalProductScore: $('modal-product-score'),
     modalRecommendationsList: $('modal-recommendations-list'),
     categoryFilter: $('category-filter'),
+    sortFilter: $('sort-filter'),
     ratingFilter: $('rating-filter'),
     sentimentFilter: $('sentiment-filter'),
     clearFiltersBtn: $('clear-filters'),
@@ -270,6 +275,13 @@ function showSkeletons(container, count = 8) {
         .join("");
 }
 
+function setSearchLoading(isLoading) {
+    state.isSearchLoading = isLoading;
+    els.searchContainer.classList.toggle('is-loading', isLoading);
+    els.searchSpinner.hidden = !isLoading;
+    els.searchInput.setAttribute('aria-busy', String(isLoading));
+}
+
 function renderStars(rating) {
     const full = Math.floor(rating);
     const half = rating - full >= 0.5;
@@ -338,7 +350,7 @@ function applyFilters(products) {
         }
 
         let pass = true;
-        
+
         // Categories OR logic
         if (activeCategories.length > 0) {
             if (!activeCategories.includes(p.category)) pass = false;
@@ -351,6 +363,35 @@ function applyFilters(products) {
 
         return traditionalMatch && pass;
     });
+}
+
+function sortProducts(products, sortType) {
+    const sorted = [...products];
+
+    switch (sortType) {
+        case 'price-low':
+            return sorted.sort((a, b) => (a.price || 0) - (b.price || 0));
+
+        case 'price-high':
+            return sorted.sort((a, b) => (b.price || 0) - (a.price || 0));
+
+        case 'rating':
+            return sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+
+        case 'relevance':
+        default:
+            return sorted;
+    }
+}
+
+function applySorting() {
+    const sortType = els.sortFilter?.value || 'relevance';
+    const sortedProducts = sortProducts(state.allProducts || [], sortType);
+    renderProducts(sortedProducts, { append: false, skipSorting: true });
+}
+
+function getSelectedSort() {
+    return encodeURIComponent(els.sortFilter?.value || 'relevance');
 }
 
 function categoryIcon(cat) {
@@ -655,6 +696,8 @@ function handleSearchKeydown(e) {
 
 function handleSearch(query) {
     if (!query || query.trim().length < 1) {
+        state.searchRequestId++;
+        setSearchLoading(false);
         closeSearchDropdown();
         return;
     }
@@ -663,18 +706,25 @@ function handleSearch(query) {
 
     // 300ms debounce
     state.searchTimer = setTimeout(async () => {
+        const requestId = ++state.searchRequestId;
+        setSearchLoading(true);
         try {
             const data = await API.get(
                 `/api/autocomplete?q=${encodeURIComponent(query)}&limit=${CONFIG.SEARCH_LIMIT}`
             );
 
+            if (requestId !== state.searchRequestId) return;
             state.autocompleteResults = data.suggestions || [];
             state.selectedSearchIdx = -1;
 
             renderSearchDropdown(state.autocompleteResults, query);
         } catch (err) {
-            console.error('Autocomplete failed:', err);
-            closeSearchDropdown();
+            if (requestId === state.searchRequestId) {
+                console.error('Autocomplete failed:', err);
+                closeSearchDropdown();
+            }
+        } finally {
+            if (requestId === state.searchRequestId) setSearchLoading(false);
         }
     }, CONFIG.SEARCH_DEBOUNCE_MS);
 }
@@ -691,7 +741,7 @@ async function loadProducts(append = false) {
 
     if (!append) {
         setPageMeta(
-            'All Products', 
+            'All Products',
             'Browse all products on HybridRec — personalised recommendations just for you.'
         );
     }
@@ -815,6 +865,8 @@ async function loadSearchResults(query) {
     // Pause infinite scroll during search
     destroyScrollObserver();
 
+    const requestId = ++state.searchRequestId;
+    setSearchLoading(true);
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
@@ -822,7 +874,7 @@ async function loadSearchResults(query) {
     els.infiniteEnd.hidden = true;
 
     try {
-        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
+        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40&sort=${getSelectedSort()}`);
         const products = data.results || [];
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${data.count ?? products.length} results`;
@@ -833,6 +885,8 @@ async function loadSearchResults(query) {
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
+    } finally {
+        if (requestId === state.searchRequestId) setSearchLoading(false);
     }
 }
 
@@ -893,12 +947,12 @@ function renderProducts(products, options = {}) {
                     </defs>
                     <circle cx="100" cy="100" r="70" fill="url(#blue-grad)" filter="blur(8px)" opacity="0.15" />
                     <circle cx="120" cy="80" r="40" fill="url(#amber-grad)" filter="blur(6px)" opacity="0.1" />
-                    
+
                     <path d="M50 80 L65 140 H135 L150 80" stroke="var(--text-muted)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
                     <path d="M40 80 H160" stroke="var(--text-muted)" stroke-width="4" stroke-linecap="round" />
-                    
+
                     <circle cx="130" cy="65" r="28" stroke="var(--primary)" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
-                    
+
                     <g class="search-glass">
                         <circle cx="130" cy="65" r="16" stroke="var(--accent)" stroke-width="3.5" fill="var(--bg-card)"/>
                         <path d="M142 77 L158 93" stroke="var(--accent)" stroke-width="3.5" stroke-linecap="round"/>
@@ -921,7 +975,7 @@ function renderProducts(products, options = {}) {
                 </button>
             </div>
         `;
-        
+
         const clearBtn = document.getElementById('empty-state-clear-btn');
         if (clearBtn) {
             clearBtn.addEventListener('click', resetAllFiltersAndSearch);
@@ -1003,7 +1057,7 @@ function renderProducts(products, options = {}) {
             e.stopPropagation();
             toggleWishlist(p);
             });
-    
+
             const title = e.target.dataset.title;
             loadRecommendations(title);
             toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
@@ -1415,6 +1469,10 @@ function bindEvents() {
         slider.addEventListener('change', handleWeightChange);
     });
 
+    if (els.sortFilter) {
+        els.sortFilter.addEventListener('change', applySorting);
+    }
+
     // Heatmap close
     els.heatmapCloseBtn.addEventListener('click', () => {
         els.heatmapSection.hidden = true;
@@ -1535,7 +1593,7 @@ function setupScrollObserver() {
             threshold: 0,
         }
     );
-    
+
     state.scrollObserver.observe(els.scrollSentinel);
 }
 
@@ -1551,7 +1609,7 @@ async function handleSearch(query) {
     els.typingIndicator.hidden = false;
     state.searchTimer = setTimeout(async () => {
         try {
-            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
+            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8&sort=${getSelectedSort()}`);
             state.searchResults = data.results || [];
             state.selectedSearchIdx = -1;
             renderSearchDropdown(state.searchResults, query);
@@ -1652,26 +1710,29 @@ async function loadProducts(append = false) {
     }
 
     try {
-        const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}`);
+        const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}&sort=${getSelectedSort()}`);
         const products = data.results || [];
         state.totalProducts = data.total || products.length;
+        state.allProducts = append
+            ? [...(state.allProducts || []), ...products]
+            : [...products];
 
         if (!append) {
             els.skeletonLoader.hidden = true;
         }
 
-        renderProducts(products, { append });
-        const visibleCount =
-    state.selectedCategory === 'All Categories'
-        ? products.length
-        : products.filter(
-            p => p.category === state.selectedCategory
-        ).length;
-
-els.productCount.textContent = `${visibleCount} products loaded`;
+        if (append) {
+            renderProducts(products, { append });
+        } else {
+            applySorting();
+        }
+        const visibleCount = applyFilters(products).length;
+        els.productCount.textContent = `${visibleCount} products loaded`;
 
         // Show load more if there might be more
-        els.loadMoreContainer.hidden = products.length < state.perPage;
+        if (els.loadMoreContainer) {
+            els.loadMoreContainer.hidden = products.length < state.perPage;
+        }
     } catch (err) {
         els.skeletonLoader.hidden = true;
         toast('Failed to load products', 'error');
@@ -1684,35 +1745,46 @@ async function loadSearchResults(query) {
     els.productsTitle.textContent = `Results for "${query}"`;
 
     try {
-        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
+        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40&sort=${getSelectedSort()}`);
         const products = data.results || [];
         els.skeletonLoader.hidden = true;
         els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
-        renderProducts(products, false);
+        state.allProducts = [...products];
+        applySorting();
         els.searchInput.select();
         els.productGrid.classList.remove('fade-in');
 
         requestAnimationFrame(() => {
         els.productGrid.classList.add('fade-in');
         });
-        els.loadMoreContainer.hidden = true;
+        if (els.loadMoreContainer) {
+            els.loadMoreContainer.hidden = true;
+        }
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
     }
 }
 
-function renderProducts(products, append) {
+function renderProducts(products, options = {}) {
+    const append = typeof options === 'object' ? options.append || false : Boolean(options);
+    const skipSorting = typeof options === 'object' ? options.skipSorting || false : false;
+
+    products = applyFilters(products || []);
+
+    if (!skipSorting) {
+        products = sortProducts(products, els.sortFilter?.value || 'relevance');
+    }
+
+    if (!append) {
+        els.productGrid.innerHTML = '';
+    }
+
     if (!append) state.products = [];
 
     const fragment = document.createDocumentFragment();
-    const filteredProducts =
-    state.selectedCategory === 'All Categories'
-        ? products
-        : products.filter(
-            p => p.category === state.selectedCategory
-        );
+    const filteredProducts = products;
     filteredProducts.forEach((p, i) => {
         state.products.push(p);
         const title = p.title || 'Untitled';
@@ -1938,7 +2010,7 @@ let currentLang = 'EN';
 function toggleLanguage() {
     currentLang = currentLang === 'EN' ? 'HI' : 'EN';
     document.getElementById('lang-toggle').textContent = currentLang;
-    
+
     if (currentLang === 'HI') {
         document.getElementById('search-input').placeholder = 'हिंदी में खोजें...';
         document.getElementById('hindi-indicator').style.display = 'inline';
@@ -1956,28 +2028,28 @@ function initFilterChips() {
     if (!chipsContainer) return;
 
     const chips = chipsContainer.querySelectorAll('.chip');
-    
+
     chips.forEach(chip => {
         chip.addEventListener('click', (e) => {
             const filterVal = e.currentTarget.dataset.filter;
-            
+
             if (filterVal === 'all') {
                 state.activeChips.clear();
                 state.activeChips.add('all');
             } else {
                 state.activeChips.delete('all');
-                
+
                 if (state.activeChips.has(filterVal)) {
                     state.activeChips.delete(filterVal);
                 } else {
                     state.activeChips.add(filterVal);
                 }
-                
+
                 if (state.activeChips.size === 0) {
                     state.activeChips.add('all');
                 }
             }
-            
+
             // Update UI
             chips.forEach(c => {
                 if (state.activeChips.has(c.dataset.filter)) {
@@ -1986,7 +2058,7 @@ function initFilterChips() {
                     c.classList.remove('active');
                 }
             });
-            
+
             // Re-render
             renderProducts(state.allProducts, false);
         });

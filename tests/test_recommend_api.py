@@ -26,7 +26,7 @@ class FakeHybridModel:
         self.last_target_catalog = target_catalog
         return [{"title": "Related Item", "hybrid_score": 0.91}]
 
-    def recommend_for_user(self, user_id, top_n=10):
+    def recommend_for_user(self, user_id, top_n=10, explain=False):
         if user_id == "known_user":
             return [{"title": "Collab Item", "hybrid_score": 0.85}]
         return [{"title": "Popular Item", "hybrid_score": 0.50}]

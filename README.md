@@ -364,6 +364,14 @@ GET /api/purchases/{user_id}
 POST /api/purchases
 ```
 
+## API Examples (curl)
+
+All examples use `http://localhost:8000` as the base URL.  
+Change the host/port if your server runs elsewhere (e.g., Docker uses `http://localhost:8000` as well).
+
+### Get server status
+```bash
+curl http://localhost:8000/api/status
 ---
 
 ## 07 — Evaluation
