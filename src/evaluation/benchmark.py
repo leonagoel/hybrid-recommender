@@ -10,6 +10,7 @@ import random
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.evaluation.evaluation import ndcg_at_k, average_precision_at_k, _build_test_data
+from src.model.causal_config import CausalConfig
 
 class RandomRecommender:
     def __init__(self, item_titles):
@@ -38,16 +39,33 @@ def run_benchmark():
         return
         
     from src.model.hybrid_model import HybridRecommender
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df, alpha=0.4, beta=0.4, gamma=0.2)
-    random_model = RandomRecommender(item_df['title'].unique())
+
+    # Plain hybrid baseline (correlation only)
+    hybrid_model = HybridRecommender(
+        content_model, collab_model, item_df,
+        alpha=0.4, beta=0.4, gamma=0.2,
+    )
+
+    # Causal hybrid — IPS debiasing with conservative config
+    # Uses CausalConfig.conservative() so the benchmark reflects a realistic
+    # production setting rather than an extreme λ=1.0 stress test.
+    causal_hybrid_model = HybridRecommender(
+        content_model, collab_model, item_df,
+        alpha=0.4, beta=0.4, gamma=0.2,
+        causal_config=CausalConfig.conservative(),
+    )
+
+    random_model  = RandomRecommender(item_df['title'].unique())
     popular_model = PopularityRecommender(item_df)
     
     models = {
-        "Random": random_model,
-        "Popularity": popular_model,
-        "Semantic-Content": content_model,
+        "Random":            random_model,
+        "Popularity":        popular_model,
+        "Semantic-Content":  content_model,
         "SVD-Collaborative": collab_model,
-        "Semantic-Hybrid": hybrid_model
+        "Semantic-Hybrid":   hybrid_model,
+        # Causal variant — same weights as Semantic-Hybrid but with IPS debiasing
+        "Causal-Hybrid":     causal_hybrid_model,
     }
     
     K = 10
@@ -65,7 +83,9 @@ def run_benchmark():
         for user_id, query_item, relevant_items in test_pairs:
             if hasattr(model, 'predict_for_user') and name == "SVD-Collaborative":
                 recs_raw = model.predict_for_user(user_id, top_n=K)
-            elif name == "Semantic-Hybrid":
+            elif name in ("Semantic-Hybrid", "Causal-Hybrid"):
+                # Both hybrid variants use the same recommend() interface;
+                # the causal one applies IPS internally before returning results
                 recs_raw = model.recommend(query_item, user_id=user_id, top_n=K)
             else:
                 recs_raw = model.recommend(query_item, top_n=K)

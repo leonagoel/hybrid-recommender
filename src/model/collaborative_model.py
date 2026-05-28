@@ -53,28 +53,52 @@ class CollaborativeRecommender:
             (data, (row, col)), shape=(n_users, n_items)
         ).tocsr()
 
-        # Adaptive rank: reduce factors for very sparse matrices
+        # Adaptive rank: reduce factors dynamically for sparse matrices
         min_dim = min(self.user_item_sparse.shape)
         density = self.user_item_sparse.nnz / (n_users * n_items) if (n_users * n_items) > 0 else 0
 
-        if density < 0.001:
-            n_components = min(20, min_dim - 1)
-        elif density < 0.01:
-            n_components = min(30, min_dim - 1)
+        # FIX FOR ISSUE #483: Prevent array out-of-bounds collapse on small matrices
+        if min_dim <= 2:
+            self.svd = None
+            # Matching shapes perfectly to prevent slice dimensionality failures inside recommend()
+            self.user_factors = np.ones((n_users, 1))
+            self.item_factors = np.ones((1, n_items))
         else:
-            n_components = min(n_factors, min_dim - 1)
+            if density < 0.001:
+                n_components = min(20, min_dim - 1)
+            elif density < 0.01:
+                n_components = min(30, min_dim - 1)
+            else:
+                n_components = min(n_factors, min_dim - 1)
 
-        n_components = max(1, n_components)
+            # Keep n_components safely below absolute matrix dimension boundaries
+            n_components = min(n_components, n_users - 1, n_items - 1)
+            n_components = max(1, n_components)
 
-        self.svd = TruncatedSVD(n_components=n_components, random_state=42)
-        self.user_factors = self.svd.fit_transform(self.user_item_sparse)
-        self.item_factors = self.svd.components_
+            try:
+                self.svd = TruncatedSVD(n_components=n_components, random_state=42)
+                self.user_factors = self.svd.fit_transform(self.user_item_sparse)
+                self.item_factors = self.svd.components_
+            except ValueError:
+                # Safe baseline fallback if SVD initialization constraints fail on edge-case data shapes
+                self.svd = None
+                self.user_factors = np.ones((n_users, 1))
+                self.item_factors = np.ones((1, n_items))
 
-    def recommend(self, title, top_n=10):
+        # Build catalog map if catalog column is present in interaction_df
+        self._catalog_map = {}
+        if 'catalog' in self.df.columns:
+            self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+
+    def recommend(self, title, top_n=10, target_catalog=None):
         """
         Item-item collaborative recommendations using SVD latent space.
         Returns list of dicts: [{ 'title', 'collab_score' }, ...]
         """
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer.")
+        top_n = min(top_n, 100)
+
         if title not in self._title_to_idx:
             return []
 
@@ -91,6 +115,13 @@ class CollaborativeRecommender:
             t = self.title_list[i]
             if t == title or t in seen:
                 continue
+
+            # Catalog filtering
+            if target_catalog and self._catalog_map:
+                item_catalog = self._catalog_map.get(t, '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             seen.add(t)
             results.append({
                 'title': t,
@@ -101,13 +132,21 @@ class CollaborativeRecommender:
 
         return results
 
-    def predict_for_user(self, user_id, top_n=10):
+    def predict_for_user(self, user_id, top_n=10, target_catalog=None):
         """
         Personalized recommendations for a specific user.
         Predicts scores for all unseen items and returns top N.
         """
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer.")
+        top_n = min(top_n, 100)
+
         if user_id not in self._user_to_idx:
-            return []
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
+            return self._popularity_fallback(top_n)
+            
 
         u_idx = self._user_to_idx[user_id]
         user_vec = self.user_factors[u_idx]
@@ -123,6 +162,13 @@ class CollaborativeRecommender:
             t = self.title_list[i]
             if t in seen_items:
                 continue
+
+            # Catalog filtering
+            if target_catalog and self._catalog_map:
+                item_catalog = self._catalog_map.get(t, '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             scored.append((t, float(score)))
 
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -135,3 +181,30 @@ class CollaborativeRecommender:
         u_idx = self._user_to_idx[user_id]
         i_idx = self._title_to_idx[title]
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
+    
+    def _popularity_fallback(self, top_n=10):
+    #Fallback for cold-start users — top-N by interaction count (popularity)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Using popularity-based fallback for cold-start user.")
+    
+        item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
+    
+       # Bayesian rating
+        global_avg = item_counts['mean'].mean()
+        m = 5
+        item_counts['bayesian'] = (
+            (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +
+            (m / (item_counts['count'] + m)) * global_avg
+        )
+    
+        top_items = item_counts.nlargest(top_n, 'bayesian')
+    
+        return [
+        {
+            'title': row['title'],
+            'predicted_score': round(float(row['bayesian']), 4),
+            'fallback': True
+        }
+        for _, row in top_items.iterrows()
+        ]

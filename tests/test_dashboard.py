@@ -85,8 +85,9 @@ def client():
 
 
 @pytest.fixture(autouse=True)
-def reset_models_state():
+def reset_models_state(monkeypatch):
     """Snapshot and restore the in-memory models dict around each test."""
+    monkeypatch.setenv(backend_main.ADMIN_API_TOKEN_ENV, "test-admin-token")
     saved = {
         "ready": backend_main.models["ready"],
         "last_trained_at": backend_main.models["last_trained_at"],
@@ -99,6 +100,10 @@ def reset_models_state():
 def _patch_supabase(monkeypatch, dataset):
     fake = _FakeSupabase(dataset)
     monkeypatch.setattr(backend_main, 'get_supabase', lambda: fake)
+
+
+def _admin_headers(token="test-admin-token"):
+    return {"Authorization": f"Bearer {token}"}
 
 
 # ─── Tests ───────────────────────────────────────────────────────────
@@ -131,7 +136,7 @@ def test_dashboard_schema_with_data(client, monkeypatch):
     _patch_supabase(monkeypatch, dataset)
     backend_main.models["last_trained_at"] = None
 
-    res = client.get('/api/dashboard')
+    res = client.get('/api/dashboard', headers=_admin_headers())
     assert res.status_code == 200
     body = res.json()
 
@@ -155,7 +160,7 @@ def test_dashboard_empty_dataset(client, monkeypatch):
     _patch_supabase(monkeypatch, {'products': [], 'purchases': []})
     backend_main.models["last_trained_at"] = None
 
-    res = client.get('/api/dashboard')
+    res = client.get('/api/dashboard', headers=_admin_headers())
     assert res.status_code == 200
     body = res.json()
 
@@ -175,7 +180,7 @@ def test_dashboard_reports_last_trained_timestamp(client, monkeypatch):
     fixed_ts = "2026-05-19T12:00:00+00:00"
     backend_main.models["last_trained_at"] = fixed_ts
 
-    res = client.get('/api/dashboard')
+    res = client.get('/api/dashboard', headers=_admin_headers())
     assert res.status_code == 200
     assert res.json()['model_last_trained'] == fixed_ts
 
@@ -191,7 +196,7 @@ def test_dashboard_top_products_fallback_when_no_purchases(client, monkeypatch):
     }
     _patch_supabase(monkeypatch, dataset)
 
-    res = client.get('/api/dashboard')
+    res = client.get('/api/dashboard', headers=_admin_headers())
     body = res.json()
     assert res.status_code == 200
     assert len(body['top_5_recommended_products']) == 2
@@ -199,3 +204,21 @@ def test_dashboard_top_products_fallback_when_no_purchases(client, monkeypatch):
     # in the fake), but interactions should be 0 for every fallback entry.
     for p in body['top_5_recommended_products']:
         assert p['interactions'] == 0
+
+
+def test_dashboard_rejects_missing_admin_token(client, monkeypatch):
+    _patch_supabase(monkeypatch, {'products': [], 'purchases': []})
+
+    res = client.get('/api/dashboard')
+
+    assert res.status_code == 401
+    assert res.json()['detail'] == "Admin token required."
+
+
+def test_dashboard_rejects_invalid_admin_token(client, monkeypatch):
+    _patch_supabase(monkeypatch, {'products': [], 'purchases': []})
+
+    res = client.get('/api/dashboard', headers=_admin_headers("wrong-token"))
+
+    assert res.status_code == 401
+    assert res.json()['detail'] == "Admin token required."

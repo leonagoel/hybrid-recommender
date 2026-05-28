@@ -3,8 +3,8 @@
 // Debounced FTS, global keyboard capture, category filter, pagination.
 // =============================================================================
 
-import { state, setState } from './state.js';
-import { renderProductCards, setLoadingState, showToast, renderPagination } from './ui.js';
+import { state, setState, addToSearchHistory } from './state.js';
+import { renderProductCards, setLoadingState, showToast, renderPagination, showLoadingBar, hideLoadingBar } from './ui.js';
 
 const DEBOUNCE_MS = 300;
 let _debounceTimer = null;
@@ -21,6 +21,7 @@ export async function runSearch(query, limit = 20) {
   const q = query.trim();
   setState({ lastQuery: q, isSearching: true });
   setLoadingState('search', true);
+  showLoadingBar();
 
   try {
     const params = new URLSearchParams({ q, limit });
@@ -30,17 +31,19 @@ export async function runSearch(query, limit = 20) {
     if (!res.ok) throw new Error(`Search error: ${res.status}`);
 
     const data    = await res.json();
-    const results = data.results ?? data ?? [];
+    const results = data.results ?? [];
 
     setState({ searchResults: results, isSearching: false });
+    addToSearchHistory(q);   // <-- ADD SEARCH TO HISTORY
     renderProductCards(results, { context: 'search', query: q });
-    renderPagination(1, data.total ?? results.length, state.perPage, loadProducts);
+    renderPagination(1, data.count ?? data.total ?? results.length, state.perPage, loadProducts);
   } catch (err) {
     showToast('Search failed. Please try again.', 'error');
     console.error('[search]', err);
     setState({ isSearching: false });
   } finally {
     setLoadingState('search', false);
+    hideLoadingBar();
   }
 }
 
@@ -48,6 +51,7 @@ export async function runSearch(query, limit = 20) {
 export async function loadProducts(page = 1) {
   setLoadingState('products', true);
   setState({ currentPage: page });
+  showLoadingBar();
 
   try {
     const params = new URLSearchParams({ page, per_page: state.perPage });
@@ -67,11 +71,13 @@ export async function loadProducts(page = 1) {
     console.error('[search]', err);
   } finally {
     setLoadingState('products', false);
+    hideLoadingBar();
   }
 }
 
 /** Fetch categories and populate the dropdown. */
 export async function loadCategories() {
+  showLoadingBar();
   try {
     const res  = await fetch('/api/categories');
     if (!res.ok) return;
@@ -81,6 +87,8 @@ export async function loadCategories() {
     _renderCategoryOptions(cats);
   } catch (err) {
     console.warn('[search] loadCategories:', err);
+  } finally {
+    hideLoadingBar();
   }
 }
 
@@ -88,17 +96,36 @@ export async function loadCategories() {
 
 function _bindSearchInput() {
   const input = document.getElementById('search-input');
+  const counter = document.getElementById('search-char-counter');
   if (!input) return;
 
+  // Update counter function
+  const updateCounter = () => {
+    if (!counter) return;
+    const len = input.value.length;
+    counter.textContent = `${len}/100`;
+  };
+
+  // Show/hide counter on focus/blur
+  input.addEventListener('focus', () => {
+    if (counter) {
+      counter.style.display = 'block';
+      updateCounter();
+    }
+  });
+  input.addEventListener('blur', () => {
+    if (counter) counter.style.display = 'none';
+  });
+
+  // Existing debounced search (keep it, but add counter update)
   input.addEventListener('input', (e) => {
     clearTimeout(_debounceTimer);
     const q = e.target.value;
+    // Update character counter
+    updateCounter();
+    // Existing behaviour
     if (!q.trim()) { loadProducts(1); return; }
     _debounceTimer = setTimeout(() => runSearch(q), DEBOUNCE_MS);
-  });
-
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { input.value = ''; loadProducts(1); }
   });
 }
 

@@ -23,6 +23,7 @@ import argparse
 import json
 import math
 import os
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -36,15 +37,16 @@ Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
 
 MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
 ResultsDict = dict[str, MetricsDict]    # {"content": {...}, "hybrid": {...}, ...}
+UNSAFE_CACHE_SUFFIXES = {".pkl", ".pickle"}
 
 
 # ---------------------------------------------------------------------------
-# Core metric helpers
+# Core metric helpers with safety guards against ZeroDivisionError
 # ---------------------------------------------------------------------------
 
 def _precision_at_k(recommended: list, relevant: set, k: int) -> float:
     """Fraction of top-K recommended items that are relevant."""
-    if not relevant or k == 0:
+    if not relevant or k == 0 or not recommended:
         return 0.0
     hits = sum(1 for item in recommended[:k] if item in relevant)
     return hits / k
@@ -52,14 +54,19 @@ def _precision_at_k(recommended: list, relevant: set, k: int) -> float:
 
 def _recall_at_k(recommended: list, relevant: set, k: int) -> float:
     """Fraction of relevant items found in top-K recommendations."""
-    if not relevant or k == 0:
+    if not relevant or k == 0 or not recommended:
         return 0.0
     hits = sum(1 for item in recommended[:k] if item in relevant)
-    return hits / len(relevant)
+    
+    # FIX FOR ISSUE #486: Guard cold states to prevent ZeroDivisionError
+    denom = len(relevant)
+    return hits / denom if denom > 0 else 0.0
 
 
 def _dcg_at_k(recommended: list, relevant: set, k: int) -> float:
     """Discounted Cumulative Gain at K."""
+    if not recommended or not relevant or k == 0:
+        return 0.0
     dcg = 0.0
     for i, item in enumerate(recommended[:k], start=1):
         if item in relevant:
@@ -71,7 +78,9 @@ def _ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
     """Normalised DCG at K (IDCG assumes all relevant items are at top)."""
     dcg = _dcg_at_k(recommended, relevant, k)
     ideal = _dcg_at_k(list(relevant)[:k], relevant, k)
-    return dcg / ideal if ideal > 0 else 0.0
+    
+    # FIX FOR ISSUE #486: Handle zero baseline ideal scores gracefully
+    return dcg / ideal if ideal > 0.0 else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -115,11 +124,12 @@ def _get_sentiment_recs(title: str, df: pd.DataFrame, k: int) -> list[str]:
     except IndexError:
         return []
 
-    item_sentiment = df.at[idx, "sentiment_score"] if "sentiment_score" in df.columns else 0.0
     df_copy = df.copy()
-    df_copy["_sent_diff"] = (df_copy.get("sentiment_score", 0) - item_sentiment).abs()
+    if "sentiment_score" not in df_copy.columns:
+        df_copy["sentiment_score"] = 0.0
+
     df_copy = df_copy.drop(index=idx, errors="ignore")
-    top = df_copy.nsmallest(k, "_sent_diff")
+    top = df_copy.sort_values(by="sentiment_score", ascending=False).head(k)
     return top["title"].tolist()
 
 
@@ -172,20 +182,6 @@ def run_evaluation(
 ) -> ResultsDict:
     """
     Run Precision@K, Recall@K, NDCG@K evaluation for the requested mode(s).
-
-    Args:
-        k:          Number of recommendations to evaluate against.
-        mode:       One of "content", "collaborative", "sentiment", "hybrid", "all".
-        weights:    Dict with keys "alpha", "beta", "gamma" (used for hybrid mode).
-                    Defaults to {"alpha": 0.4, "beta": 0.4, "gamma": 0.2}.
-        data_path:  Path to the dataset CSV. Defaults to DATA_PATH env var or
-                    "data/products.csv".
-
-    Returns:
-        Dict mapping mode name(s) to {"precision": float, "recall": float, "ndcg": float}.
-
-    Raises:
-        RuntimeError: If models have not been built yet (matrices not found).
     """
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.decomposition import TruncatedSVD
@@ -213,13 +209,17 @@ def run_evaluation(
 
     df = df.dropna(subset=["title"]).reset_index(drop=True)
 
+    # --- auto-analyze sentiment if missing ---
+    if "sentiment_score" not in df.columns:
+        from nlp_engine import batch_analyze
+        text_col = "description" if "description" in df.columns else ("review_text" if "review_text" in df.columns else "title")
+        df = batch_analyze(df, text_col=text_col)
+
     # --- build/load matrices ---
-    # Try to load pre-built matrices from disk; fall back to building on-the-fly
     tfidf_matrix = _load_or_build_tfidf(df)
     svd_matrix   = _load_or_build_svd(df)
 
-    # --- build relevance sets from rating data ---
-    # "relevant" items for a given title = items in same category OR rating >= 4.0
+# --- build relevance sets from rating data ---
     def _get_relevant(row_idx: int) -> set[str]:
         row = df.iloc[row_idx]
         relevant = set()
@@ -246,31 +246,106 @@ def run_evaluation(
     )
 
     results: ResultsDict = {}
+    
+    # Check out if user interaction signals exist in the dataset
+    has_user_data = "user_id" in df.columns and len(df["user_id"].dropna().unique()) > 1
+
+    if has_user_data:
+        # User-based Evaluation Profile
+        unique_users = df["user_id"].dropna().unique()
+        sample_users = np.random.choice(unique_users, size=min(100, len(unique_users)), replace=False)
+    else:
+        # Fallback to item index sample if explicit user tracking columns aren't present
+        sample_indices = np.random.choice(len(df), size=min(100, len(df)), replace=False)
 
     for m in modes_to_run:
         precisions, recalls, ndcgs = [], [], []
 
-        for idx in sample_indices:
-            title   = df.iloc[idx]["title"]
-            relevant = _get_relevant(idx)
-            if not relevant:
-                continue
+        if has_user_data:
+            # ----------------------------------------------------
+            # USER-BASED PERSONALIZATION LOOP (Core Fix)
+            # ----------------------------------------------------
+            for current_user in sample_users:
+                # User ki poori consumption profiles fetch karna
+                user_profile = df[df["user_id"] == current_user].reset_index(drop=True)
+                if len(user_profile) < 2:
+                    continue  # Leave-one-out needs at least 2 items (1 history, 1 held-out)
 
-            if m == "content":
-                recs = _get_content_recs(title, df, tfidf_matrix, k)
-            elif m == "collaborative":
-                recs = _get_collab_recs(title, df, svd_matrix, k)
-            elif m == "sentiment":
-                recs = _get_sentiment_recs(title, df, k)
-            else:  # hybrid
-                recs = _get_hybrid_recs(
-                    title, df, tfidf_matrix, svd_matrix,
-                    w["alpha"], w["beta"], w["gamma"], k,
-                )
+                # Hold out the last item as the evaluation truth target
+                query_item = user_profile.iloc[-1]["title"]
+                relevant = {query_item}
+                
+                # Baki bache items user history seed banenge
+                user_history = user_profile.iloc[:-1]["title"].tolist()
 
-            precisions.append(_precision_at_k(recs, relevant, k))
-            recalls.append(_recall_at_k(recs, relevant, k))
-            ndcgs.append(_ndcg_at_k(recs, relevant, k))
+                all_recs = {}
+                # Extract up to 5 interaction points for high-fidelity evaluation profiling
+                for seed_title in user_history[:5]:
+                    try:
+                        if m == "content":
+                            recs_raw = _get_content_recs(seed_title, df, tfidf_matrix, k)
+                        elif m == "collaborative":
+                            recs_raw = _get_collab_recs(seed_title, df, svd_matrix, k)
+                        elif m == "sentiment":
+                            recs_raw = _get_sentiment_recs(seed_title, df, k)
+                        else:  # hybrid
+                            recs_raw = _get_hybrid_recs(
+                                seed_title, df, tfidf_matrix, svd_matrix,
+                                w["alpha"], w["beta"], w["gamma"], k,
+                            )
+                        
+                        # Blend recommendation confidence arrays
+                        for idx_rank, item_name in enumerate(recs_raw):
+                            score = 1.0 / (idx_rank + 1)  # Rank-based reciprocal pooling fallback
+                            all_recs[item_name] = max(all_recs.get(item_name, 0), score)
+                    except Exception:
+                        continue
+
+                # Sort aggregated items and filter out historical elements
+                sorted_recs = sorted(all_recs.items(), key=lambda x: x[1], reverse=True)
+                final_recs = [item[0] for item in sorted_recs if item[0] not in user_history][:k]
+
+                if final_recs:
+                    precisions.append(_precision_at_k(final_recs, relevant, k))
+                    recalls.append(_recall_at_k(final_recs, relevant, k))
+                    ndcgs.append(_ndcg_at_k(final_recs, relevant, k))
+        else:
+            # ----------------------------------------------------
+            # FALLBACK: Item similarity processing if dataset is flat
+            # ----------------------------------------------------
+            for idx in sample_indices:
+                title = df.iloc[idx]["title"]
+                
+                # Establish pseudo-relevance via category boundaries
+                relevant = set()
+                if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):
+                    relevant.update(df[df["category"] == df.iloc[idx]["category"]]["title"].tolist())
+                relevant.discard(title)
+
+                if not relevant:
+                    continue
+
+                if m == "content":
+                    recs = _get_content_recs(title, df, tfidf_matrix, k)
+                elif m == "collaborative":
+                    recs = _get_collab_recs(title, df, svd_matrix, k)
+                elif m == "sentiment":
+                    recs = _get_sentiment_recs(title, df, k)
+                else:
+                    recs = _get_hybrid_recs(
+                        title, df, tfidf_matrix, svd_matrix,
+                        w["alpha"], w["beta"], w["gamma"], k,
+                    )
+
+                precisions.append(_precision_at_k(recs, relevant, k))
+                recalls.append(_recall_at_k(recs, relevant, k))
+                ndcgs.append(_ndcg_at_k(recs, relevant, k))
+
+        results[m] = {
+            "precision": round(float(np.mean(precisions)), 4) if precisions else 0.0,
+            "recall":    round(float(np.mean(recalls)),    4) if recalls    else 0.0,
+            "ndcg":      round(float(np.mean(ndcgs)),      4) if ndcgs      else 0.0,
+        }
 
         results[m] = {
             "precision": round(float(np.mean(precisions)), 4) if precisions else 0.0,
@@ -287,12 +362,13 @@ def run_evaluation(
 
 def _load_or_build_tfidf(df: pd.DataFrame):
     """Load TF-IDF matrix from disk if available, else build from scratch."""
-    import pickle
-
-    cache_path = os.getenv("TFIDF_CACHE", "models/tfidf_matrix.pkl")
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
+    cache_path = Path(os.getenv("TFIDF_CACHE", "models/tfidf_matrix.npz"))
+    if cache_path.exists():
+        _reject_unsafe_cache(cache_path)
+        if cache_path.suffix != ".npz":
+            raise RuntimeError("TF-IDF cache must use the safe .npz sparse matrix format.")
+        from scipy import sparse
+        return sparse.load_npz(cache_path)
 
     # Build on-the-fly using title + category as text
     text_col = "title"
@@ -308,12 +384,12 @@ def _load_or_build_tfidf(df: pd.DataFrame):
 
 def _load_or_build_svd(df: pd.DataFrame):
     """Load SVD matrix from disk if available, else build from scratch."""
-    import pickle
-
-    cache_path = os.getenv("SVD_CACHE", "models/svd_matrix.pkl")
-    if os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
+    cache_path = Path(os.getenv("SVD_CACHE", "models/svd_matrix.npy"))
+    if cache_path.exists():
+        _reject_unsafe_cache(cache_path)
+        if cache_path.suffix != ".npy":
+            raise RuntimeError("SVD cache must use the safe .npy array format.")
+        return np.load(cache_path, allow_pickle=False)
 
     # Build rating matrix and decompose
     from sklearn.decomposition import TruncatedSVD
@@ -321,6 +397,14 @@ def _load_or_build_svd(df: pd.DataFrame):
     tfidf = _load_or_build_tfidf(df)
     svd = TruncatedSVD(n_components=min(50, tfidf.shape[1] - 1), random_state=42)
     return svd.fit_transform(tfidf)
+
+
+def _reject_unsafe_cache(cache_path: Path) -> None:
+    if cache_path.suffix.lower() in UNSAFE_CACHE_SUFFIXES:
+        raise RuntimeError(
+            f"Refusing to load unsafe pickle model cache '{cache_path}'. "
+            "Use .npz for TF-IDF caches or .npy for SVD caches."
+        )
 
 
 # ---------------------------------------------------------------------------
