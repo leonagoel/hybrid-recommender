@@ -1063,21 +1063,24 @@ def get_recommendations(
     return payload
 
 
-@app.get("/api/user_recommend")
-def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
-    """Get hybrid recommendations for a user."""
-    if not models["ready"]:
+@app.get("/api/recommend/user/{user_id}")
+def get_user_recommendations(user_id: str, top_n: int = Query(10, le=50)):
+    """Get personalized recommendations for a user, or popularity fallback."""
+    if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     
-    recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
-    if not recs:
-        raise HTTPException(404, "User not found or no recommendations.")
+    is_fallback = False
+    collab = models["hybrid"].collab_model
+    if collab is None or user_id not in getattr(collab, "_user_to_idx", {}):
+        is_fallback = True
+
+    recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n)
         
     return {
         "query_user": user_id,
         "recommendations": recs,
+        "fallback": is_fallback,
         "weights": models["hybrid"].get_weights(),
-        "explain": explain,
     }
 
 @app.websocket("/ws/recommendations")
