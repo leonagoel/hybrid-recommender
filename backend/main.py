@@ -9,7 +9,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db import get_supabase, get_supabase_admin
+from backend.auth import _require_admin_access
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
@@ -156,7 +157,10 @@ def search_items(
 # ── Upload + Import ─────────────────────────────────────────────────
 
 @app.post("/api/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(
+    file: UploadFile = File(...),
+    admin=Depends(_require_admin_access)
+):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
     filename = file.filename or "data.csv"
