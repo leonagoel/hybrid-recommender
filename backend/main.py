@@ -369,7 +369,10 @@ def _extract_bearer_token(value: str | None) -> str:
 def _require_admin_access(request: Request) -> None:
     expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
     if not expected_token:
-        return
+        raise HTTPException(
+            status_code=500,
+            detail="Admin token not configured.",
+        )
 
     provided_token = (
         request.headers.get("x-admin-token", "").strip()
