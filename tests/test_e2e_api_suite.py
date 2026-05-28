@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture(scope="module")
 def api_client():
     """Provides an isolated session TestClient instance wrapper."""
-    from main import app
+    from backend.main import app
     with TestClient(app) as client:
         yield client
 
