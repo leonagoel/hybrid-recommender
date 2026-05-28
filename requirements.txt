@@ -13,3 +13,4 @@ tqdm
 torch
 transformers
 celery
+redis
