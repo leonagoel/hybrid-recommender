@@ -3,10 +3,23 @@ FastAPI Backend for Hybrid Recommender
 """
 import os
 import sys
+from pathlib import Path  # <-- Added
+from dotenv import load_dotenv  # <-- Added
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+# Calculate absolute paths and load environment variables first
+CURRENT_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
+
+ENV_PATH = PROJECT_ROOT / ".env"
+if ENV_PATH.exists():
+    load_dotenv(dotenv_path=ENV_PATH)
+else:
+    load_dotenv()
+
+# Fix the path mapping so internal src imports work perfectly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.data.dataset_manager import DatasetManager
@@ -16,6 +29,17 @@ from src.model.hybrid_model import HybridRecommender
 from src.model.causal_config import CausalConfig
 
 app = FastAPI(title="Hybrid Recommender API")
+# ===========================================================================
+# NEW: Dynamic Configuration Layout Environment Fetching
+# ===========================================================================
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://your-project-ref.supabase.co")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "your-anon-key-here")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# Fetch and clean the comma-separated CORS origins string into a clean list array
+RAW_CORS = os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
+CORS_ORIGINS = [origin.strip() for origin in RAW_CORS.split(",")]
+# ===========================================================================
 
 
 class RecommendationRequest(BaseModel):
@@ -35,9 +59,9 @@ class RecommendationRequest(BaseModel):
 _content_model: Optional[ContentRecommender] = None
 _collab_model: Optional[CollaborativeRecommender] = None
 _item_df = None
-    fairness: Optional[bool] = None
-    fairness_key: Optional[str] = None
-    fairness_max_share: Optional[float] = None
+fairness: Optional[bool] = None
+fairness_key: Optional[str] = None
+fairness_max_share: Optional[float] = None
 
 
 @app.on_event("startup")
