@@ -22,7 +22,7 @@ export const state = {
   lastQuery: '',
   searchResults: [],
   isSearching: false,
-  searchHistory: JSON.parse(localStorage.getItem('searchHistory') || '[]'), // new
+  searchHistory: JSON.parse(localStorage.getItem('searchHistory') || '[]'),
 
   // Recommendations
   currentItem: null,
@@ -82,11 +82,8 @@ export function addRecentlyViewed(title) {
 export function addToSearchHistory(query) {
   if (!query || query.trim() === '') return;
   let history = [...state.searchHistory];
-  // Remove duplicate if exists
   history = history.filter(item => item !== query);
-  // Insert at the beginning
   history.unshift(query);
-  // Keep only last 5
   history = history.slice(0, 5);
   state.searchHistory = history;
   localStorage.setItem('searchHistory', JSON.stringify(history));
@@ -106,4 +103,22 @@ export function clearSearchHistory() {
  */
 export function getSearchHistory() {
   return [...state.searchHistory];
+}
+
+// ── Anonymous Session ID (Issue #64) ────────────────────────────────────────
+
+/**
+ * Get or create a persistent anonymous user ID for this browser session.
+ * Uses sessionStorage so it is scoped to the tab — no cross-session
+ * fingerprinting. Generated once on first visit, reused on every
+ * /api/recommend call so the collaborative model can build history.
+ * @returns {string} UUID v4
+ */
+export function getAnonymousUserId() {
+  let id = sessionStorage.getItem('anon_user_id');
+  if (!id) {
+    id = crypto.randomUUID();
+    sessionStorage.setItem('anon_user_id', id);
+  }
+  return id;
 }

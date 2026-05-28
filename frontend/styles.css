@@ -202,8 +202,31 @@ body {
     transition: var(--transition);
 }
 
+.search-spinner {
+    position: absolute;
+    right: 18px;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    margin-top: -8px;
+    border: 2px solid rgba(255,255,255,0.25);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: searchSpin 700ms linear infinite;
+    pointer-events: none;
+}
+
+.header__search.is-loading .search-shortcut,
 #search-input:focus ~ .search-shortcut {
     opacity: 0;
+}
+
+.header__search.is-loading #search-input {
+    padding-right: 48px;
+}
+
+@keyframes searchSpin {
+    to { transform: rotate(360deg); }
 }
 
 /* Search Dropdown */
@@ -1485,7 +1508,7 @@ main {
 
 /* ── Responsive ──────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
-    .product-grid, .skeleton-grid, .trending-grid { 
+    .product-grid, .skeleton-grid, .trending-grid {
         grid-template-columns: repeat(3, 1fr);
         gap: 18px;
     }
@@ -1505,7 +1528,7 @@ main {
 @media (max-width: 768px) {
     .product-grid, .skeleton-grid, .trending-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 16px; 
+        gap: 16px;
     }
     .header__inner { gap: 12px; }
     .header__search { max-width: none; }
@@ -1529,9 +1552,9 @@ main {
 }
 
 @media (max-width: 480px) {
-    .product-grid, .skeleton-grid, .trending-grid { 
+    .product-grid, .skeleton-grid, .trending-grid {
         grid-template-columns: 1fr;
-        gap: 12px; 
+        gap: 12px;
     }
 
     .header { padding: 0 12px; }
