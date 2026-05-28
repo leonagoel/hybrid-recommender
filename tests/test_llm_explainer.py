@@ -250,9 +250,32 @@ class TestPromptBuilding:
             top_reviews=[],
             category=""
         )
-        
+
         assert prompt is not None
         assert len(prompt) > 0
+
+
+class TestFallbackExplanationEdgeCases:
+    """Test edge cases for fallback explanation generation."""
+
+    def test_fallback_with_empty_category_and_description(self):
+        """Test fallback explanation with empty category and description."""
+        explainer = LLMExplainer()
+        explanation = explainer._generate_fallback_explanation(
+            recommended_item="Item A",
+            query_item="Item B",
+            scores={"hybrid": 0.8},
+            description="",
+            category=""
+        )
+        assert explanation is not None
+        assert len(explanation) > 0
+
+    def test_explainer_initialization_without_api_key(self):
+        """Test that explainer initializes without API key (no crash)."""
+        explainer = LLMExplainer(api_key=None)
+        assert explainer is not None
+        assert explainer.model_name == "gemini-pro"
 
 
 if __name__ == "__main__":

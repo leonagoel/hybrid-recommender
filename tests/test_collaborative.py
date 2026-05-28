@@ -96,3 +96,36 @@ def test_top_n_validation_in_collaborative():
 
     assert len(model.recommend("Naruto", top_n=999)) <= 100
     assert len(model.predict_for_user(1, top_n=999)) <= 100
+
+
+def test_predict_for_user_top_n_limits():
+    """Test top_n default behavior in predict_for_user."""
+    df = sample_data()
+    model = CollaborativeRecommender(df)
+    results = model.predict_for_user(1)
+    assert len(results) <= 100
+
+
+def test_predict_for_user_with_catalog():
+    """Test catalog filtering in predict_for_user."""
+    df_with_catalog = pd.DataFrame({
+        "user_id": [1, 1, 2, 2],
+        "title": ["Item A", "Item B", "Item A", "Item C"],
+        "rating": [5, 4, 3, 4],
+        "catalog": ["books", "books", "movies", "movies"]
+    })
+    model = CollaborativeRecommender(df_with_catalog)
+    results = model.predict_for_user(2, target_catalog="movies", top_n=10)
+    assert isinstance(results, list)
+
+
+def test_user_with_all_items_seen():
+    """Test predict_for_user when user has seen all items."""
+    df = pd.DataFrame({
+        "user_id": [1, 1, 1],
+        "title": ["Item A", "Item B", "Item C"],
+        "rating": [5, 4, 3]
+    })
+    model = CollaborativeRecommender(df)
+    results = model.predict_for_user(1, top_n=10)
+    assert len(results) == 0
