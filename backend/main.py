@@ -545,7 +545,7 @@ class FeedbackCreate(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
     item: str = Field(..., min_length=1, max_length=500)
     feedback: str = Field(..., min_length=1, max_length=2000)
-
+    thumbs: str = Field(..., pattern=r"^(up|down)$")
 
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1756,15 +1756,24 @@ def get_trending_products(
 
 # ── Feedback ──────────────────────────────────────────────────────────
 @app.post("/api/feedback")
+@app.post("/api/feedback")
 def submit_feedback(
     data: FeedbackCreate,
-    _csrf: None = Depends(csrf_header_dep),
 ):
-    return {
-        "message": "Feedback submitted successfully",
-        "feedback": {"user_id": data.user_id, "item": data.item, "feedback": data.feedback}
-    }
 
+ logger.info(
+        "Feedback received: user=%s item=%s thumbs=%s",
+        data.user_id, data.item, data.thumbs
+    )
+ return {
+        "message": "Feedback submitted successfully",
+        "feedback": {
+            "user_id": data.user_id,
+            "item": data.item,
+            "feedback": data.feedback,
+            "thumbs": data.thumbs,
+        }
+    }
 
 # ── Export Dataset ────────────────────────────────────────────────────
 @app.get("/api/export/dataset")
