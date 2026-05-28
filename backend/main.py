@@ -13,6 +13,9 @@ import logging
 import math
 import secrets
 import re
+import json
+from redis import Redis
+from redis.exceptions import RedisError
 
 try:
     import bleach
@@ -154,6 +157,13 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 _response_cache: dict = {}
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+_redis_client = Redis.from_url(
+    REDIS_URL,
+    decode_responses=True,
+)
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
@@ -205,25 +215,85 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    try:
+        cached = _redis_client.get(key)
+
+        if cached is not None:
+            return json.loads(cached)
+
+    except (RedisError, json.JSONDecodeError):
+        pass
+
     with _cache_lock:
         cached = _response_cache.get(key)
+
         if not cached:
             return None
+
         expires_at, value = cached
+
         if expires_at <= time.time():
             _response_cache.pop(key, None)
             return None
+
         return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    try:
+        _redis_client.setex(
+            key,
+            CACHE_TTL_SECONDS,
+            json.dumps(value, default=str),
+        )
+        return
 
+    except (RedisError, TypeError):
+        pass
+
+    with _cache_lock:
+        _response_cache[key] = (
+            time.time() + CACHE_TTL_SECONDS,
+            value,
+        )
 
 def _clear_response_cache() -> None:
     with _cache_lock:
         _response_cache.clear()
+
+def _precompute_recommendation_cache(
+    top_n: int = 10,
+    explain: bool = False,
+) -> int:
+    if not models.get("ready") or models.get("item_df") is None:
+        return 0
+
+    count = 0
+    item_df = models["item_df"]
+
+    for title in item_df["title"].dropna().astype(str).unique():
+        cache_key = _cache_key("recommend", title, top_n, explain, "")
+
+        recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
+
+        if not recs:
+            continue
+
+        payload = {
+            "query_item": title,
+            "recommendations": recs,
+            "weights": models["hybrid"].get_weights(),
+            "explain": explain,
+            "target_catalog": None,
+            "model_version": ACTIVE_MODEL_VERSION,
+            "has_history": False,
+            "cache_precomputed": True,
+        }
+
+        _set_cached_response(cache_key, payload)
+        count += 1
+
+    return count
 
 
 def _normalize_search_query(query: str) -> str:
@@ -1084,6 +1154,7 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
     models["build_time"] = build_time
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
     _clear_response_cache()
+    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
     return {
         "message": "Models built successfully!",
         "model_version": version,
@@ -1091,6 +1162,7 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
         "items": len(item_df),
         "has_collaborative": collab_model is not None,
         "build_time_seconds": build_time,
+	"precomputed_recommendations": precomputed_count,
     }
 
 @app.post("/api/train/federated")
