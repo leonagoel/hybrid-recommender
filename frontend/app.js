@@ -278,11 +278,14 @@ function renderSearchDropdown(results, query) {
                 No results for "${query}"
             </div>`;
         els.searchDropdown.classList.add('active');
+        setSearchDropdownExpanded(true);
         return;
     }
 
     els.searchDropdown.innerHTML = results.map((r, i) => `
         <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
+            tabindex="0"
+            role="button"
              data-title="${r.title}" data-idx="${i}">
             <span style="font-size:20px;">${categoryIcon(r.category)}</span>
             <div class="search-result__info">
@@ -295,6 +298,7 @@ function renderSearchDropdown(results, query) {
         </div>
     `).join('');
     els.searchDropdown.classList.add('active');
+    setSearchDropdownExpanded(true);
 
     // Click handlers
     els.searchDropdown.querySelectorAll('.search-result').forEach((el) => {
@@ -302,6 +306,28 @@ function renderSearchDropdown(results, query) {
             const title = el.dataset.title;
             selectSearchResult(title);
         });
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        el.click();
+            }
+        });
+        el.addEventListener('keydown', (e) => {
+    const items = [...els.searchDropdown.querySelectorAll('.search-result')];
+    const currentIndex = items.indexOf(el);
+
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = items[(currentIndex + 1) % items.length];
+        next.focus();
+    }
+
+    if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = items[(currentIndex - 1 + items.length) % items.length];
+        prev.focus();
+    }
+});
     });
 }
 
@@ -318,9 +344,14 @@ function selectSearchResult(title) {
     loadRecommendations(title);
 }
 
+function setSearchDropdownExpanded(expanded) {
+    els.searchInput.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
+
 function closeSearchDropdown() {
     els.searchDropdown.classList.remove('active');
     state.selectedSearchIdx = -1;
+    setSearchDropdownExpanded(false);
 }
 
 function handleSearchKeydown(e) {
@@ -579,6 +610,7 @@ async function handleWeightChange() {
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
+    els.searchInput.setAttribute('aria-expanded', 'false');
     els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
     els.searchInput.addEventListener('keydown', handleSearchKeydown);
     els.searchInput.addEventListener('focus', () => {
