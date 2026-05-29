@@ -1,0 +1,46 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "[Feature]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? Fill this out and the bot will triage it automatically.
+        > ⚠️ The bot will automatically add `gssoc:approved` and other labels — do not add them manually.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature Description
+      placeholder: Describe your idea...
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem it Solves
+      placeholder: What problem does this feature address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      placeholder: How do you think this should be implemented?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      placeholder: Any alternative approaches you considered?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      placeholder: Add any mockups, diagrams, or extra context here.
