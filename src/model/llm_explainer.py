@@ -7,7 +7,7 @@ for why items were recommended.
 
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 try:
     import google.generativeai as genai
@@ -70,7 +70,6 @@ class LLMExplainer:
             description: Item description
             top_reviews: List of top reviews
             category: Item category
-            Reason: Why the item is recommended (main reason based on scores)
 
         Returns:
             Formatted prompt for LLM
@@ -158,15 +157,6 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
                     recommended_item, query_item, scores, description, category
                 )
             return response.text.strip()
-
-            response_text = getattr(response, "text", None)
-            if response_text:
-                return response_text.strip()
-
-            logger.warning("LLM returned empty response, using fallback")
-            return self._generate_fallback_explanation(
-                recommended_item, query_item, scores, description, category
-            )
 
         except Exception as e:
             logger.error(f"Error generating LLM explanation: {e}. Using fallback explanation.")

@@ -117,6 +117,23 @@ class TestHandleMissingValuesEdgeCases:
         result = handle_missing_values(df)
         assert len(result) == 3
 
+    def test_mixed_type_columns(self):
+        df = pd.DataFrame({
+            'text_col': ['a', None, 'c'],
+            'num_col': [1.0, None, 3.0]
+        })
+        result = handle_missing_values(df)
+        assert result['text_col'].isnull().sum() == 0
+        assert result['num_col'].isnull().sum() == 0
+
+    def test_numeric_uses_median(self):
+        df = pd.DataFrame({
+            'num_col': [1.0, 2.0, 3.0, None, 5.0]
+        })
+        result = handle_missing_values(df)
+        assert result['num_col'].notna().all()
+        assert result['num_col'].dtype in ['float64', 'int64']
+
 
 class TestRemoveDuplicatesEdgeCases:
     def test_empty_dataframe(self):
@@ -153,3 +170,23 @@ class TestEncodeCategoricalEdgeCases:
         df = pd.DataFrame({'title': ['a', 'b', 'c']})
         result = encode_categorical(df, columns=['nonexistent'])
         assert len(result) == 3
+
+    def test_normalize_ratings_single_row(self):
+        df = pd.DataFrame({'rating': [4.0]})
+        result = normalize_ratings(df)
+        assert len(result) == 1
+        assert 'rating_normalized' in result.columns
+
+    def test_encode_categorical_nan_values(self):
+        df = pd.DataFrame({'authors': ['a', None, 'b']})
+        result = encode_categorical(df, columns=None)
+        assert 'authors_encoded' in result.columns
+
+    def test_preprocess_all_nan(self):
+        df = pd.DataFrame({
+            'user_id': [None, None],
+            'book_id': [None, None],
+            'rating': pd.Series([None, None], dtype='float64')
+        })
+        result = preprocess(df)
+        assert len(result) > 0

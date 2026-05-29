@@ -379,3 +379,73 @@ def test_trending_rpc_result_is_cached(monkeypatch):
     client.get("/api/trending?days=7&limit=5")
 
     assert rpc_call_count["n"] == 1, "RPC must be called only once; second request served from cache"
+    query_mock = FakeQuery(mock_purchases)
+    monkeypatch.setattr(main, "get_supabase", lambda: FakeSupabase(query_mock))
+
+    # First call will populate cache because results are not empty
+    first_response = client.get("/api/trending")
+    assert first_response.status_code == 200
+    
+    # Second call should use cache even if get_supabase raises error
+    def failing_supabase():
+        raise RuntimeError("Should not be called because of cache!")
+        
+    monkeypatch.setattr(main, "get_supabase", failing_supabase)
+    second_response = client.get("/api/trending")
+    assert second_response.status_code == 200
+    assert second_response.json() == first_response.json()
+
+
+def test_trending_negative_ratings(monkeypatch):
+    # Reset cache
+    main.TRENDING_CACHE = {"data": None, "timestamp": None}
+    
+    mock_purchases = [
+        {
+            "product_id": 101,
+            "rating": -1.0,
+            "products": {
+                "id": 101,
+                "title": "Book A",
+                "category": "Books",
+                "rating": 4.5,
+                "avg_sentiment": 0.8,
+                "review_count": 10
+            }
+        }
+    ]
+    query_mock = FakeQuery(mock_purchases)
+    monkeypatch.setattr(main, "get_supabase", lambda: FakeSupabase(query_mock))
+
+    response = client.get("/api/trending")
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert len(results) > 0
+    assert results[0]["bayesian_rating"] < 3.0
+
+
+def test_trending_missing_product_details(monkeypatch):
+    # Reset cache
+    main.TRENDING_CACHE = {"data": None, "timestamp": None}
+    
+    mock_purchases = [
+        {
+            "product_id": 101,
+            "rating": 4.0,
+            "products": {
+                "id": 101,
+                "title": "Book A"
+                # Missing category, rating, sentiment, count
+            }
+        }
+    ]
+    query_mock = FakeQuery(mock_purchases)
+    monkeypatch.setattr(main, "get_supabase", lambda: FakeSupabase(query_mock))
+
+    response = client.get("/api/trending")
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert len(results) > 0
+    assert results[0]["category"] == ""
+    assert results[0]["rating"] == 0
+
