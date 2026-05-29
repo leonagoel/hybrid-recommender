@@ -883,10 +883,6 @@ def search_items(
             'rank': p.get('rank', 0.0),
         })
     
-    filtered = [
-        item for item in mock_items
-        if q.lower() in item["title"].lower()
-    ]
     
     def _product_price(product):
         metadata = product.get('metadata') or {}
