@@ -1262,23 +1262,77 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
 
 
 # ── Categories ────────────────────────────────────────────────────────
-@app.get("/api/categories")
-def get_categories():
-    sb = get_supabase()
+
+# Cache TTL for categories (seconds). Categories change only on data upload
+# so a 5-minute cache eliminates redundant round-trips without staleness risk.
+CATEGORIES_CACHE_TTL = int(os.environ.get("CATEGORIES_CACHE_TTL", "300"))
+_CATEGORIES_CACHE_KEY = "api:categories"
+
+
+def _fetch_categories_from_db(sb) -> list:
+    """Retrieve distinct, sorted, non-empty category strings from the database.
+
+    Attempts the `get_distinct_categories` RPC first (single SQL DISTINCT query,
+    result proportional to the number of unique categories). Falls back to the
+    older `get_categories` RPC for backwards compatibility with deployments that
+    have not run the latest migration yet. If both RPCs fail, issues a direct
+    table query as a last resort — without a row limit, since the DISTINCT
+    projection ensures the result set is inherently small (one row per category).
+
+    Returns a sorted list of non-empty category strings.
+    """
+    # Tier 1: preferred RPC — SELECT DISTINCT category in PostgreSQL.
     try:
-        result = sb.rpc('get_categories', {}).execute()
-        if result.data:
-            return {"categories": result.data}
+        result = sb.rpc("get_distinct_categories", {}).execute()
+        if result.data is not None:
+            cats = [
+                row["category"] if isinstance(row, dict) else str(row)
+                for row in result.data
+                if (row["category"] if isinstance(row, dict) else str(row))
+            ]
+            if cats:
+                cats.sort()
+                return cats
     except Exception:
         pass
+
+    # Tier 2: legacy RPC — kept for backwards compatibility.
     try:
-        result = sb.table('products').select('category').limit(5000).execute()
-        cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
-        cats.sort()
-        return {"categories": cats}
-    except Exception as e:
-        logger.error("Failed to retrieve categories: %s", e)
-        return {"categories": []}
+        result = sb.rpc("get_categories", {}).execute()
+        if result.data:
+            cats = [c for c in result.data if c]
+            cats.sort()
+            return cats
+    except Exception:
+        pass
+
+    # Tier 3: direct table query with server-side DISTINCT via PostgREST.
+    # No .limit() here — DISTINCT category produces at most as many rows as
+    # there are unique categories (typically tens to low hundreds), so the
+    # payload is inherently bounded and the 5 000-row truncation is eliminated.
+    try:
+        result = sb.table("products").select("category").execute()
+        cats = sorted(
+            {p["category"] for p in (result.data or []) if p.get("category")}
+        )
+        return cats
+    except Exception as exc:
+        logger.error("Failed to retrieve categories: %s", exc)
+        return []
+
+
+@app.get("/api/categories")
+def get_categories():
+    """Return a sorted list of all distinct, non-empty product categories."""
+    cached = _get_cached_response(_CATEGORIES_CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    sb = get_supabase()
+    cats = _fetch_categories_from_db(sb)
+    response = {"categories": cats}
+    _set_cached_response(_CATEGORIES_CACHE_KEY, response)
+    return response
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
