@@ -44,6 +44,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest
 
       - name: Download NLTK data
         run: |
@@ -73,6 +74,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest httpx
 
       - name: Download NLTK data
         run: |

@@ -313,6 +313,8 @@ class HybridRecommender:
         fairness=None,
         fairness_key=None,
         fairness_max_share=None,
+        diversity=0.0,
+        serendipity=0.0,
     ):
         """
         Get hybrid recommendations for a given item title.
@@ -445,6 +447,15 @@ class HybridRecommender:
             )
             results = self._debiaser.debias_batch(results, score_key=score_key)
             results.sort(key=lambda x: x[score_key], reverse=True)
+
+        # 8. Apply diversity and serendipity controls
+        if diversity > 0.0 or serendipity > 0.0:
+            results = self._diversity_rerank(
+                results, top_n,
+                diversity=diversity,
+                serendipity=serendipity
+            )
+
         apply_fairness = self.fairness_enabled if fairness is None else bool(fairness)
         if apply_fairness:
             key = fairness_key or self.fairness_key
@@ -452,7 +463,7 @@ class HybridRecommender:
             return self._fair_rerank(results, top_n, key, max_share)
 
         return results[:top_n]
-
+    
     def recommend_for_user(self, user_id, top_n=10, explain=False):
         """
         Get recommendations for a specific user.
@@ -632,3 +643,51 @@ class HybridRecommender:
                 'top_reviews': [],
             })
         return results
+    def _diversity_rerank(self, results, top_n, diversity=0.0, serendipity=0.0):
+            """
+            Re-ranks results to reduce filter bubbles.
+
+            Args:
+                results: list of recommendation dicts sorted by hybrid_score
+                top_n: number of final results to return
+                diversity: 0.0 = no diversity, 1.0 = max category variety
+                serendipity: 0.0 = no surprises, 1.0 = more random/unexpected items
+
+            Returns:
+                Re-ranked list of recommendations
+            """
+            if not results:
+                return results
+
+            if diversity == 0.0 and serendipity == 0.0:
+                return results[:top_n]
+
+            selected = []
+            remaining = results.copy()
+            seen_categories = []
+
+            while len(selected) < top_n and remaining:
+                best = None
+                best_score = -1
+
+                for item in remaining:
+                    score = item['hybrid_score']
+                    category = item.get('category', 'unknown')
+
+                    times_seen = seen_categories.count(category)
+                    diversity_penalty = diversity * times_seen * 0.2
+                    score = score - diversity_penalty
+
+                    surprise_bonus = serendipity * np.random.uniform(0, 0.3)
+                    score = score + surprise_bonus
+
+                    if score > best_score:
+                        best_score = score
+                        best = item
+
+                selected.append(best)
+                remaining.remove(best)
+                seen_categories.append(best.get('category', 'unknown'))
+
+            return selected
+    
