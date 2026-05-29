@@ -1134,12 +1134,11 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
-    admin=Depends(_require_admin_access)
+    admin=Depends(_require_admin_access),
+    _csrf: None = Depends(csrf_header_dep),
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
-    _csrf: None = Depends(csrf_header_dep),
-):
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
