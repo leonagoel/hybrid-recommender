@@ -18,8 +18,28 @@ import math
 import secrets
 import re
 import json
-from redis import Redis
-from redis.exceptions import RedisError
+try:
+    from redis import Redis
+    from redis.exceptions import RedisError
+except ModuleNotFoundError:
+    Redis = None
+
+    class RedisError(Exception):
+        pass
+
+# Redis cache (optional)
+_redis_client = None
+
+if Redis:
+    try:
+        _redis_client = Redis(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", 6379)),
+            decode_responses=True,
+        )
+    except Exception:
+        _redis_client = None
+
 from pydantic import BaseModel
 from fastapi import Header, HTTPException
 
@@ -160,15 +180,16 @@ def _cache_key(*parts: Any) -> str:
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
 
-    try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            _cache_hits += 1
-            return json.loads(cached)
-
-    except (RedisError, json.JSONDecodeError):
-        pass
+    if _redis_client:
+        try:
+            cached = _redis_client.get(key)
+    
+            if cached is not None:
+                _cache_hits += 1
+                return json.loads(cached)
+    
+        except (RedisError, json.JSONDecodeError):
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -189,6 +210,17 @@ def _get_cached_response(key: str):
 
 
 def _set_cached_response(key: str, value: Any) -> None:
+
+    if _redis_client:
+        try:
+            _redis_client.setex(
+                key,
+                CACHE_TTL_SECONDS,
+                json.dumps(value)
+            )
+        except (RedisError, TypeError):
+            pass
+
     with _cache_lock:
         _response_cache[key] = (
             time.time() + CACHE_TTL_SECONDS,
@@ -198,6 +230,12 @@ def _set_cached_response(key: str, value: Any) -> None:
 
 def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
+
+    if _redis_client:
+        try:
+            _redis_client.flushdb()
+        except RedisError:
+            pass
 
     with _cache_lock:
         _response_cache.clear()
