@@ -58,25 +58,10 @@ class HybridRecommender:
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-        self.kg_model = kg_model
-        self.delta = delta
-
-        # Expose model kwargs explicitly as structural configuration dictionaries
-        # Legacy compatibility: no explicit model_kwargs parameter in signature,
-        # so initialize empty dict to avoid NameError.
-        self.model_kwargs = {}
-
-        # Apply exposed parameters if dynamic updates are supplied on runtime triggers
-        if self.collab_model and self.model_kwargs:
-            n_factors = self.model_kwargs.get("n_factors")
-            use_implicit = self.model_kwargs.get("use_implicit")
-            
-            # Re-initialize or pass hyperparameters down safely if explicitly specified
-            if n_factors is not None and hasattr(self.collab_model, 'n_factors'):
-                self.collab_model.n_factors = n_factors
-            if use_implicit is not None and hasattr(self.collab_model, 'use_implicit'):
-                self.collab_model.use_implicit = use_implicit
-
+        self.model_kwargs = model_kwargs or {}
+        self.fairness_enabled = False
+        self.fairness_key = 'category'
+        self.fairness_max_share = 1.0
         # # normalization: 'minmax' or 'zscore'
         self.normalization = normalization
         # dynamic weighting matrix (dict of context -> (alpha,beta,gamma))
@@ -379,25 +364,22 @@ class HybridRecommender:
         collab_scores = self._normalize_scores(collab_raws)
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
-        kg_scores = []
-        t
-        if self.kg_model:
-            l
-            kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
-           
-            kg_map = {
-                item['title']: item['kg_score']
-                for item in kg_recs
-            }
+       kg_scores = [0.0] * len(items)
 
-            for item in items:
-                kg_scores.append(kg_map.get(item['title'], 0.0))
-
-            kg_scores = self._normalize_scores(kg_scores)
-
+        # 5. Determine active weights
+        if weights is not None:
+            a = weights.get("alpha", self.alpha)
+            b = weights.get("beta", self.beta)
+            g = weights.get("gamma", self.gamma)
+            tot = a + b + g
+            if tot > 0:
+                a, b, g = a / tot, b / tot, g / tot
         else:
-            kg_scores = [0.0] * len(items)
-
+            a, b, g = self._get_active_weights(
+                self.alpha, self.beta, self.gamma,
+                user_id=user_id,
+                candidate_titles=all_titles
+            )
         
 
         # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
