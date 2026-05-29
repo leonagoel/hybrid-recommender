@@ -762,64 +762,66 @@ def search_items(
         return cached
 
     is_fuzzy_fallback = False
-try:
-    sb = get_supabase()
 
-    if query:
-        try:
-            # 1. Attempt standard Full-Text Search (FTS) first
-            result = sb.rpc('search_products', {
-                'query_text': query,
-                'match_count': limit,
-                'offset_val': offset,
-            }).execute()
 
-            products = result.data or []
+    try:
+        sb = get_supabase()
 
-        except Exception as e:
-            logger.warning(
-                "Full-text search failed for query '%s': %s",
-                query.strip(),
-                e
-            )
-
-            # Fallback: LIKE search
-            result = sb.table('products') \
-                .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
-                .ilike('title', f'%{query.strip()}%') \
-                .order('rating', desc=True) \
-                .limit(limit) \
-                .execute()
-
-            products = result.data or []
-
-        # 2. Fuzzy fallback
-        if len(products) < 3:
-            is_fuzzy_fallback = True
-
-            fuzzy_res = sb.rpc('fuzzy_search_products', {
-                'q': query,
-                'threshold': 0.3
-            }).execute()
-
-            products = fuzzy_res.data or []
-
-    else:
-        query_builder = sb.table('products').select(
-            'id, title, description, category, rating, avg_sentiment, review_count, metadata'
-        )
-
-        if sort == "rating":
-            query_builder = query_builder.order('rating', desc=True)
+        if query:
+            try:
+                # 1. Attempt standard Full-Text Search (FTS) first
+                result = sb.rpc('search_products', {
+                    'query_text': query,
+                    'match_count': limit,
+                    'offset_val': offset,
+                }).execute()
+    
+                products = result.data or []
+    
+            except Exception as e:
+                logger.warning(
+                    "Full-text search failed for query '%s': %s",
+                    query.strip(),
+                    e
+                )
+    
+                # Fallback: LIKE search
+                result = sb.table('products') \
+                    .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
+                    .ilike('title', f'%{query.strip()}%') \
+                    .order('rating', desc=True) \
+                    .limit(limit) \
+                    .execute()
+    
+                products = result.data or []
+    
+            # 2. Fuzzy fallback
+            if len(products) < 3:
+                is_fuzzy_fallback = True
+    
+                fuzzy_res = sb.rpc('fuzzy_search_products', {
+                    'q': query,
+                    'threshold': 0.3
+                }).execute()
+    
+                products = fuzzy_res.data or []
+    
         else:
-            query_builder = query_builder.order('rating', desc=True) \
+            query_builder = sb.table('products').select(
+                'id, title, description, category, rating, avg_sentiment, review_count, metadata'
+            )
+    
+            if sort == "rating":
+                query_builder = query_builder.order('rating', desc=True)
+            else:
+                query_builder = query_builder.order('rating', desc=True) \
                 .order('review_count', desc=True)
-
-        result = query_builder.limit(limit).offset(offset).execute()
-        products = result.data or []
-
-except Exception as e:
-    logger.warning("Search fallback to mock products: %s", e)
+    
+            result = query_builder.limit(limit).offset(offset).execute()
+            products = result.data or []
+    
+    except Exception as e:
+        logger.warning("Search fallback to mock products: %s", e)
 
     products = MOCK_PRODUCTS
 
@@ -900,25 +902,53 @@ except Exception as e:
     
         except (TypeError, ValueError):
             return 0.0
-
+    
+    
     if sort == "price-low":
         products = sorted(products, key=_product_price)
-
+    
     elif sort == "price-high":
         products = sorted(products, key=_product_price, reverse=True)
-
+    
     elif sort == "rating":
         products = sorted(
             products,
             key=lambda p: float(p.get('rating') or 0),
             reverse=True
         )
-
+    
+    
     results = []
-
+    
     for p in products:
+    
+        raw_sentiment = p.get('avg_sentiment', 0.0)
+        reviews = p.get('reviews', [])
+    
+        if raw_sentiment == 0.0 and reviews:
+            try:
+                from nlp_engine import compute_product_sentiment
+    
+                computed_sentiment = compute_product_sentiment(reviews)
+    
+                sentiment_value = (
+                    computed_sentiment
+                    if computed_sentiment is not None
+                    else "N/A"
+                )
+    
+            except Exception:
+                sentiment_value = "N/A"
+    
+        else:
+            sentiment_value = (
+                raw_sentiment
+                if raw_sentiment != 0.0
+                else "N/A"
+            )
+    
         price = _product_price(p)
-
+    
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
@@ -926,13 +956,14 @@ except Exception as e:
             'category': p.get('category', ''),
             'rating': p.get('rating', 0.0),
             'price': price,
-            'avg_sentiment': p.get('avg_sentiment', 0.0),
+            'avg_sentiment': sentiment_value,
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-
+    
+    
     result_count = len(results)
-
+    
     payload = {
         "results": results,
         "count": result_count,
@@ -941,10 +972,10 @@ except Exception as e:
         "sort": sort,
         "is_fallback": not query or is_fuzzy_fallback,
     }
-
+    
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
-
+    
     return payload
 
 
