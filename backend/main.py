@@ -51,9 +51,6 @@ from collections import defaultdict
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-# Logger setup
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
