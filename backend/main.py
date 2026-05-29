@@ -62,6 +62,12 @@ load_dotenv()
 
 from db import get_supabase, get_supabase_admin
 from backend.auth import _require_admin_access
+from backend.csrf import (
+    CSRFTokenResponse,
+    CSRFMiddleware,
+    generate_csrf_token,
+    set_csrf_cookie,
+)
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
@@ -443,6 +449,12 @@ def _require_admin_access(request: Request) -> None:
 
 def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
+
+
+def csrf_header_dep(x_csrf_token: str = Header(..., alias="X-CSRF-Token")) -> None:
+    """Document the required CSRF echo header for mutating endpoints."""
+    if not x_csrf_token:
+        raise HTTPException(status_code=403, detail="CSRF token missing.")
 
 
 def _get_feedback_storage_client():
