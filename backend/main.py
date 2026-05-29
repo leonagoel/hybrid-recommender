@@ -10,6 +10,10 @@ import sys
 import io
 import time
 import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 import math
 import secrets
 import re
@@ -46,6 +50,10 @@ from collections import defaultdict
 
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+# Logger setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -84,16 +92,12 @@ app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
 def download_nltk_assets():
-    """
-    Ensures NLTK VADER assets are downloaded safely at startup
-    to prevent multi-worker download race conditions.
-    """
     try:
         SentimentIntensityAnalyzer()
         logger.info("NLTK VADER lexicon verified successfully.")
     except LookupError:
         logger.info("VADER lexicon missing. Downloading safely at startup...")
-        nltk.download('vader_lexicon', quiet=True)
+        nltk.download("vader_lexicon", quiet=True)
         logger.info("NLTK VADER lexicon downloaded successfully.")
 
 
