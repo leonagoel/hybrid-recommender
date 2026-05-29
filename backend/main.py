@@ -13,6 +13,9 @@ import logging
 import math
 import secrets
 import re
+import json
+from redis import Redis
+from redis.exceptions import RedisError
 
 try:
     import bleach
@@ -84,24 +87,6 @@ from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, C
 
 
 # ── OpenAPI CSRF header dependency ────────────────────────────────────
-# WHY a Depends() instead of just relying on the middleware?
-#
-# The CSRFMiddleware enforces the token at the ASGI level — it never
-# touches the OpenAPI schema that FastAPI builds from route signatures.
-# Swagger UI only renders parameters that appear in the schema, so the
-# X-CSRF-Token field is invisible to users testing the API interactively.
-#
-# This dependency solves that purely at the documentation layer:
-#   - It declares X-CSRF-Token as a required header parameter on every
-#     route that includes Depends(csrf_header_dep).
-#   - FastAPI adds it to the OpenAPI spec → Swagger UI renders the field.
-#   - The function body does nothing (returns None) because the middleware
-#     has already validated the token before the route handler runs.
-#   - No double-validation, no logic duplication.
-#
-# The `alias="X-CSRF-Token"` preserves the canonical mixed-case header
-# name in the OpenAPI spec so Swagger UI labels it correctly, even though
-# Starlette lowercases all incoming headers internally.
 async def csrf_header_dep(
     x_csrf_token: str = Header(
         ...,
@@ -114,11 +99,7 @@ async def csrf_header_dep(
     ),
 ) -> None:
     """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
-    # The middleware has already validated the token before this runs.
-    # This function exists solely to make the header visible in Swagger UI.
-
-# ── App ──────────────────────────────────────────────────────────────
-app = FastAPI(title="Hybrid Recommender API", version="3.0")
+    pass
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
@@ -130,22 +111,13 @@ def download_nltk_assets():
     to prevent multi-worker download race conditions.
     """
     try:
-        # Check if VADER is already downloaded and working locally
         SentimentIntensityAnalyzer()
         logger.info("NLTK VADER lexicon verified successfully.")
     except LookupError:
-        # If it's missing, download it safely on a single thread before taking traffic
         logger.info("VADER lexicon missing. Downloading safely at startup...")
         nltk.download('vader_lexicon', quiet=True)
         logger.info("NLTK VADER lexicon downloaded successfully.")
 
-@app.get("/health", tags=["meta"])
-async def health_check():
-    """
-    Liveness probe used by Docker Compose health check.
-    Returns 200 when the server is ready to accept requests.
-    """
-    return JSONResponse({"status": "ok"})
 
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
@@ -154,6 +126,13 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 _response_cache: dict = {}
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+_redis_client = Redis.from_url(
+    REDIS_URL,
+    decode_responses=True,
+)
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
@@ -205,25 +184,85 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    try:
+        cached = _redis_client.get(key)
+
+        if cached is not None:
+            return json.loads(cached)
+
+    except (RedisError, json.JSONDecodeError):
+        pass
+
     with _cache_lock:
         cached = _response_cache.get(key)
+
         if not cached:
             return None
+
         expires_at, value = cached
+
         if expires_at <= time.time():
             _response_cache.pop(key, None)
             return None
+
         return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    try:
+        _redis_client.setex(
+            key,
+            CACHE_TTL_SECONDS,
+            json.dumps(value, default=str),
+        )
+        return
 
+    except (RedisError, TypeError):
+        pass
+
+    with _cache_lock:
+        _response_cache[key] = (
+            time.time() + CACHE_TTL_SECONDS,
+            value,
+        )
 
 def _clear_response_cache() -> None:
     with _cache_lock:
         _response_cache.clear()
+
+def _precompute_recommendation_cache(
+    top_n: int = 10,
+    explain: bool = False,
+) -> int:
+    if not models.get("ready") or models.get("item_df") is None:
+        return 0
+
+    count = 0
+    item_df = models["item_df"]
+
+    for title in item_df["title"].dropna().astype(str).unique():
+        cache_key = _cache_key("recommend", title, top_n, explain, "")
+
+        recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
+
+        if not recs:
+            continue
+
+        payload = {
+            "query_item": title,
+            "recommendations": recs,
+            "weights": models["hybrid"].get_weights(),
+            "explain": explain,
+            "target_catalog": None,
+            "model_version": ACTIVE_MODEL_VERSION,
+            "has_history": False,
+            "cache_precomputed": True,
+        }
+
+        _set_cached_response(cache_key, payload)
+        count += 1
+
+    return count
 
 
 def _normalize_search_query(query: str) -> str:
@@ -261,25 +300,6 @@ def _set_cache_headers(response: Response, status: str) -> None:
     response.headers["X-Cache"] = status
 
 
-def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
-    if not contents:
-        raise HTTPException(400, "Uploaded file is empty.")
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
-    if b"\x00" in contents[:4096]:
-        raise HTTPException(400, "Uploaded file appears to be binary.")
-
-    sample = contents[:4096].lstrip()
-    lowered_name = filename.lower()
-    if ext == ".json":
-        if not sample.startswith((b"{", b"[")):
-            raise HTTPException(400, "JSON uploads must contain JSON content.")
-    elif ext == ".csv":
-        lowered_sample = sample[:128].lower()
-        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
-            raise HTTPException(400, "CSV uploads must contain CSV content.")
-        if not lowered_name.endswith(".csv"):
-            raise HTTPException(400, "CSV uploads must use a .csv filename.")
 def _get_rate_limit(limit_env: str, default_limit: int) -> int:
     try:
         limit = int(os.environ.get(limit_env, str(default_limit)))
@@ -336,26 +356,6 @@ def _apply_rate_limit(
     return None
 
 
-def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
-    if not contents:
-        raise HTTPException(400, "Uploaded file is empty.")
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
-    if b"\x00" in contents[:4096]:
-        raise HTTPException(400, "Uploaded file appears to be binary.")
-
-    sample = contents[:4096].lstrip()
-    lowered_name = filename.lower()
-    if ext == ".json":
-        if not sample.startswith((b"{", b"[")):
-            raise HTTPException(400, "JSON uploads must contain JSON content.")
-    elif ext == ".csv":
-        lowered_sample = sample[:128].lower()
-        if lowered_sample.startswith((b"{", b"[", b"<!doctype", b"<html", b"<?xml")):
-            raise HTTPException(400, "CSV uploads must contain CSV content.")
-        if not lowered_name.endswith(".csv"):
-            raise HTTPException(400, "CSV uploads must use a .csv filename.")
-
 
 def _extract_bearer_token(value: str | None) -> str:
     if not value:
@@ -379,6 +379,17 @@ def _require_admin_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Admin token required.")
 
 
+def _admin_access_dep(request: Request) -> None:
+    _require_admin_access(request)
+
+
+def _get_feedback_storage_client():
+    client = get_supabase_admin()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Feedback storage is unavailable.")
+    return client
+
+
 # CORS
 allowed_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
 allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
@@ -388,20 +399,16 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    # Explicitly list X-CSRF-Token so browsers allow it in pre-flight.
     allow_headers=["*", "X-CSRF-Token"],
 )
 
-# CSRF middleware must be registered AFTER CORSMiddleware so that
-# OPTIONS pre-flight requests are resolved by CORS before reaching
-# CSRF validation (OPTIONS is a safe method and is skipped anyway,
-# but ordering keeps the intent explicit).
 app.add_middleware(CSRFMiddleware)
 
 # ── Response Time Monitoring ─────────────────────────────────────────
 SLOW_RESPONSE_THRESHOLD_MS = 500.0
 METRICS_SAMPLE_SIZE = 1000
 response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
+METRICS_WINDOW_SECONDS = 600
 response_metrics = {
     "total_requests": 0,
     "error_requests": 0,
@@ -423,7 +430,17 @@ def record_response_metric(endpoint, method, status_code, response_time_ms):
         response_metrics["total_requests"] += 1
         if status_code >= 400:
             response_metrics["error_requests"] += 1
-        response_time_samples.append(response_time_ms)
+        response_time_samples.append(
+          (time.time(), response_time_ms)
+        )
+
+        current_time = time.time()
+
+        while (
+          response_time_samples
+          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
+        ):
+          response_time_samples.popleft()
     log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
     if log_level == logging.WARNING:
         logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
@@ -442,7 +459,7 @@ def reset_response_metrics():
 
 def get_response_metrics_snapshot():
     with response_metrics_lock:
-        samples = list(response_time_samples)
+        samples = [value for _, value in response_time_samples]
         total_requests = response_metrics["total_requests"]
         error_requests = response_metrics["error_requests"]
     avg_response_time = sum(samples) / len(samples) if samples else 0.0
@@ -507,23 +524,22 @@ class RealtimeConnectionHub:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-      disconnected = []
+        disconnected = []
 
-      for connection in self.active_connections:
-        try:
-          await connection.send_json(message)
-        except Exception:
-          disconnected.append(connection)
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.append(connection)
 
-      for connection in disconnected:
-        self.disconnect(connection)
+        for connection in disconnected:
+            self.disconnect(connection)
 
 realtime_hub = RealtimeConnectionHub()
 
 
 class WeightsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     alpha: float = 0.4
     beta: float = 0.35
     gamma: float = 0.25
@@ -531,8 +547,6 @@ class WeightsUpdate(BaseModel):
 
 class PurchaseCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-    # Pattern mirrors _USER_ID_RE — enforced at the Pydantic layer before any DB call.
     user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
     product_id: int = Field(..., gt=0)
     rating: float = Field(0.0, ge=0.0, le=5.0)
@@ -541,15 +555,13 @@ class PurchaseCreate(BaseModel):
 
 class FeedbackCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
     item: str = Field(..., min_length=1, max_length=500)
     feedback: str = Field(..., min_length=1, max_length=2000)
-
+    thumbs: str = Field(..., pattern=r"^(up|down)$")
 
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     item_title: str
     top_n: int = 10
     explain: bool = False
@@ -559,45 +571,18 @@ class RealtimeRecommendationRequest(BaseModel):
 # ── CSRF Token ───────────────────────────────────────────────────────
 @app.get(
     "/api/csrf-token",
-    response_model=CSRFTokenResponse,   # Typed OpenAPI schema — documents the response shape
+    response_model=CSRFTokenResponse,
     summary="Issue a CSRF token",
     tags=["Security"],
 )
 def get_csrf_token(response: Response):
-    """
-    Issue a fresh CSRF token using the Double Submit Cookie pattern.
-
-    Call this endpoint once on page load before making any state-mutating
-    request (POST / PUT / PATCH / DELETE).  The token is delivered two ways:
-
-    1. Cookie `csrftoken` — set automatically by the browser on all
-       subsequent same-origin requests.  Readable by JavaScript (not HttpOnly)
-       so the frontend can copy it into the request header.
-
-    2. JSON body `csrfToken` — store this value in memory and attach it as
-       the `X-CSRF-Token` header on every mutating request.
-
-    The middleware validates that both values are present and identical.
-    A missing or mismatched token returns HTTP 403.
-    """
-    # Generate a 256-bit cryptographically secure token.
-    # secrets.token_hex(32) reads from the OS CSPRNG (/dev/urandom on Linux,
-    # BCryptGenRandom on Windows) — never use random.token_hex for security.
     token = generate_csrf_token()
-
-    # Write the token into the cookie and set Cache-Control: no-store.
-    # set_csrf_cookie mutates the Response object in-place; FastAPI serialises
-    # the Set-Cookie header automatically when the response is sent.
     set_csrf_cookie(response, token)
-
-    # Return the same token in the body so the frontend can store it in memory
-    # and inject it as the X-CSRF-Token header on mutating requests.
     return CSRFTokenResponse(csrfToken=token)
 
 
 class FederatedTrainRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     n_factors: int = 20
     epochs: int = 5
     lr: float = 0.05
@@ -633,7 +618,6 @@ def get_api_metrics():
 # ── Config ────────────────────────────────────────────────────────────
 @app.get("/api/config")
 def get_config():
-    # Expose only the URL — never return keys over an unauthenticated endpoint.
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
     }
@@ -670,18 +654,16 @@ def dashboard(request: Request):
     purchase_counts = Counter()
 
     try:
-      user_result = sb.rpc('get_total_users').execute()
-      total_users = user_result.data or 0
+        user_result = sb.rpc('get_total_users').execute()
+        total_users = user_result.data or 0
 
-      top_products_result = sb.rpc('get_top_product_counts').execute()
-
-      purchase_counts = Counter({
-        row['product_id']: row['interaction_count']
-        for row in (top_products_result.data or [])
-      })
-
+        top_products_result = sb.rpc('get_top_product_counts').execute()
+        purchase_counts = Counter({
+            row['product_id']: row['interaction_count']
+            for row in (top_products_result.data or [])
+        })
     except Exception as e:
-      logger.warning("Dashboard error: %s", e)
+        logger.warning("Dashboard error: %s", e)
 
     avg_recommendation_score = 0.0
     avg_sentiment_score = 0.0
@@ -748,7 +730,6 @@ def search_items(
     ),
 ):
     query = _normalize_search_query(q)
-    # ── Rate Limiting ──
     try:
         rate_limit = int(os.environ.get("RATE_LIMIT_SEARCH_PER_MIN", "60"))
     except ValueError:
@@ -787,14 +768,25 @@ def search_items(
         _set_cache_headers(response, "HIT")
         return cached
 
+    is_fuzzy_fallback = False
     try:
         sb = get_supabase()
 
         if query:
+            # 1. Attempt standard Full-Text Search (FTS) first
             result = sb.rpc('search_products', {
                 'query_text': query, 'match_count': limit, 'offset_val': offset,
             }).execute()
             products = result.data or []
+            
+            # 2. Task 4 Fallback: If FTS returns fewer than 3 matches, trigger fuzzy search
+            if len(products) < 3:
+                is_fuzzy_fallback = True
+                fuzzy_res = sb.rpc('fuzzy_search_products', {
+                    'q': query, 
+                    'threshold': 0.3
+                }).execute()
+                products = fuzzy_res.data or []
         else:
             query_builder = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count, metadata')
 
@@ -829,7 +821,6 @@ def search_items(
             if product.get('price') is not None
             else metadata.get('price')
         )
-
         try:
             return float(raw_price or 0)
         except (TypeError, ValueError):
@@ -861,7 +852,7 @@ def search_items(
         "total": result_count,
         "query": query,
         "sort": sort,
-        "is_fallback": not query,
+        "is_fallback": not query or is_fuzzy_fallback,
     }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
@@ -880,7 +871,6 @@ def autocomplete_products(
         return {"suggestions": []}
     try:
         escaped_query = _escape_like_pattern(query)
-        # Value is passed as a PostgREST filter parameter — not interpolated into raw SQL.
         result = (
             sb.table('products')
             .select('title')
@@ -901,20 +891,79 @@ def autocomplete_products(
         raise HTTPException(status_code=500, detail="Autocomplete failed")
 
 
+# ── Fuzzy Search Endpoint ─────────────────────────────────────────────
+@app.get("/api/search/fuzzy")
+def fuzzy_search_items(
+    request: Request,
+    response: Response,
+    q: str = "",
+    threshold: float = Query(0.3, ge=0.0, le=1.0),
+):
+    """
+    Task 3: Executes a typo-tolerant string similarity lookup 
+    using the PostgreSQL pg_trgm extension via Supabase RPC.
+    """
+    query = _normalize_search_query(q)
+    if not query:
+        return {"results": [], "count": 0, "query": query}
+
+    try:
+        sb = get_supabase()
+        result = sb.rpc('fuzzy_search_products', {
+            'q': query, 
+            'threshold': threshold
+        }).execute()
+        
+        products = result.data or []
+        
+        results = []
+        for p in products:
+            metadata = p.get('metadata') or {}
+            price = float(p.get('price') if p.get('price') is not None else metadata.get('price', 0.0))
+            results.append({
+                'id': p.get('id'), 
+                'title': p.get('title', ''),
+                'description': str(p.get('description', ''))[:200],
+                'category': p.get('category', ''), 
+                'rating': p.get('rating', 0.0),
+                'price': price,
+                'avg_sentiment': p.get('avg_sentiment', 0.0),
+                'review_count': p.get('review_count', 0), 
+                'rank': p.get('rank', 0.0),
+            })
+            
+        return {
+            "results": results,
+            "count": len(results),
+            "query": query,
+            "threshold": threshold
+        }
+    except Exception as e:
+        logger.error("Fuzzy search pipeline exception: %s", e)
+        raise HTTPException(status_code=500, detail="Fuzzy search failed")
+
+
 def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
+    """Validate raw upload bytes: empty, size, binary, and content-type checks."""
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    if b'\x00' in contents:
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
+    if b"\x00" in contents[:4096]:
         raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
     try:
         decoded = contents.decode("utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
-    
+        raise HTTPException(status_code=400, detail="Uploaded file must be UTF-8 encoded.")
+
     stripped = decoded.strip()
+    lowered_name = filename.lower()
     if ext == ".csv":
-        if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+        lowered_sample = stripped[:128].lower()
+        if lowered_sample.startswith(("{", "[", "<!doctype", "<html", "<?xml")):
             raise HTTPException(status_code=400, detail="CSV uploads must contain CSV content.")
+        if not lowered_name.endswith(".csv"):
+            raise HTTPException(status_code=400, detail="CSV uploads must use a .csv filename.")
     elif ext == ".json":
         if not (stripped.startswith("{") or stripped.startswith("[")):
             raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
@@ -922,7 +971,7 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
         try:
             json.loads(stripped)
         except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
+            raise HTTPException(status_code=400, detail="JSON uploads must contain valid JSON.")
 
 
 # ── Upload ────────────────────────────────────────────────────────────
@@ -1005,7 +1054,10 @@ async def upload_dataset(
 
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
-def build_models(_csrf: None = Depends(csrf_header_dep)):
+def build_models(
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
     global STAGING_MODEL_VERSION
     try:
        sb = get_supabase_admin()
@@ -1084,6 +1136,7 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
     models["build_time"] = build_time
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
     _clear_response_cache()
+    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
     return {
         "message": "Models built successfully!",
         "model_version": version,
@@ -1091,10 +1144,14 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
         "items": len(item_df),
         "has_collaborative": collab_model is not None,
         "build_time_seconds": build_time,
+	"precomputed_recommendations": precomputed_count,
     }
 
 @app.post("/api/train/federated")
-def train_federated(req: FederatedTrainRequest):
+def train_federated(
+    req: FederatedTrainRequest,
+    _admin: None = Depends(_admin_access_dep),
+):
     sb = get_supabase()
     all_products = []
     page_size = 1000
@@ -1181,6 +1238,7 @@ def train_federated(req: FederatedTrainRequest):
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(
+    request: Request,
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
@@ -1306,22 +1364,25 @@ def get_recommendations(
     return payload
 
 
-@app.get("/api/user_recommend")
-def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
-    """Get hybrid recommendations for a user."""
+@app.get("/api/recommend/user/{user_id}")
+def get_user_recommendations(user_id: str, top_n: int = Query(10, le=50), explain: bool = Query(False)):
+    """Get personalized recommendations for a user, or popularity fallback."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
-    if not models["ready"]:
+    if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     
+    is_fallback = False
+    collab = models["hybrid"].collab_model
+    if collab is None or user_id not in getattr(collab, "_user_to_idx", {}):
+        is_fallback = True
+
     recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
-    if not recs:
-        raise HTTPException(404, "User not found or no recommendations.")
         
     return {
         "query_user": user_id,
         "recommendations": recs,
+        "fallback": is_fallback,
         "weights": models["hybrid"].get_weights(),
-        "explain": explain,
     }
 
 @app.websocket("/ws/recommendations")
@@ -1483,7 +1544,11 @@ def list_models():
         ],
     }
 @app.post("/api/models/{version}/promote")
-def promote_model(version: str, _csrf: None = Depends(csrf_header_dep)):
+def promote_model(
+    version: str,
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
     global ACTIVE_MODEL_VERSION, SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
 
     if version not in MODEL_REGISTRY:
@@ -1522,7 +1587,11 @@ def promote_model(version: str, _csrf: None = Depends(csrf_header_dep)):
     }
 
 @app.post("/api/models/{version}/shadow")
-def move_model_to_shadow(version: str, _csrf: None = Depends(csrf_header_dep)):
+def move_model_to_shadow(
+    version: str,
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
     global SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
 
     if version not in MODEL_REGISTRY:
@@ -1552,6 +1621,7 @@ def get_weights():
 def update_weights(
     w: WeightsUpdate,
     _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
 ):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
@@ -1756,15 +1826,49 @@ def get_trending_products(
 
 # ── Feedback ──────────────────────────────────────────────────────────
 @app.post("/api/feedback")
+@app.post("/api/feedback")
 def submit_feedback(
     data: FeedbackCreate,
+    request: Request,
+    response: Response,
     _csrf: None = Depends(csrf_header_dep),
 ):
-    return {
-        "message": "Feedback submitted successfully",
-        "feedback": {"user_id": data.user_id, "item": data.item, "feedback": data.feedback}
+    limited_response = _apply_rate_limit(
+        request,
+        response,
+        scope="feedback",
+        limit_env="RATE_LIMIT_FEEDBACK_PER_MIN",
+        default_limit=20,
+    )
+    if limited_response is not None:
+        return limited_response
+
+    feedback_client = _get_feedback_storage_client()
+    feedback_record = {
+        "user_id": data.user_id,
+        "item": data.item,
+        "feedback": data.feedback,
+        "metadata": {
+            "source_ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent", ""),
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    try:
+        result = feedback_client.table("feedback_submissions").insert(feedback_record).execute()
+    except Exception as exc:
+        logger.error("Failed to persist feedback submission: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to store feedback.")
+
+    stored_feedback = feedback_record
+    if getattr(result, "data", None):
+        stored_feedback = result.data[0] if isinstance(result.data, list) else result.data
+
+    return {
+        "message": "Feedback submitted successfully",
+        "feedback": stored_feedback,
+    }
 
 # ── Export Dataset ────────────────────────────────────────────────────
 @app.get("/api/export/dataset")
@@ -1795,7 +1899,7 @@ import hashlib
 def _verify_github_signature(request_body: bytes, signature_header: str | None) -> None:
     secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
     if not secret:
-        return
+        raise HTTPException(status_code=500, detail="GITHUB_WEBHOOK_SECRET is not configured.")
     if not signature_header:
         raise HTTPException(status_code=401, detail="Signature header X-Hub-Signature-256 missing.")
     if not signature_header.startswith("sha256="):
@@ -1813,7 +1917,17 @@ def _verify_github_signature(request_body: bytes, signature_header: str | None) 
 
 
 @app.post("/api/webhook/github")
-async def github_webhook(request: Request):
+async def github_webhook(request: Request, response: Response):
+    limited_response = _apply_rate_limit(
+        request,
+        response,
+        scope="github_webhook",
+        limit_env="RATE_LIMIT_GITHUB_WEBHOOK_PER_MIN",
+        default_limit=60,
+    )
+    if limited_response is not None:
+        return limited_response
+
     body_bytes = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
     _verify_github_signature(body_bytes, signature)

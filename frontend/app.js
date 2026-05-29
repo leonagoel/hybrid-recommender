@@ -1934,12 +1934,19 @@ async function loadCategories() {
         const data = await API.get('/api/categories');
         const categories = data.categories || [];
 
-        els.categoryFilter.innerHTML = `
-            <option value="All Categories">All Categories</option>
-            ${categories.map(cat => `
-                <option value="${cat}">${cat}</option>
-            `).join('')}
-        `;
+        els.categoryFilter.textContent = '';
+
+        const allOption = document.createElement('option');
+        allOption.value = 'All Categories';
+        allOption.textContent = 'All Categories';
+        els.categoryFilter.appendChild(allOption);
+
+        categories.forEach((category) => {
+            const option = document.createElement('option');
+            option.value = String(category ?? '');
+            option.textContent = String(category ?? '');
+            els.categoryFilter.appendChild(option);
+        });
     } catch (err) {
         console.error('Failed to load categories', err);
     }
@@ -2001,7 +2008,6 @@ document.querySelectorAll(".product-card").forEach(card => {
     });
 });
 
-document.addEventListener('DOMContentLoaded', init);
 document.addEventListener('DOMContentLoaded', init);
 
 // ── Language Toggle ─────────────────────────────────────────────────
