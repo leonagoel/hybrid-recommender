@@ -74,7 +74,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest httpx
+          pip install pytest pytest-asyncio anyio
 
       - name: Download NLTK data
         run: |
