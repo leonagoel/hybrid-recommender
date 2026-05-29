@@ -2331,10 +2331,33 @@ def export_dataset(columns: Optional[str] = Query(None)):
 import hmac
 import hashlib
 
+
+def _is_development_env() -> bool:
+    env_candidates = [
+        os.environ.get("ENV", ""),
+        os.environ.get("NODE_ENV", ""),
+        os.environ.get("APP_ENV", ""),
+        os.environ.get("FASTAPI_ENV", ""),
+    ]
+    normalized = {value.strip().lower() for value in env_candidates if value}
+    if normalized.intersection({"dev", "development", "local", "test", "testing"}):
+        return True
+
+    testing_flag = os.environ.get("TESTING", "").strip().lower()
+    return testing_flag in {"1", "true", "yes", "on"}
+
 def _verify_github_signature(request_body: bytes, signature_header: str | None) -> None:
     secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
     if not secret:
-        raise HTTPException(status_code=500, detail="GITHUB_WEBHOOK_SECRET is not configured.")
+        if _is_development_env():
+            logger.warning(
+                "GITHUB_WEBHOOK_SECRET is not configured; allowing unsigned webhook in development mode."
+            )
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="Webhook verification unavailable: GITHUB_WEBHOOK_SECRET is not configured.",
+        )
     if not signature_header:
         raise HTTPException(status_code=401, detail="Signature header X-Hub-Signature-256 missing.")
     if not signature_header.startswith("sha256="):

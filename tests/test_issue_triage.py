@@ -19,6 +19,8 @@ from src.model.issue_triage import (
     apply_github_actions
 )
 
+from backend import main
+
 
 # ===========================================================================
 # REQUIRED EDGE-CASE TESTS FOR ISSUE #625
@@ -155,3 +157,66 @@ async def test_triage_issue_executes_api_with_token(monkeypatch):
     
     assert res["github_api"]["labels"] == 200
     assert res["github_api"]["comment"] == 201
+
+
+def test_webhook_rejects_missing_secret_in_production(monkeypatch):
+    monkeypatch.delenv("GITHUB_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("NODE_ENV", "production")
+    monkeypatch.delenv("TESTING", raising=False)
+
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/webhook/github",
+        json={"action": "opened"},
+        headers={"X-GitHub-Event": "issues"},
+    )
+
+    assert response.status_code == 503
+    assert "GITHUB_WEBHOOK_SECRET" in response.json()["detail"]
+
+
+def test_webhook_rejects_invalid_signature(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "super-secret-key")
+
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/webhook/github",
+        json={"action": "opened"},
+        headers={
+            "X-GitHub-Event": "issues",
+            "X-Hub-Signature-256": "sha256=invalid-signature",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_webhook_accepts_valid_signature(monkeypatch):
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "super-secret-key")
+
+    payload = {
+        "action": "opened",
+        "issue": {"number": 1, "title": "t", "body": "b"},
+        "repository": {"full_name": "o/r"},
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(b"super-secret-key", payload_bytes, hashlib.sha256).hexdigest()
+
+    mock_triage = AsyncMock(return_value={"status": "mocked"})
+    monkeypatch.setattr(main, "triage_issue", mock_triage)
+
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/webhook/github",
+        content=payload_bytes,
+        headers={
+            "X-GitHub-Event": "issues",
+            "X-Hub-Signature-256": f"sha256={signature}",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"

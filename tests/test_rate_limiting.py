@@ -186,6 +186,7 @@ def test_github_webhook_uses_rate_limit_scope(monkeypatch):
     monkeypatch.setattr(main, "_apply_rate_limit", fake_apply_rate_limit)
     monkeypatch.setattr(main, "_verify_github_signature", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "triage_issue", lambda *args, **kwargs: asyncio.sleep(0, result={"triaged": True}))
+    monkeypatch.setenv("TESTING", "true")
 
     class FakeWebhookRequest:
         def __init__(self):
