@@ -892,18 +892,6 @@ def search_items(
         
                 computed_sentiment = compute_product_sentiment(reviews)
         
-        raw_sentiment = p.get('avg_sentiment', 0.0)
-        reviews = p.get('reviews', [])
-    
-        # Newly added products may still have the default
-        # sentiment value before the NLP batch pipeline runs.
-        # Recompute dynamically so the UI never shows misleading 0.0.
-        if raw_sentiment == 0.0 and reviews:
-            try:
-                from nlp_engine import compute_product_sentiment
-    
-                computed_sentiment = compute_product_sentiment(reviews)
-    
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
@@ -911,21 +899,16 @@ def search_items(
                 )
         
             except Exception as e:
-                logger.warning("Dynamic sentiment recompute failed: %s", e)
+                logger.warning(
+                    "Dynamic sentiment recompute failed: %s",
+                    e
+                )
                 sentiment_value = "N/A"
         
         else:
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment not in (None, 0.0)
-    
-            except Exception:
-                sentiment_value = "N/A"
-    
-        else:
-            sentiment_value = (
-                raw_sentiment
-                if raw_sentiment != 0.0
                 else "N/A"
             )
     
