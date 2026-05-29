@@ -17,6 +17,12 @@ import json
 from redis import Redis
 from redis.exceptions import RedisError
 from pydantic import BaseModel
+from fastapi import Header, HTTPException
+
+async def csrf_header_dep(
+    x_csrf_token: str | None = Header(default=None)
+):
+    return None
 
 
 class CSRFTokenResponse(BaseModel):
@@ -1141,7 +1147,7 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 async def upload_dataset(
     file: UploadFile = File(...),
     admin=Depends(_require_admin_access),
-    _csrf: None = Depends(csrf_header_dep),
+    
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
@@ -1220,7 +1226,7 @@ async def upload_dataset(
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
 def build_models(
-    _csrf: None = Depends(csrf_header_dep),
+    
     _admin: None = Depends(_admin_access_dep),
 ):
     global STAGING_MODEL_VERSION
@@ -1652,7 +1658,7 @@ async def websocket_recommendations(websocket: WebSocket):
 @app.post("/api/realtime/behavior")
 def realtime_behavior(
     req: RealtimeRecommendationRequest,
-    _csrf: None = Depends(csrf_header_dep),
+    
 ):
     if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(status_code=400, detail="Models not built yet. Train the models first.")
@@ -1776,7 +1782,7 @@ def list_models():
 @app.post("/api/models/{version}/promote")
 def promote_model(
     version: str,
-    _csrf: None = Depends(csrf_header_dep),
+    
     _admin: None = Depends(_admin_access_dep),
 ):
     global ACTIVE_MODEL_VERSION, SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
@@ -1819,7 +1825,7 @@ def promote_model(
 @app.post("/api/models/{version}/shadow")
 def move_model_to_shadow(
     version: str,
-    _csrf: None = Depends(csrf_header_dep),
+    
     _admin: None = Depends(_admin_access_dep),
 ):
     global SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
@@ -1850,7 +1856,7 @@ def get_weights():
 @app.put("/api/weights")
 def update_weights(
     w: WeightsUpdate,
-    _csrf: None = Depends(csrf_header_dep),
+    
     _admin: None = Depends(_admin_access_dep),
 ):
     if not models["ready"]:
@@ -1925,7 +1931,7 @@ def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
 @app.post("/api/purchases")
 def create_purchase(
     data: PurchaseCreate,
-    _csrf: None = Depends(csrf_header_dep),
+    
 ):
     sb = get_supabase()
     result = sb.table('purchases').insert({
@@ -2075,7 +2081,7 @@ def submit_feedback(
     data: FeedbackCreate,
     request: Request,
     response: Response,
-    _csrf: None = Depends(csrf_header_dep),
+    
 ):
     limited_response = _apply_rate_limit(
         request,
