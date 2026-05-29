@@ -762,66 +762,79 @@ def search_items(
         return cached
 
     is_fuzzy_fallback = False
-    try:
-        sb = get_supabase()
+try:
+    sb = get_supabase()
 
-        if query:
+    if query:
+        try:
             # 1. Attempt standard Full-Text Search (FTS) first
             result = sb.rpc('search_products', {
-                'query_text': query, 'match_count': limit, 'offset_val': offset,
+                'query_text': query,
+                'match_count': limit,
+                'offset_val': offset,
             }).execute()
+
             products = result.data or []
+
         except Exception as e:
-            logger.warning("Full-text search failed for query '%s': %s", q.strip(), e)
-            # Fallback: do a LIKE search if FTS parsing fails
+            logger.warning(
+                "Full-text search failed for query '%s': %s",
+                query.strip(),
+                e
+            )
+
+            # Fallback: LIKE search
             result = sb.table('products') \
                 .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
-                .ilike('title', f'%{q.strip()}%') \
+                .ilike('title', f'%{query.strip()}%') \
                 .order('rating', desc=True) \
                 .limit(limit) \
                 .execute()
-            
-            # 2. Task 4 Fallback: If FTS returns fewer than 3 matches, trigger fuzzy search
-            if len(products) < 3:
-                is_fuzzy_fallback = True
-                fuzzy_res = sb.rpc('fuzzy_search_products', {
-                    'q': query, 
-                    'threshold': 0.3
-                }).execute()
-                products = fuzzy_res.data or []
-        else:
-            query_builder = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count, metadata')
 
-            if sort == "rating":
-                query_builder = query_builder.order('rating', desc=True)
-            else:
-                query_builder = query_builder.order('rating', desc=True).order('review_count', desc=True)
-
-            result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
-    except Exception as e:
-        logger.warning("Search fallback to mock products: %s", e)
-        products = MOCK_PRODUCTS
 
-        if query:
-            query_lower = query.lower()
-            products = [
-                p for p in products
-                if query_lower in str(p.get('title', '')).lower()
-                or query_lower in str(p.get('description', '')).lower()
-                or query_lower in str(p.get('category', '')).lower()
-            ]
-            for p in products:
-                p['rank'] = 0.0
+        # 2. Fuzzy fallback
+        if len(products) < 3:
+            is_fuzzy_fallback = True
+
+            fuzzy_res = sb.rpc('fuzzy_search_products', {
+                'q': query,
+                'threshold': 0.3
+            }).execute()
+
+            products = fuzzy_res.data or []
+
     else:
-        result = sb.table('products') \
-            .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
-            .order('rating', desc=True) \
-            .order('review_count', desc=True) \
-            .limit(limit) \
-            .offset(offset) \
-            .execute()
+        query_builder = sb.table('products').select(
+            'id, title, description, category, rating, avg_sentiment, review_count, metadata'
+        )
+
+        if sort == "rating":
+            query_builder = query_builder.order('rating', desc=True)
+        else:
+            query_builder = query_builder.order('rating', desc=True) \
+                .order('review_count', desc=True)
+
+        result = query_builder.limit(limit).offset(offset).execute()
         products = result.data or []
+
+except Exception as e:
+    logger.warning("Search fallback to mock products: %s", e)
+
+    products = MOCK_PRODUCTS
+
+    if query:
+        query_lower = query.lower()
+
+        products = [
+            p for p in products
+            if query_lower in str(p.get('title', '')).lower()
+            or query_lower in str(p.get('description', '')).lower()
+            or query_lower in str(p.get('category', '')).lower()
+        ]
+
+        for p in products:
+            p['rank'] = 0.0
 
 
     # Format response
@@ -868,50 +881,58 @@ def search_items(
             'rank': p.get('rank', 0.0),
         })
     
-
     filtered = [
         item for item in mock_items
         if q.lower() in item["title"].lower()
     ]
-
-
-    return {
-        "items": filtered[:limit]
-
-        products = products[offset:offset + limit]
-
+    
     def _product_price(product):
         metadata = product.get('metadata') or {}
+    
         raw_price = (
             product.get('price')
             if product.get('price') is not None
             else metadata.get('price')
         )
+    
         try:
             return float(raw_price or 0)
+    
         except (TypeError, ValueError):
             return 0.0
 
     if sort == "price-low":
         products = sorted(products, key=_product_price)
+
     elif sort == "price-high":
         products = sorted(products, key=_product_price, reverse=True)
+
     elif sort == "rating":
-        products = sorted(products, key=lambda p: float(p.get('rating') or 0), reverse=True)
+        products = sorted(
+            products,
+            key=lambda p: float(p.get('rating') or 0),
+            reverse=True
+        )
 
     results = []
+
     for p in products:
         price = _product_price(p)
+
         results.append({
-            'id': p.get('id'), 'title': p.get('title', ''),
+            'id': p.get('id'),
+            'title': p.get('title', ''),
             'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''), 'rating': p.get('rating', 0.0),
+            'category': p.get('category', ''),
+            'rating': p.get('rating', 0.0),
             'price': price,
             'avg_sentiment': p.get('avg_sentiment', 0.0),
-            'review_count': p.get('review_count', 0), 'rank': p.get('rank', 0.0),
+            'review_count': p.get('review_count', 0),
+            'rank': p.get('rank', 0.0),
         })
 
     result_count = len(results)
+
     payload = {
         "results": results,
         "count": result_count,
@@ -920,8 +941,10 @@ def search_items(
         "sort": sort,
         "is_fallback": not query or is_fuzzy_fallback,
     }
+
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
+
     return payload
 
 
