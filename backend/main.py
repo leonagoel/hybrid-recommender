@@ -771,7 +771,6 @@ def search_items(
                 'query_text': query, 'match_count': limit, 'offset_val': offset,
             }).execute()
             products = result.data or []
-<<<<<<< HEAD
         except Exception as e:
             logger.warning("Full-text search failed for query '%s': %s", q.strip(), e)
             # Fallback: do a LIKE search if FTS parsing fails
@@ -781,7 +780,6 @@ def search_items(
                 .order('rating', desc=True) \
                 .limit(limit) \
                 .execute()
-=======
             
             # 2. Task 4 Fallback: If FTS returns fewer than 3 matches, trigger fuzzy search
             if len(products) < 3:
@@ -800,7 +798,6 @@ def search_items(
                 query_builder = query_builder.order('rating', desc=True).order('review_count', desc=True)
 
             result = query_builder.limit(limit).offset(offset).execute()
->>>>>>> upstream/main
             products = result.data or []
     except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
@@ -816,7 +813,6 @@ def search_items(
             ]
             for p in products:
                 p['rank'] = 0.0
-<<<<<<< HEAD
     else:
         result = sb.table('products') \
             .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -881,7 +877,6 @@ def search_items(
 
     return {
         "items": filtered[:limit]
-=======
 
         products = products[offset:offset + limit]
 
@@ -924,7 +919,6 @@ def search_items(
         "query": query,
         "sort": sort,
         "is_fallback": not query or is_fuzzy_fallback,
->>>>>>> upstream/main
     }
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
@@ -1707,16 +1701,13 @@ def update_weights(
 def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
     sb = get_supabase()
     offset = (page - 1) * limit
-<<<<<<< HEAD
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
         .order('rating', desc=True) \
         .range(offset, offset + limit - 1) \
         .execute()
 
-=======
     result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).range(offset, offset + limit - 1).execute()
->>>>>>> upstream/main
     count_result = sb.table('products').select('id', count='exact').limit(0).execute()
     total = count_result.count or 0
     items = []
