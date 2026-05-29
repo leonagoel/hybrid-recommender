@@ -1,0 +1,85 @@
+name: 🤖 Welcome Bot
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Welcome new contributors
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const sender  = context.payload.sender.login;
+            const isPR    = !!context.payload.pull_request;
+            const number  = isPR ? context.payload.pull_request.number : context.payload.issue.number;
+
+            // ── Check if first contribution ──
+            let isFirst = false;
+            if (isPR) {
+              const prs = await github.rest.pulls.list({ owner, repo, state: 'all', per_page: 5 });
+              const userPRs = prs.data.filter(p => p.user.login === sender);
+              isFirst = userPRs.length <= 1;
+            } else {
+              const issues = await github.rest.issues.listForRepo({ owner, repo, state: 'all', creator: sender, per_page: 5 });
+              isFirst = issues.data.filter(i => !i.pull_request).length <= 1;
+            }
+
+            if (!isFirst) return; // Only welcome first-timers
+
+            if (isPR) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number,
+                body: [
+                  `## 🎉 Welcome to Hybrid Recommender, @${sender}!`,
+                  ``,
+                  `Thank you for your first pull request! Here's what happens next:`,
+                  ``,
+                  `| Step | What | Who |`,
+                  `|------|------|-----|`,
+                  `| 1 | CI runs lint + smoke test | 🤖 Automated |`,
+                  `| 2 | Code review | 👤 @${owner} |`,
+                  `| 3 | \`mentor:${owner}\` label added | 👤 Mentor |`,
+                  `| 4 | \`gssoc:approved\` label added | 👤 Mentor |`,
+                  `| 5 | Auto-merge triggered | 🤖 Automated |`,
+                  `| 6 | Points on leaderboard at 4 AM IST | 🏆 GSSoC |`,
+                  ``,
+                  `⏱️ Please respond to any review comments within **48 hours**.`,
+                  ``,
+                  `📖 Resources:`,
+                  `- [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)`,
+                  `- [GSSoC Leaderboard](https://gssoc.girlscript.org/leaderboard)`,
+                  ``,
+                  `Happy contributing! 🚀`,
+                ].join('\n')
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: number,
+                body: [
+                  `## 👋 Welcome @${sender}!`,
+                  ``,
+                  `Thanks for opening your first issue on **Hybrid Recommender**!`,
+                  ``,
+                  `**What happens next:**`,
+                  `- A mentor will triage this issue within **24–48 hours**`,
+                  `- Once triaged, it gets the \`gssoc:approved\` label`,
+                  `- At that point, contributors can request assignment`,
+                  ``,
+                  `**Want to work on this yourself?** Comment:`,
+                  `> \`I would like to work on this\``,
+                  ``,
+                  `📖 [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) | 🔍 [Open Issues](../issues?q=is%3Aopen+label%3Agssoc%3Aapproved+no%3Aassignee)`,
+                ].join('\n')
+              });
+            }
