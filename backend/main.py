@@ -30,6 +30,7 @@ except ModuleNotFoundError:
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone, timedelta
+from fastapi_csrf_protect.middleware import CSRFMiddleware
 
 from collections import defaultdict
 

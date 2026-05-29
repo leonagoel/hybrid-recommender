@@ -13,3 +13,4 @@ celery>=5.3.6
 redis>=5.0.1
 python-dotenv>=1.0.1
 sentence-transformers>=2.2.2
+fastapi-csrf-protect
