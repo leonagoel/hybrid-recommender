@@ -128,7 +128,43 @@ function _bindSearchInput() {
     _debounceTimer = setTimeout(() => runSearch(q), DEBOUNCE_MS);
   });
 }
+function _bindSearchInput() {
+  const input = document.getElementById('search-input');
+  const clearBtn = document.getElementById('clear-search-btn');
+  if (!input) return;
 
+  // === Existing debounced search logic ===
+  input.addEventListener('input', (e) => {
+    clearTimeout(_debounceTimer);
+    const q = e.target.value;
+    if (!q.trim()) { loadProducts(1); return; }
+    _debounceTimer = setTimeout(() => runSearch(q), DEBOUNCE_MS);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { input.value = ''; loadProducts(1); }
+  });
+
+  // === Clear button logic (new) ===
+  if (clearBtn) {
+    const toggleClearButton = () => {
+      clearBtn.style.display = input.value.length > 0 ? 'block' : 'none';
+    };
+    toggleClearButton();
+    input.addEventListener('input', toggleClearButton);
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      input.value = '';
+      toggleClearButton();
+      loadProducts(1);
+      input.focus();
+    });
+    // Also handle Escape (already handled above, but we need to update button)
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') setTimeout(toggleClearButton, 0);
+    });
+  }
+}
 function _bindGlobalKeyCapture() {
   document.addEventListener('keydown', (e) => {
     const tag = document.activeElement?.tagName?.toLowerCase();

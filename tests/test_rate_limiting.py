@@ -1,6 +1,7 @@
 """
 Regression tests for API rate limiting.
 """
+import asyncio
 import os
 import sys
 from types import SimpleNamespace
@@ -103,6 +104,111 @@ def test_non_limited_endpoint_does_not_emit_rate_limit_headers():
 
     assert response.status_code == 200
     assert "x-ratelimit-limit" not in response.headers
+
+
+class FakeFeedbackInsertResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class FakeFeedbackTable:
+    def __init__(self):
+        self.inserted = []
+
+    def insert(self, payload):
+        self.inserted.append(payload)
+        return self
+
+    def execute(self):
+        return FakeFeedbackInsertResult([self.inserted[-1]])
+
+
+class FakeFeedbackSupabase:
+    def __init__(self):
+        self.feedback_table = FakeFeedbackTable()
+
+    def table(self, name):
+        assert name == "feedback_submissions"
+        return self.feedback_table
+
+
+def test_feedback_endpoint_uses_rate_limit_scope(monkeypatch):
+    calls = []
+    fake_supabase = FakeFeedbackSupabase()
+
+    def fake_apply_rate_limit(request, response, scope, limit_env, default_limit):
+        calls.append({
+            "scope": scope,
+            "limit_env": limit_env,
+            "default_limit": default_limit,
+            "host": request.client.host if request.client else None,
+        })
+        response.headers["x-ratelimit-limit"] = str(default_limit)
+        response.headers["x-ratelimit-remaining"] = str(default_limit - 1)
+        response.headers["x-ratelimit-reset"] = "60"
+        return None
+
+    monkeypatch.setattr(main, "_apply_rate_limit", fake_apply_rate_limit)
+    monkeypatch.setattr(main, "_get_feedback_storage_client", lambda: fake_supabase)
+
+    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={"user-agent": "pytest"})
+    response = main.Response()
+    result = main.submit_feedback(
+        main.FeedbackCreate(user_id="user123", item="item1", feedback="Excellent"),
+        request,
+        response,
+        None,
+    )
+
+    assert calls[0]["scope"] == "feedback"
+    assert calls[0]["limit_env"] == "RATE_LIMIT_FEEDBACK_PER_MIN"
+    assert calls[0]["default_limit"] == 20
+    assert result["message"] == "Feedback submitted successfully"
+    assert fake_supabase.feedback_table.inserted[0]["user_id"] == "user123"
+    assert response.headers["x-ratelimit-limit"] == "20"
+
+
+def test_github_webhook_uses_rate_limit_scope(monkeypatch):
+    calls = []
+
+    def fake_apply_rate_limit(request, response, scope, limit_env, default_limit):
+        calls.append({
+            "scope": scope,
+            "limit_env": limit_env,
+            "default_limit": default_limit,
+            "host": request.client.host if request.client else None,
+        })
+        response.headers["x-ratelimit-limit"] = str(default_limit)
+        response.headers["x-ratelimit-remaining"] = str(default_limit - 1)
+        response.headers["x-ratelimit-reset"] = "60"
+        return None
+
+    monkeypatch.setattr(main, "_apply_rate_limit", fake_apply_rate_limit)
+    monkeypatch.setattr(main, "_verify_github_signature", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "triage_issue", lambda *args, **kwargs: asyncio.sleep(0, result={"triaged": True}))
+
+    class FakeWebhookRequest:
+        def __init__(self):
+            self.client = SimpleNamespace(host="203.0.113.10")
+            self.headers = {
+                "X-Hub-Signature-256": "sha256=fake",
+                "X-GitHub-Event": "ping",
+            }
+
+        async def body(self):
+            return b"{}"
+
+        async def json(self):
+            return {}
+
+    response = main.Response()
+    result = asyncio.run(main.github_webhook(FakeWebhookRequest(), response))
+
+    assert calls[0]["scope"] == "github_webhook"
+    assert calls[0]["limit_env"] == "RATE_LIMIT_GITHUB_WEBHOOK_PER_MIN"
+    assert calls[0]["default_limit"] == 60
+    assert result["status"] == "skipped"
+    assert response.headers["x-ratelimit-limit"] == "60"
 
 
 class FakeHybrid:

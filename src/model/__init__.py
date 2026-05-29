@@ -11,6 +11,7 @@ from src.model.hybrid_model import HybridRecommender
 from src.model.causal_model import CausalDebiaser
 from src.model.causal_config import CausalConfig
 from src.model.propensity_model import PropensityModel
+from .knowledge_graph_model import KnowledgeGraphRecommender
 
 __all__ = [
     "ContentRecommender",

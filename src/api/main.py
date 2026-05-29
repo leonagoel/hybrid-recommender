@@ -29,6 +29,9 @@ class RecommendationRequest(BaseModel):
     causal_lambda: float = 0.5
     # IPS weight cap — prevents rare items from dominating after reweighting.
     causal_clip: float = 5.0
+    fairness: Optional[bool] = None
+    fairness_key: Optional[str] = None
+    fairness_max_share: Optional[float] = None
 
 
 # Global read-only model state — never mutated after startup.
