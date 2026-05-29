@@ -16,6 +16,11 @@ import re
 import json
 from redis import Redis
 from redis.exceptions import RedisError
+from pydantic import BaseModel
+
+
+class CSRFTokenResponse(BaseModel):
+    csrf_token: str
 
 try:
     import bleach
