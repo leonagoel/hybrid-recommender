@@ -1800,7 +1800,7 @@ function renderProducts(products, options = {}) {
             ${
                 !p.image || p.image === 'undefined'
                 ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
-                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" />`
+                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" loading="lazy" />`
              }
             </div>
             <div class="product-card__body">
