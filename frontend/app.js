@@ -26,7 +26,9 @@ async function initSupabase() {
 const state = {
     user: null,
     isGuest: true,
-    products: [],    trending: [],    page: 1,
+    products: [],
+    trending: [],
+    page: 1,
     perPage: 20,
     totalProducts: 0,
     isLoading: false,
@@ -38,6 +40,7 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
+    heatmapSelected: [],
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -265,23 +268,30 @@ function initTypeToSearch() {
 }
 
 // ── Search ──────────────────────────────────────────────────────────
-async function handleSearch(query) {
-    if (!query || query.length < 1) {
+
+function handleSearch(query) {
+    if (!query || query.trim().length < 1) {
         closeSearchDropdown();
         return;
     }
 
     clearTimeout(state.searchTimer);
+
     state.searchTimer = setTimeout(async () => {
         try {
-            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
-            state.searchResults = data.items || [];
+            const data = await API.get(
+                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=5`
+            );
+
+            state.autocompleteResults = data.suggestions || [];
             state.selectedSearchIdx = -1;
-            renderSearchDropdown(state.searchResults, query);
-        } catch {
+
+            renderSearchDropdown(state.autocompleteResults, query);
+        } catch (err) {
+            console.error('Autocomplete failed:', err);
             closeSearchDropdown();
         }
-    }, 200);
+    }, 300);
 }
 
 function renderSearchDropdown(results, query) {
@@ -600,13 +610,14 @@ function renderProducts(products, append) {
             </div>
         `;
 
-        // Click → get recommendations
-        card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
-            e.stopPropagation();
-            const title = e.target.dataset.title;
-            loadRecommendations(title);
-            toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
-        });
+        const recommendationButton = card.querySelector('.btn--add-cart');
+
+        if (recommendationButton) {
+            recommendationButton.addEventListener(
+                'click',
+                handleRecommendationClick
+            );
+        }
 
         // Compare checkbox
         const checkbox = card.querySelector('.compare-checkbox');
@@ -631,13 +642,30 @@ function renderProducts(products, append) {
         }
 
         card.addEventListener('click', () => {
-            loadRecommendations(p.title);
+            if (p?.title) {
+                loadRecommendations(p.title);
+            }
         });
 
         fragment.appendChild(card);
     });
 
     els.productGrid.appendChild(fragment);
+}
+
+function handleRecommendationClick(e) {
+    e.stopPropagation();
+
+    const title = e.currentTarget.dataset.title;
+
+    if (!title) return;
+
+    loadRecommendations(title);
+
+    toast(
+        `Finding recommendations for "${title.substring(0, 40)}..."`,
+        'info'
+    );
 }
 
 // ── Recommendations ─────────────────────────────────────────────────
