@@ -12,6 +12,10 @@ import time
 import logging
 import math
 import secrets
+import re
+import json
+from redis import Redis
+from redis.exceptions import RedisError
 
 try:
     import bleach
@@ -122,6 +126,13 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 _response_cache: dict = {}
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+
+_redis_client = Redis.from_url(
+    REDIS_URL,
+    decode_responses=True,
+)
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
@@ -173,25 +184,85 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    try:
+        cached = _redis_client.get(key)
+
+        if cached is not None:
+            return json.loads(cached)
+
+    except (RedisError, json.JSONDecodeError):
+        pass
+
     with _cache_lock:
         cached = _response_cache.get(key)
+
         if not cached:
             return None
+
         expires_at, value = cached
+
         if expires_at <= time.time():
             _response_cache.pop(key, None)
             return None
+
         return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    try:
+        _redis_client.setex(
+            key,
+            CACHE_TTL_SECONDS,
+            json.dumps(value, default=str),
+        )
+        return
 
+    except (RedisError, TypeError):
+        pass
+
+    with _cache_lock:
+        _response_cache[key] = (
+            time.time() + CACHE_TTL_SECONDS,
+            value,
+        )
 
 def _clear_response_cache() -> None:
     with _cache_lock:
         _response_cache.clear()
+
+def _precompute_recommendation_cache(
+    top_n: int = 10,
+    explain: bool = False,
+) -> int:
+    if not models.get("ready") or models.get("item_df") is None:
+        return 0
+
+    count = 0
+    item_df = models["item_df"]
+
+    for title in item_df["title"].dropna().astype(str).unique():
+        cache_key = _cache_key("recommend", title, top_n, explain, "")
+
+        recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
+
+        if not recs:
+            continue
+
+        payload = {
+            "query_item": title,
+            "recommendations": recs,
+            "weights": models["hybrid"].get_weights(),
+            "explain": explain,
+            "target_catalog": None,
+            "model_version": ACTIVE_MODEL_VERSION,
+            "has_history": False,
+            "cache_precomputed": True,
+        }
+
+        _set_cached_response(cache_key, payload)
+        count += 1
+
+    return count
 
 
 def _normalize_search_query(query: str) -> str:
@@ -305,6 +376,10 @@ def _require_admin_access(request: Request) -> None:
     )
     if not provided_token or not secrets.compare_digest(provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
+
+
+def _admin_access_dep(request: Request) -> None:
+    _require_admin_access(request)
 
 
 # CORS
@@ -964,7 +1039,10 @@ async def upload_dataset(
 
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
-def build_models(_csrf: None = Depends(csrf_header_dep)):
+def build_models(
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
     global STAGING_MODEL_VERSION
     try:
        sb = get_supabase_admin()
@@ -1043,6 +1121,7 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
     models["build_time"] = build_time
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
     _clear_response_cache()
+    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
     return {
         "message": "Models built successfully!",
         "model_version": version,
@@ -1050,10 +1129,14 @@ def build_models(_csrf: None = Depends(csrf_header_dep)):
         "items": len(item_df),
         "has_collaborative": collab_model is not None,
         "build_time_seconds": build_time,
+	"precomputed_recommendations": precomputed_count,
     }
 
 @app.post("/api/train/federated")
-def train_federated(req: FederatedTrainRequest):
+def train_federated(
+    req: FederatedTrainRequest,
+    _admin: None = Depends(_admin_access_dep),
+):
     sb = get_supabase()
     all_products = []
     page_size = 1000
@@ -1140,6 +1223,7 @@ def train_federated(req: FederatedTrainRequest):
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
 def get_recommendations(
+    request: Request,
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
@@ -1265,22 +1349,25 @@ def get_recommendations(
     return payload
 
 
-@app.get("/api/user_recommend")
-def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
-    """Get hybrid recommendations for a user."""
+@app.get("/api/recommend/user/{user_id}")
+def get_user_recommendations(user_id: str, top_n: int = Query(10, le=50), explain: bool = Query(False)):
+    """Get personalized recommendations for a user, or popularity fallback."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
-    if not models["ready"]:
+    if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     
+    is_fallback = False
+    collab = models["hybrid"].collab_model
+    if collab is None or user_id not in getattr(collab, "_user_to_idx", {}):
+        is_fallback = True
+
     recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
-    if not recs:
-        raise HTTPException(404, "User not found or no recommendations.")
         
     return {
         "query_user": user_id,
         "recommendations": recs,
+        "fallback": is_fallback,
         "weights": models["hybrid"].get_weights(),
-        "explain": explain,
     }
 
 @app.websocket("/ws/recommendations")
@@ -1442,7 +1529,11 @@ def list_models():
         ],
     }
 @app.post("/api/models/{version}/promote")
-def promote_model(version: str, _csrf: None = Depends(csrf_header_dep)):
+def promote_model(
+    version: str,
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
     global ACTIVE_MODEL_VERSION, SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
 
     if version not in MODEL_REGISTRY:
@@ -1481,7 +1572,11 @@ def promote_model(version: str, _csrf: None = Depends(csrf_header_dep)):
     }
 
 @app.post("/api/models/{version}/shadow")
-def move_model_to_shadow(version: str, _csrf: None = Depends(csrf_header_dep)):
+def move_model_to_shadow(
+    version: str,
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
     global SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
 
     if version not in MODEL_REGISTRY:
@@ -1511,6 +1606,7 @@ def get_weights():
 def update_weights(
     w: WeightsUpdate,
     _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
 ):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
