@@ -12,7 +12,7 @@ import logging
 import math
 import secrets
 import bleach
-from collections import deque, Counter
+from collections import deque, Counter, OrderedDict
 from threading import Lock
 from datetime import datetime, timezone, timedelta
 
@@ -119,11 +119,57 @@ CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
-_response_cache: dict = {}
+CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
-_cache_lock = Lock()
+
+
+class _BoundedTTLCache:
+    """Thread-safe LRU cache with per-entry TTL and a hard entry cap.
+
+    Eviction order: expired entries are dropped on read; when the store is
+    full, the least-recently-used entry is evicted before inserting a new
+    one — matching the semantics of functools.lru_cache but with explicit
+    TTL support and a clear() method needed by upload/build invalidation.
+    """
+
+    def __init__(self, max_entries: int, ttl: int) -> None:
+        self._store: OrderedDict = OrderedDict()
+        self._max = max(1, max_entries)
+        self._ttl = ttl
+        self._lock = Lock()
+
+    def get(self, key: str):
+        with self._lock:
+            item = self._store.get(key)
+            if item is None:
+                return None
+            expires_at, value = item
+            if expires_at <= time.time():
+                del self._store[key]
+                return None
+            self._store.move_to_end(key)
+            return value
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if key in self._store:
+                self._store.move_to_end(key)
+            self._store[key] = (time.time() + self._ttl, value)
+            while len(self._store) > self._max:
+                self._store.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+
+_response_cache = _BoundedTTLCache(CACHE_MAX_ENTRIES, CACHE_TTL_SECONDS)
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -138,25 +184,15 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
-    with _cache_lock:
-        cached = _response_cache.get(key)
-        if not cached:
-            return None
-        expires_at, value = cached
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            return None
-        return value
+    return _response_cache.get(key)
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    _response_cache.set(key, value)
 
 
 def _clear_response_cache() -> None:
-    with _cache_lock:
-        _response_cache.clear()
+    _response_cache.clear()
 
 
 def _normalize_search_query(query: str) -> str:
@@ -529,7 +565,10 @@ def get_version():
 
 @app.get("/api/metrics")
 def get_api_metrics():
-    return get_response_metrics_snapshot()
+    snapshot = get_response_metrics_snapshot()
+    snapshot["cache_entries"] = len(_response_cache)
+    snapshot["cache_max_entries"] = CACHE_MAX_ENTRIES
+    return snapshot
 
 
 # ── Config ────────────────────────────────────────────────────────────
