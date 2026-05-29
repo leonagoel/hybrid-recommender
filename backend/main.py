@@ -30,7 +30,6 @@ except ModuleNotFoundError:
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone, timedelta
-from fastapi_csrf_protect.middleware import CSRFMiddleware
 
 from collections import defaultdict
 
@@ -450,8 +449,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*", "X-CSRF-Token"],
 )
-
-app.add_middleware(CSRFMiddleware)
 
 # ── Response Time Monitoring ─────────────────────────────────────────
 SLOW_RESPONSE_THRESHOLD_MS = 500.0
