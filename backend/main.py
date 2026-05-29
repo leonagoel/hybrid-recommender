@@ -99,6 +99,12 @@ ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 _cache_lock = Lock()
+_redis_client = Redis.from_url(
+    os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+    decode_responses=True,
+    socket_connect_timeout=1.0,
+    socket_timeout=1.0,
+)
 
 MOCK_PRODUCTS = [
     {
@@ -146,10 +152,13 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    global _cache_hits, _cache_misses
+
     try:
         cached = _redis_client.get(key)
 
         if cached is not None:
+            _cache_hits += 1
             return json.loads(cached)
 
     except (RedisError, json.JSONDecodeError):
@@ -159,7 +168,6 @@ def _get_cached_response(key: str):
         cached = _response_cache.get(key)
 
         if not cached:
-            global _cache_misses
             _cache_misses += 1
             return None
 
@@ -167,20 +175,21 @@ def _get_cached_response(key: str):
 
         if expires_at <= time.time():
             _response_cache.pop(key, None)
-            global _cache_misses
             _cache_misses += 1
             return None
-        global _cache_hits
+
         _cache_hits += 1
         return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
-        # track misses -> when we set a value it was previously a miss for the next requests
-        # metric updated in _get_cached_response when read.
-
+    try:
+        _redis_client.setex(
+            key,
+            CACHE_TTL_SECONDS,
+            json.dumps(value, default=str),
+        )
+        return
     except (RedisError, TypeError):
         pass
 
@@ -1133,12 +1142,12 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
-    admin=Depends(_require_admin_access)
+    admin=Depends(_require_admin_access),
+    _csrf: None = Depends(csrf_header_dep),
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
-    _csrf: None = Depends(csrf_header_dep),
-):
+
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
