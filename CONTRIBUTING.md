@@ -1,218 +1,254 @@
-# Contributing to Hybrid Recommender System
+# Contributing to Hybrid Recommender 🤝
 
-Welcome! This project is part of **GSSoC 2026 (GirlScript Summer of Code)**. We're glad you're here. This guide will help you make your first contribution smoothly.
+Welcome! This project is part of **GSSoC 2026** and we're thrilled to have you here.
+Please read this guide fully before raising an issue or submitting a PR.
 
 ---
 
 ## Table of Contents
 
-- [Before You Start](#before-you-start)
-- [Prerequisites](#Prerequisites)
-- [How to Contribute](#how-to-contribute)
-- [Branch Naming](#branch-naming)
+- [Getting Started](#getting-started)
+- [Branch Naming Convention](#branch-naming-convention)
 - [Commit Message Format](#commit-message-format)
-- [Pull Request Guidelines](#pull-request-guidelines)
+- [How to Raise an Issue](#how-to-raise-an-issue)
+- [PR Submission Checklist](#pr-submission-checklist)
+- [GSSoC-Specific Notes](#gssoc-specific-notes)
 - [Code Style](#code-style)
-- [Running the Project Locally](#running-the-project-locally)
-- [GSSoC Label Guide](#gssoc-label-guide)
-- [Common Mistakes to Avoid](#Common-Mistakes-to-Avoid)
+- [Need Help?](#need-help)
 
 ---
 
-## Before You Start
+## Getting Started
 
-1. **Find an issue** — Go to the [Issues tab](../../issues) and look for ones labelled `gssoc:approved` + `good first issue` if you are a beginner.
-2. **Comment to claim** — Comment `"I'd like to work on this"` on the issue and **wait for it to be assigned to you** before starting any code.
-3. **Do not submit a PR for an unassigned issue** — it will be closed without review.
-
----
-
-## Prerequisites
-- Python 3.8+
-- Git installed
-- GitHub account
-- Basic knowledge of Python
-
----
-
-## How to Contribute
+### 1. Fork & Clone
 
 ```bash
-# 1. Fork the repository (click Fork on GitHub)
-
-# 2. Clone your fork
+# Fork the repo on GitHub, then:
 git clone https://github.com/<your-username>/hybrid-recommender.git
 cd hybrid-recommender
+```
 
-# 3. Add the original repo as upstream
+### 2. Add Upstream Remote
+
+```bash
 git remote add upstream https://github.com/leonagoel/hybrid-recommender.git
+git remote -v  # should show both origin and upstream
+```
 
-# 4. Create a new branch (see naming guide below)
-git checkout -b feat/add-streamlit-ui
+### 3. Install Dependencies
 
-# 5. Install dependencies
+```bash
 pip install -r requirements.txt
+```
 
-# 6. Make your changes and test them locally
+### 4. Configure Environment
 
-# 7. Commit your changes
-git add .
-git commit -m "feat: add streamlit UI for hybrid recommendations"
+```bash
+cp .env.example .env
+# Fill in your Supabase URL and anon key in .env
+```
 
-# 8. Push to your fork
-git push origin feat/add-streamlit-ui
+### 5. Run the App
 
-# 9. Open a Pull Request on GitHub against the main branch
+```bash
+uvicorn backend.main:app --reload
+# Open http://localhost:8000 in your browser
 ```
 
 ---
 
-## Branch Naming
+## Branch Naming Convention
 
-Use this format: `type/short-description`
+Always create a new branch for each issue. Never commit directly to `main`.
 
-| Type | When to use |
-|------|-------------|
-| `feat/` | Adding a new feature |
-| `fix/` | Fixing a bug |
-| `docs/` | Documentation changes only |
-| `test/` | Adding or updating tests |
-| `refactor/` | Code cleanup with no feature/fix |
-| `perf/` | Performance improvements |
+| Type          | Pattern                 | Example                    |
+| ------------- | ----------------------- | -------------------------- |
+| New feature   | `feat/<short-desc>`     | `feat/add-pagination`      |
+| Bug fix       | `fix/<short-desc>`      | `fix/search-crash`         |
+| Documentation | `docs/<short-desc>`     | `docs/add-contributing`    |
+| Refactor      | `refactor/<short-desc>` | `refactor/split-app-js`    |
+| Tests         | `test/<short-desc>`     | `test/recommendation-unit` |
+| CI / Tooling  | `ci/<short-desc>`       | `ci/update-flake8`         |
 
-Examples:
-- `feat/add-streamlit-ui`
-- `fix/cold-start-fallback`
-- `docs/update-setup-guide`
-- `test/unit-tests-content-model`
+```bash
+# Always branch off a fresh main
+git checkout main
+git pull upstream main
+git checkout -b feat/your-feature-name
+```
 
 ---
 
 ## Commit Message Format
 
-```
-type: short description (max 72 chars)
-```
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
-Examples:
-```
-feat: add configurable alpha/beta/gamma weights via CLI
-fix: handle empty interaction_df in CollaborativeRecommender
-docs: add Jupyter notebook demo for hybrid recommendations
-test: add unit tests for bayesian_rating function
-refactor: extract weight normalization into helper function
-```
+<type>: <short summary in present tense, under 72 chars>
+[optional body — explain WHY, not WHAT]
+[optional footer — e.g. Resolves #123]
 
-- Use **present tense** ("add" not "added")
-- Keep it **short and clear**
-- Reference the issue number if applicable: `fix: handle cold start (#12)`
+**Types:** `feat` · `fix` · `docs` · `refactor` · `test` · `ci` · `chore`
+
+**Good examples:**
+feat: add pagination to product listing API
+fix: prevent search crash on empty query
+docs: enhance CONTRIBUTING.md with GSSoC guide
+refactor: split app.js into focused ES modules
+test: add unit tests for hybrid scoring logic
+
+**Rules:**
+
+- Use present tense — "add" not "added"
+- No capital letter at the start of the summary
+- No full stop at the end
+- Always reference the issue: `Resolves #123` in the commit body or PR
 
 ---
 
-## Pull Request Guidelines
+## How to Raise an Issue
 
-Every PR description **must include**:
+1. **Search first** — check [existing issues](https://github.com/leonagoel/hybrid-recommender/issues) to avoid duplicates
+2. Use the correct template:
+   - **Bug Report** — for something broken
+   - **Feature Request** — for new functionality or improvements
+3. Fill in **all sections** of the template fully (Problem Statement, Proposed Solution, Acceptance Criteria)
+4. Add the most relevant label: `type:bug` / `type:feature` / `type:docs`
+5. For GSSoC: wait for `gssoc:approved` label before starting any work
+6. Comment `"I'd like to work on this!"` and **wait to be assigned** before starting
+7. PRs submitted without prior assignment may be closed without review
 
-```
-## What changed
-<!-- Describe what you added/fixed/changed -->
+    [ ] I branched off a fresh main (not an old or stale branch)
+    [ ] My branch name follows the naming convention above
+    [ ] My commit messages follow the Conventional Commits format
+    [ ] I linked the issue with Closes #issue-number in the PR body
+    [ ] I filled in all PR template sections (What changed / Why / How to test)
+    [ ] I tested my changes locally end-to-end
+    [ ] No new PEP8 / flake8 errors (run: flake8 backend/ --max-line-length=79)
+    [ ] No unrelated files modified
+    [ ] No .env, pycache, node_modules, or .DS_Store committed
+    [ ] No console.log() left in production JS (use console.warn/error only)
 
-## Why
-<!-- Explain the problem this solves or feature this adds -->
+## PR Submission Checklist
 
-## How to test
-<!-- Step-by-step instructions to test your changes locally -->
+Before opening a PR, tick every box:
+[ ] I branched off a fresh main (not an old or stale branch)
+[ ] My branch name follows the naming convention above
+[ ] My commit messages follow the Conventional Commits format
+[ ] I linked the issue with Closes #<issue-number> in the PR body
+[ ] I filled in all PR template sections (What changed / Why / How to test)
+[ ] I tested my changes locally end-to-end
+[ ] No new PEP8 / flake8 errors (run: flake8 backend/ --max-line-length=79)
+[ ] No unrelated files modified
+[ ] No .env, pycache, node_modules, or .DS_Store committed
+[ ] No console.log() left in production JS (use console.warn/error only)
 
-## Screenshots (if UI change)
-<!-- Add before/after screenshots or screen recording -->
+**PR title format** (must match Conventional Commits):
+feat: add pagination to product listing
+fix: resolve search crash on empty input
+docs: enhance CONTRIBUTING.md with GSSoC guide
+refactor: split frontend app.js into ES modules
 
-## Related issue
-Closes #<issue-number>
-```
+---
 
-**Rules:**
-- One issue per PR — don't bundle unrelated changes
-- All code must be tested locally before submitting
-- If the project has tests, update them to cover your change
-- Respond to review comments within **48 hours** or the PR may be closed
-- Do not merge your own PR — wait for a mentor/PA to review it
+## GSSoC-Specific Notes
+
+### How the Contribution Flow Works
+
+| Step | What Happens                            | Who               |
+| ---- | --------------------------------------- | ----------------- |
+| 1    | Issue raised and `gssoc:approved` added | Mentor            |
+| 2    | You comment and get **assigned**        | You + Mentor      |
+| 3    | You fork, branch, build, and open PR    | You               |
+| 4    | CI runs lint + smoke test               | Automated         |
+| 5    | Mentor reviews and merges               | @leonagoel        |
+| 6    | Points credited at **4 AM IST daily**   | GSSoC leaderboard |
+
+### Labels Explained
+
+| Label                  | Meaning                                   |
+| ---------------------- | ----------------------------------------- |
+| `gssoc:approved`       | Approved for GSSoC — safe to start        |
+| `level:beginner`       | ~10 GSSoC points                          |
+| `level:intermediate`   | ~25 GSSoC points                          |
+| `level:advanced`       | ~45–50 GSSoC points                       |
+| `status:review-needed` | PR submitted, awaiting mentor review      |
+| `mentor:leonagoel`     | Assigned to project mentor @leonagoel     |
+| `type:refactor`        | Code restructuring without feature change |
+| `type:feature`         | New functionality                         |
+| `type:bug`             | Bug fix                                   |
+| `type:docs`            | Documentation only                        |
+
+### GSSoC Rules
+
+- One contributor per issue — first person assigned gets it
+- Respond to review comments within **48 hours** or PR may be reassigned
+- Do not submit multiple PRs for the same issue
+- Do not copy code from other contributors' open (unmerged) PRs
+- Do not open a PR from your `main` branch — always use a feature branch
 
 ---
 
 ## Code Style
 
-This project uses **Python** and follows **PEP8**.
+### Python — Backend (`backend/`)
 
-```bash
-# Check for PEP8 issues
-pip install flake8
-flake8 . --max-line-length=100
+- Strictly follow **PEP8** — CI runs `flake8` and will fail your PR if violated
+- Max line length: **79 characters**
+- Use **type hints** on all function signatures
+- Write **Google-style docstrings** on all public functions
 
-# Auto-format (optional but recommended)
-pip install black
-black .
+```python
+# ✅ Good
+def get_recommendations(title: str, k: int = 10) -> list[dict]:
+    """Return top-k hybrid recommendations for a product title.
+
+    Args:
+        title: Product title to base recommendations on.
+        k: Number of recommendations to return.
+
+    Returns:
+        List of recommendation dicts containing score, title, category.
+    """
+    ...
+
+# ❌ Bad — no types, no docstring, line too long
+def get_recommendations(title, k=10):
+    return recommender.get_hybrid_recommendations_for_title_with_weights(title, k, alpha=0.4, beta=0.4, gamma=0.2)
 ```
 
-Key rules:
-- Use `snake_case` for variable and function names
-- Use `PascalCase` for class names
-- Keep functions small and focused — one responsibility per function
-- Add docstrings to all classes and functions
-- No hardcoded credentials — use `.env` file (see `.env.example`)
-
----
-
-## Running the Project Locally
-
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Set up environment variables
-cp .env.example .env
-# Fill in your Supabase credentials in .env
+### JavaScript — Frontend (`frontend/`)
 
 # 3. Start the backend server
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
+if (-not $env:PORT) { $env:PORT = "8000" }
 
-# 4. Open http://localhost:8000 in your browser
+python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT
+- **ES Modules only** (`import`/`export`) — no CommonJS `require()`
+- Follow the module structure from `frontend/js/` (see PR #214):
+  - `state.js` — global state only
+  - `auth.js` — auth logic only
+  - `search.js` — search logic only
+  - `recommendations.js` — recommendation logic only
+  - `ui.js` — DOM helpers only
+  - `app.js` — entry point / wiring only
+- Always null-check DOM queries: `document.getElementById('x')?.addEventListener(...)`
+- No inline styles — use CSS classes
+- Escape all user-facing strings before DOM insertion
 
-# 5. Run the smoke test (no Supabase needed for this)
-python test_pipeline.py
-```
+### General
 
----
-
-## GSSoC Label Guide
-
-For your PR to count on the GSSoC leaderboard, mentors will add these labels after review:
-
-| Label | Meaning |
-|-------|---------|
-| `gssoc:approved` | ✅ Required — PR counts toward leaderboard |
-| `level:beginner` | 3 points |
-| `level:intermediate` | 7 points |
-| `level:advanced` | 10 points |
-| `quality:clean` | Score multiplier for well-written code |
-| `quality:exceptional` | Higher multiplier for outstanding contributions |
-| `mentor:username` | Mentor who reviewed the PR |
-
-**You do not add these labels yourself** — mentors add them upon review.
+- No commented-out dead code in PRs
+- No `console.log()` left in production code
+- No hardcoded secrets, API keys, or credentials — use `.env`
 
 ---
 
-## Questions?
+## Need Help?
 
-- Open a [GitHub Discussion](../../discussions) or comment on the issue
-- Join the **GSSoC Discord** and find the project channel
-- Tag **@leonagoel** if you are blocked for more than 48 hours
+- Open a [GitHub Discussion](https://github.com/leonagoel/hybrid-recommender/discussions) for general questions
+- Tag `@leonagoel` in your issue or PR comment if you're blocked for more than 24 hours
+- For GSSoC programme queries: [gssoc.girlscript.tech](https://gssoc.girlscript.tech)
 
 ---
 
-## Common Mistakes to Avoid
-- Don't work on unassigned issues
-- Don't submit multiple PRs for same issue  
-- Don't forget to sync fork before starting
-- Always test locally before PR
-
-Happy contributing! 🚀
+_Happy Contributing! Every PR — big or small — makes this project better._ 🚀

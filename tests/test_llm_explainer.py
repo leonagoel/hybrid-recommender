@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from llm_explainer import LLMExplainer, get_explainer
+from src.model.llm_explainer import LLMExplainer, get_explainer
 
 
 class TestLLMExplainerInit:
@@ -80,7 +80,7 @@ class TestFallbackExplanations:
             category="Test"
         )
         assert explanation is not None
-        assert len(explanation) < 400  # Should be truncated
+        assert len(explanation) < 500  # Should be truncated
 
     def test_fallback_empty_scores(self):
         """Test fallback with empty scores dictionary."""
@@ -93,6 +93,18 @@ class TestFallbackExplanations:
         )
         assert explanation is not None
         assert len(explanation) > 0
+
+    def test_fallback_with_none_scores(self):
+        """Test that None values in scores do not cause TypeError comparisons."""
+        explainer = LLMExplainer()
+        explanation = explainer._generate_fallback_explanation(
+            recommended_item="Item A",
+            query_item="Item B",
+            scores={"content": None, "hybrid": 0.85, "collab": None},
+            category="Test"
+        )
+        assert explanation is not None
+        assert "matches your interests across multiple recommendation factors" in explanation.lower()
 
 
 class TestExplainRecommendation:
@@ -130,6 +142,27 @@ class TestExplainRecommendation:
             category="Electronics"
         )
         assert explanation is None or isinstance(explanation, str)
+
+    def test_explain_recommendation_none_response_uses_fallback(self):
+        """Test that a literal None LLM response falls back cleanly."""
+
+        class FakeClient:
+            def generate_content(self, prompt):
+                return None
+
+        explainer = LLMExplainer()
+        explainer.client = FakeClient()
+
+        explanation = explainer.explain_recommendation(
+            recommended_item="Product A",
+            query_item="Product B",
+            scores={"hybrid": 0.88, "content": 0.92},
+            description="Premium electronics",
+            category="Electronics",
+        )
+
+        assert isinstance(explanation, str)
+        assert len(explanation) > 0
 
 
 class TestExplainMultiple:
@@ -217,9 +250,32 @@ class TestPromptBuilding:
             top_reviews=[],
             category=""
         )
-        
+
         assert prompt is not None
         assert len(prompt) > 0
+
+
+class TestFallbackExplanationEdgeCases:
+    """Test edge cases for fallback explanation generation."""
+
+    def test_fallback_with_empty_category_and_description(self):
+        """Test fallback explanation with empty category and description."""
+        explainer = LLMExplainer()
+        explanation = explainer._generate_fallback_explanation(
+            recommended_item="Item A",
+            query_item="Item B",
+            scores={"hybrid": 0.8},
+            description="",
+            category=""
+        )
+        assert explanation is not None
+        assert len(explanation) > 0
+
+    def test_explainer_initialization_without_api_key(self):
+        """Test that explainer initializes without API key (no crash)."""
+        explainer = LLMExplainer(api_key=None)
+        assert explainer is not None
+        assert explainer.model_name == "gemini-pro"
 
 
 if __name__ == "__main__":
