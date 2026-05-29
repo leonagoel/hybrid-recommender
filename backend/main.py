@@ -60,46 +60,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(levelname)s] %(asctime)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-from celery.result import AsyncResult
-from celery_app import celery_app
-from tasks import compute_recommendations
-
-
-# backend/main.py — corrected imports
-from src.data.db import get_supabase, get_supabase_admin
-from src.data.data_adapter import adapt_data, read_file
-from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.hybrid_model import HybridRecommender
-from src.model.issue_triage import triage_issue
-from src.model.federated_learning import train_federated_collaborative_model
-
-from functools import lru_cache
-
-from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
-
-
-# ── OpenAPI CSRF header dependency ────────────────────────────────────
-async def csrf_header_dep(
-    x_csrf_token: str = Header(
-        ...,
-        alias="X-CSRF-Token",
-        description=(
-            "CSRF token obtained from **GET /api/csrf-token**. "
-            "Required on all state-mutating requests (POST / PUT / PATCH / DELETE). "
-            "Must match the value stored in the `csrftoken` cookie."
-        ),
-    ),
-) -> None:
-    """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
-    pass
+from db import get_supabase, get_supabase_admin
+from backend.auth import _require_admin_access
+from data_adapter import adapt_data, read_file
+from nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from content_model import ContentRecommender
+from collaborative_model import CollaborativeRecommender
+from hybrid_model import HybridRecommender
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
@@ -126,13 +93,8 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 _response_cache: dict = {}
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-
-_redis_client = Redis.from_url(
-    REDIS_URL,
-    decode_responses=True,
-)
+_cache_hits = 0
+_cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
@@ -197,25 +159,27 @@ def _get_cached_response(key: str):
         cached = _response_cache.get(key)
 
         if not cached:
+            global _cache_misses
+            _cache_misses += 1
             return None
 
         expires_at, value = cached
 
         if expires_at <= time.time():
             _response_cache.pop(key, None)
+            global _cache_misses
+            _cache_misses += 1
             return None
-
+        global _cache_hits
+        _cache_hits += 1
         return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        _redis_client.setex(
-            key,
-            CACHE_TTL_SECONDS,
-            json.dumps(value, default=str),
-        )
-        return
+    with _cache_lock:
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+        # track misses -> when we set a value it was previously a miss for the next requests
+        # metric updated in _get_cached_response when read.
 
     except (RedisError, TypeError):
         pass
@@ -229,6 +193,92 @@ def _set_cached_response(key: str, value: Any) -> None:
 def _clear_response_cache() -> None:
     with _cache_lock:
         _response_cache.clear()
+        global _cache_hits, _cache_misses
+        _cache_hits = 0
+        _cache_misses = 0
+
+
+@app.get("/api/cache_metrics")
+def get_cache_metrics():
+    """Expose simple cache hit/miss metrics and configured TTL."""
+    return {
+        "cache_ttl_seconds": CACHE_TTL_SECONDS,
+        "hits": int(_cache_hits),
+        "misses": int(_cache_misses),
+        "current_items": len(_response_cache),
+    }
+
+
+def _build_tfidf_for_items(item_df):
+    """Build and return a TF-IDF matrix and vectorizer for the given item_df."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    texts = (item_df.get('combined') or item_df.get('title')).fillna('').astype(str).tolist()
+    vec = TfidfVectorizer(max_features=16384, stop_words='english')
+    matrix = vec.fit_transform(texts)
+    return vec, matrix
+
+
+def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tuple[float, float, float] = (0.6, 0.3, 0.1), target_catalog: Optional[str] = None):
+    """Cold-start blending of content similarity (TF-IDF) and simple popularity/rating signals.
+
+    Returns list of dicts with blended score and components.
+    """
+    import numpy as np
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    item_df = models.get('item_df')
+    if item_df is None or item_df.empty:
+        return []
+
+    vec, matrix = _build_tfidf_for_items(item_df)
+    try:
+        qv = vec.transform([combined_text])
+    except Exception:
+        return []
+
+    scores = cosine_similarity(qv, matrix).flatten()
+
+    # Popularity normalization (review_count) and rating normalization
+    review_counts = item_df.get('review_count', None)
+    if review_counts is None or len(review_counts) == 0:
+        pop_norm = np.zeros_like(scores)
+    else:
+        max_rc = float(max(1, int(review_counts.max())))
+        pop_norm = (np.array(item_df.get('review_count').fillna(0).astype(float)) / max_rc)
+
+    ratings = item_df.get('rating')
+    if ratings is None or len(ratings) == 0:
+        rating_norm = np.zeros_like(scores)
+    else:
+        rating_norm = (np.array(item_df.get('rating').fillna(0).astype(float)) / 5.0)
+
+    alpha, beta, gamma = weights
+
+    blended = alpha * scores + beta * pop_norm + gamma * rating_norm
+
+    idxs = blended.argsort()[::-1]
+    results = []
+    seen = set()
+    for idx in idxs:
+        title = str(item_df.iloc[idx].get('title', ''))
+        if not title or title in seen:
+            continue
+        if target_catalog and 'category' in item_df.columns:
+            cat = str(item_df.iloc[idx].get('category', ''))
+            if cat and cat.casefold() != target_catalog.casefold():
+                continue
+        seen.add(title)
+        results.append({
+            'title': title,
+            'blended_score': float(blended[idx]),
+            'content_score': float(scores[idx]),
+            'popularity_score': float(pop_norm[idx]),
+            'rating_norm': float(rating_norm[idx]),
+        })
+        if len(results) >= top_n:
+            break
+
+    return results
 
 def _precompute_recommendation_cache(
     top_n: int = 10,
@@ -369,7 +419,10 @@ def _extract_bearer_token(value: str | None) -> str:
 def _require_admin_access(request: Request) -> None:
     expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
     if not expected_token:
-        return
+        raise HTTPException(
+            status_code=500,
+            detail="Admin token not configured.",
+        )
 
     provided_token = (
         request.headers.get("x-admin-token", "").strip()
@@ -381,6 +434,13 @@ def _require_admin_access(request: Request) -> None:
 
 def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
+
+
+def _get_feedback_storage_client():
+    client = get_supabase_admin()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Feedback storage is unavailable.")
+    return client
 
 
 # CORS
@@ -533,9 +593,10 @@ realtime_hub = RealtimeConnectionHub()
 
 class WeightsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    alpha: float = 0.4
-    beta: float = 0.35
-    gamma: float = 0.25
+
+    alpha: float = 0.5
+    beta: float = 0.3
+    gamma: float = 0.2
 
 
 class PurchaseCreate(BaseModel):
@@ -723,37 +784,15 @@ def search_items(
     ),
 ):
     query = _normalize_search_query(q)
-    try:
-        rate_limit = int(os.environ.get("RATE_LIMIT_SEARCH_PER_MIN", "60"))
-    except ValueError:
-        rate_limit = 60
-
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    now = time.time()
-
-    with _rate_limit_lock:
-        bucket = _rate_limit_buckets.setdefault(client_ip, {"timestamps": []})
-        bucket["timestamps"] = [t for t in bucket["timestamps"] if now - t < 60]
-
-        if len(bucket["timestamps"]) >= rate_limit:
-            reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
-            reset_time = max(0, reset_time)
-            response.status_code = 429
-            response.headers["x-ratelimit-limit"] = str(rate_limit)
-            response.headers["x-ratelimit-remaining"] = "0"
-            response.headers["x-ratelimit-reset"] = str(reset_time)
-            return {
-                "error": "Rate limit exceeded",
-                "message": "Too many requests. Please try again later.",
-            }
-
-        bucket["timestamps"].append(now)
-        remaining = rate_limit - len(bucket["timestamps"])
-        reset_time = int(60 - (now - bucket["timestamps"][0])) if bucket["timestamps"] else 60
-        reset_time = max(0, reset_time)
-        response.headers["x-ratelimit-limit"] = str(rate_limit)
-        response.headers["x-ratelimit-remaining"] = str(remaining)
-        response.headers["x-ratelimit-reset"] = str(reset_time)
+    rate_limited = _apply_rate_limit(
+        request,
+        response,
+        scope="search",
+        limit_env="RATE_LIMIT_SEARCH_PER_MIN",
+        default_limit=60,
+    )
+    if rate_limited is not None:
+        return rate_limited
 
     cache_key = _cache_key("search", query, limit, offset, sort)
     cached = _get_cached_response(cache_key)
@@ -839,11 +878,15 @@ def search_items(
             p['rank'] = 0.0
 
 
+        for p in products:
+            p['rank'] = 0.0
+
+            
     # Format response
     results = []
     
     for p in products:
-    
+      
         # Newly added products may still contain the default
         # sentiment value before the NLP batch pipeline runs.
         # Recompute dynamically so the UI never shows misleading 0.0.
@@ -857,6 +900,18 @@ def search_items(
         
                 computed_sentiment = compute_product_sentiment(reviews)
         
+        raw_sentiment = p.get('avg_sentiment', 0.0)
+        reviews = p.get('reviews', [])
+    
+        # Newly added products may still have the default
+        # sentiment value before the NLP batch pipeline runs.
+        # Recompute dynamically so the UI never shows misleading 0.0.
+        if raw_sentiment == 0.0 and reviews:
+            try:
+                from nlp_engine import compute_product_sentiment
+    
+                computed_sentiment = compute_product_sentiment(reviews)
+    
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
@@ -871,6 +926,14 @@ def search_items(
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment not in (None, 0.0)
+    
+            except Exception:
+                sentiment_value = "N/A"
+    
+        else:
+            sentiment_value = (
+                raw_sentiment
+                if raw_sentiment != 0.0
                 else "N/A"
             )
     
@@ -1096,6 +1159,10 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
+    admin=Depends(_require_admin_access)
+):
+    """Upload a CSV or JSON dataset and import into Supabase."""
+    import math
     _csrf: None = Depends(csrf_header_dep),
 ):
     filename = file.filename or "data.csv"
@@ -1399,7 +1466,16 @@ def get_recommendations(
 
         selected_models = MODEL_REGISTRY[model_version]
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain, user_id or "")
+    cache_key = _cache_key(
+        "recommend",
+        query_title,
+        top_n,
+        explain,
+        user_id or "",
+        target_catalog or "",
+        model_version or "",
+        strategy or "",
+    )
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
@@ -1408,11 +1484,18 @@ def get_recommendations(
     recs = selected_models["hybrid"].recommend(
         query_title, top_n=top_n, explain=explain, target_catalog=target_catalog
     )
-  
+
+    # Popularity fallback (existing behaviour)
     if not recs and strategy == "popularity" and models["collab"]:
         recs = models["collab"]._popularity_fallback(top_n)
-    
-    
+
+    # Cold-start fallback: blend content similarity with popularity/rating
+    if not recs and (strategy == "cold"):
+        combined_text = query_title
+        cold_recs = cold_start_recommendation(combined_text, top_n=top_n, target_catalog=target_catalog)
+        if cold_recs:
+            recs = cold_recs
+
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
 
@@ -1421,7 +1504,10 @@ def get_recommendations(
         has_history = user_id in models["collab"]._user_to_idx
 
     payload = {
+        "query": query_title,
         "query_item": query_title,
+        "count": len(recs),
+        "results": recs,
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),
         "explain": explain,
@@ -1482,9 +1568,55 @@ def get_recommendations(
     return payload
 
 
-@app.get("/api/recommend/user/{user_id}")
-def get_user_recommendations(user_id: str, top_n: int = Query(10, le=50), explain: bool = Query(False)):
-    """Get personalized recommendations for a user, or popularity fallback."""
+
+@app.get("/api/recommend/cold_start")
+def recommend_cold_start(
+    response: Response,
+    title: Optional[str] = Query(None),
+    description: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    tags: Optional[str] = Query(None),
+    top_n: int = Query(10, ge=1, le=100),
+    alpha: float = Query(0.6),
+    beta: float = Query(0.3),
+    gamma: float = Query(0.1),
+    target_catalog: Optional[str] = Query(None),
+):
+    """Cold-start recommendation endpoint.
+
+    Accepts item metadata (title, description, category, tags) and returns
+    blended recommendations based on content TF-IDF similarity and popularity.
+    """
+    if not models or not models.get('item_df'):
+        raise HTTPException(400, "Models not built or no item catalog available.")
+
+    parts = []
+    if title:
+        parts.append(str(title))
+    if description:
+        parts.append(str(description))
+    if category:
+        parts.append(str(category))
+    if tags:
+        parts.append(str(tags))
+
+    combined_text = " ".join(parts).strip()
+    if not combined_text:
+        raise HTTPException(400, "Provide at least one of title, description, category or tags.")
+
+    weights = (float(alpha), float(beta), float(gamma))
+    recs = cold_start_recommendation(combined_text, top_n=top_n, weights=weights, target_catalog=target_catalog)
+    if not recs:
+        raise HTTPException(404, "No cold-start recommendations available.")
+
+    # Do not cache cold-start responses by default (content depends on input metadata)
+    _set_cache_headers(response, "MISS")
+    return {"query": combined_text, "recommendations": recs, "weights": {"alpha": weights[0], "beta": weights[1], "gamma": weights[2]}}
+
+
+@app.get("/api/user_recommend")
+def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
+    """Get hybrid recommendations for a user."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(400, "Models not built. Build first via /api/build.")
@@ -1731,7 +1863,7 @@ def move_model_to_shadow(
 @app.get("/api/weights")
 def get_weights():
     if not models["ready"]:
-        return {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}
+        return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2}
     return models["hybrid"].get_weights()
 
 
@@ -1840,16 +1972,21 @@ def get_trending_products(
     """
     Get trending products based on recent interactions.
     """
+    global TRENDING_CACHE
 
     # Cache for 1 hour
     now = datetime.utcnow()
 
-    if (
-        TRENDING_CACHE["data"] is not None and
-        TRENDING_CACHE["timestamp"] is not None and
-        (now - TRENDING_CACHE["timestamp"]).seconds < 3600
-    ):
-        return TRENDING_CACHE["data"]
+    cache_key = (days, limit)
+    if isinstance(TRENDING_CACHE, dict) and "data" in TRENDING_CACHE and TRENDING_CACHE["data"] is None:
+        cached_val = None
+    else:
+        cached_val = TRENDING_CACHE.get(cache_key)
+
+    if cached_val is not None:
+        timestamp, cached_data = cached_val
+        if (now - timestamp).total_seconds() < 3600:
+            return cached_data
 
     sb = get_supabase()
 
@@ -1943,30 +2080,58 @@ def get_trending_products(
         "limit": limit,
     }
 
-    TRENDING_CACHE["data"] = response
-    TRENDING_CACHE["timestamp"] = now
+    if isinstance(TRENDING_CACHE, dict):
+        TRENDING_CACHE.pop("data", None)
+        TRENDING_CACHE.pop("timestamp", None)
+        TRENDING_CACHE[cache_key] = (now, response)
+    else:
+        TRENDING_CACHE = {cache_key: (now, response)}
 
     return response
 
 # ── Feedback ──────────────────────────────────────────────────────────
 @app.post("/api/feedback")
-@app.post("/api/feedback")
 def submit_feedback(
     data: FeedbackCreate,
+    request: Request,
+    response: Response,
+    _csrf: None = Depends(csrf_header_dep),
 ):
-
- logger.info(
-        "Feedback received: user=%s item=%s thumbs=%s",
-        data.user_id, data.item, data.thumbs
+    limited_response = _apply_rate_limit(
+        request,
+        response,
+        scope="feedback",
+        limit_env="RATE_LIMIT_FEEDBACK_PER_MIN",
+        default_limit=20,
     )
- return {
+    if limited_response is not None:
+        return limited_response
+
+    feedback_client = _get_feedback_storage_client()
+    feedback_record = {
+        "user_id": data.user_id,
+        "item": data.item,
+        "feedback": data.feedback,
+        "metadata": {
+            "source_ip": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent", ""),
+        },
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        result = feedback_client.table("feedback_submissions").insert(feedback_record).execute()
+    except Exception as exc:
+        logger.error("Failed to persist feedback submission: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to store feedback.")
+
+    stored_feedback = feedback_record
+    if getattr(result, "data", None):
+        stored_feedback = result.data[0] if isinstance(result.data, list) else result.data
+
+    return {
         "message": "Feedback submitted successfully",
-        "feedback": {
-            "user_id": data.user_id,
-            "item": data.item,
-            "feedback": data.feedback,
-            "thumbs": data.thumbs,
-        }
+        "feedback": stored_feedback,
     }
 
 # ── Export Dataset ────────────────────────────────────────────────────
@@ -2016,7 +2181,17 @@ def _verify_github_signature(request_body: bytes, signature_header: str | None) 
 
 
 @app.post("/api/webhook/github")
-async def github_webhook(request: Request):
+async def github_webhook(request: Request, response: Response):
+    limited_response = _apply_rate_limit(
+        request,
+        response,
+        scope="github_webhook",
+        limit_env="RATE_LIMIT_GITHUB_WEBHOOK_PER_MIN",
+        default_limit=60,
+    )
+    if limited_response is not None:
+        return limited_response
+
     body_bytes = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
     _verify_github_signature(body_bytes, signature)
