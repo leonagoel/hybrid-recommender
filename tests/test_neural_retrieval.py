@@ -23,3 +23,12 @@ def test_two_tower_lifecycle_and_faiss_bounds():
     candidates = engine.retrieve_candidates(user_idx_token=1, top_k=2)
     assert isinstance(candidates, list)
     assert len(candidates) <= 2
+
+    # Verify string user ID lookup works
+    candidates_str = engine.retrieve_candidates(user_idx_token='u1', top_k=2)
+    assert isinstance(candidates_str, list)
+    assert len(candidates_str) <= 2
+
+    # Verify unknown user returns empty list
+    candidates_unknown = engine.retrieve_candidates(user_idx_token='unknown_user', top_k=2)
+    assert candidates_unknown == []

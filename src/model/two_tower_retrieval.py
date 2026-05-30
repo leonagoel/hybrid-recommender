@@ -51,7 +51,7 @@ class TwoTowerRetrievalEngine:
         unique_users = sorted(interactions_df['user_id'].unique())
         unique_items = sorted(items_df['item_id'].unique())
 
-        user_to_idx = {uid: i + 1 for i, uid in enumerate(unique_users)}
+        self.user_to_idx = {uid: i + 1 for i, uid in enumerate(unique_users)}
         self.item_id_map = {iid: i + 1 for i, iid in enumerate(unique_items)}
         self.rev_item_map = {v: k for k, v in self.item_id_map.items()}
 
@@ -64,7 +64,7 @@ class TwoTowerRetrievalEngine:
             list(self.user_tower.parameters()) + list(self.item_tower.parameters()), lr=0.005
         )
 
-        user_tensors = torch.tensor([user_to_idx[u] for u in interactions_df['user_id']], dtype=torch.long)
+        user_tensors = torch.tensor([self.user_to_idx[u] for u in interactions_df['user_id']], dtype=torch.long)
         item_tensors = torch.tensor([self.item_id_map[i] for i in interactions_df['item_id']], dtype=torch.long)
 
         self.user_tower.train()
@@ -94,10 +94,16 @@ class TwoTowerRetrievalEngine:
         faiss.normalize_L2(raw_item_vectors)
         self.faiss_index.add(raw_item_vectors)
 
-    def retrieve_candidates(self, user_idx_token: int, top_k=100) -> list:
+    def retrieve_candidates(self, user_idx_token, top_k=100) -> list:
         """Executes sub-10ms Approximate Nearest Neighbor lookup via FAISS."""
         if self.user_tower is None or self.faiss_index is None:
             return []
+
+        # Map string user ID to internal token if needed
+        if isinstance(user_idx_token, str):
+            if not hasattr(self, 'user_to_idx') or user_idx_token not in self.user_to_idx:
+                return []
+            user_idx_token = self.user_to_idx[user_idx_token]
 
         self.user_tower.eval()
         with torch.no_grad():
