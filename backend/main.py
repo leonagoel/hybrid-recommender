@@ -1191,9 +1191,14 @@ def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
 
         hybrid = models["hybrid"]
 
+        # 🔥 strict validation before calling model
+        if any(x is None for x in [w.alpha, w.beta, w.gamma]):
+            raise HTTPException(status_code=422, detail="Weights cannot be null")
+
         try:
-            hybrid.set_weights(w.alpha, w.beta, w.gamma)
+            hybrid.set_weights(float(w.alpha), float(w.beta), float(w.gamma))
         except Exception as e:
+            logger.exception("set_weights failed")
             raise HTTPException(status_code=400, detail=f"Invalid weights: {str(e)}")
 
         _clear_response_cache()
@@ -1208,10 +1213,7 @@ def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
 
     except Exception:
         logger.exception("Weight update failed")
-        raise HTTPException(
-            status_code=500,
-            detail="Internal error while updating weights",
-        )
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ── Build Models ──────────────────────────────────────────────────────
@@ -1395,6 +1397,39 @@ def train_federated(
         "build_time_seconds": build_time,
     }
 
+from fastapi import UploadFile, File, HTTPException
+
+@app.post("/api/upload")
+def upload_file(file: UploadFile = File(...)):
+    try:
+        # basic format restriction (matches test intent)
+        allowed_types = ["image/png", "image/jpeg", "text/csv"]
+
+        if file.content_type not in allowed_types:
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported file format"
+            )
+
+        # read file safely (optional validation)
+        content = file.file.read()
+
+        if len(content) > 5 * 1024 * 1024:  # 5MB limit
+            raise HTTPException(
+                status_code=400,
+                detail="File too large"
+            )
+
+        return {
+            "message": "File uploaded successfully",
+            "filename": file.filename
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ── Recommendations ───────────────────────────────────────────────────
 @app.get("/api/recommend")
