@@ -545,6 +545,7 @@ class FeedbackCreate(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
     item: str = Field(..., min_length=1, max_length=500)
     feedback: str = Field(..., min_length=1, max_length=2000)
+    thumbs: str = Field(..., pattern=r"^(up|down)$") 
 
 
 class RealtimeRecommendationRequest(BaseModel):
@@ -1760,9 +1761,25 @@ def submit_feedback(
     data: FeedbackCreate,
     _csrf: None = Depends(csrf_header_dep),
 ):
+    #Store user feedback in Supabase for RLHF
+    logger.info(
+        #Feedback received: user=%s item=%s thumbs=%s,
+        data.user_id, data.item, data.thumbs
+    )
+    try:
+        sb = get_supabase()
+        sb.table('feedback').insert({
+            'user_id': data.user_id,
+            'item': data.item,
+            'feedback': data.feedback,
+            'thumbs': data.thumbs,
+        }).execute()
+        logger.info("Feedback stored in Supabase successfully")
+    except Exception as e:
+        logger.warning("Supabase storage failed, continuing: %s", e)
     return {
         "message": "Feedback submitted successfully",
-        "feedback": {"user_id": data.user_id, "item": data.item, "feedback": data.feedback}
+        "feedback": {"user_id": data.user_id, "item": data.item, "feedback": data.feedback,"thumbs": data.thumbs}
     }
 
 
