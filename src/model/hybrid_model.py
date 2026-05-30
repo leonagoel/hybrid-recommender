@@ -34,7 +34,8 @@ class HybridRecommender:
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None):
+                 causal_config=None, model_kwargs=None,
+                 kg_model=None, delta=0.1):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -380,9 +381,7 @@ class HybridRecommender:
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
         kg_scores = []
-        t
         if self.kg_model:
-            l
             kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
            
             kg_map = {
@@ -394,11 +393,18 @@ class HybridRecommender:
                 kg_scores.append(kg_map.get(item['title'], 0.0))
 
             kg_scores = self._normalize_scores(kg_scores)
-
         else:
             kg_scores = [0.0] * len(items)
 
-        
+        # 5. Resolve active ranking weights
+        base_a = weights.get('alpha', self.alpha) if weights else self.alpha
+        base_b = weights.get('beta', self.beta) if weights else self.beta
+        base_g = weights.get('gamma', self.gamma) if weights else self.gamma
+        a, b, g = self._get_active_weights(
+            base_a, base_b, base_g,
+            user_id=user_id,
+            candidate_titles=all_titles,
+        )
 
         # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
