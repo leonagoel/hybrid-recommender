@@ -185,3 +185,19 @@ class TestContentRecommender:
         model = ContentRecommender(sample_item_df, batch_size=2)
         assert model.matrix.shape[0] == len(sample_item_df)
 
+    def test_search_metadata_fallbacks(self, sample_item_df):
+        # Create a df missing 'item_id', 'category', 'description', and 'top_reviews' columns
+        df = pd.DataFrame({
+            'title': ['Harry Potter', 'Lord of the Rings'],
+            'combined': ['Harry Potter magic', 'Lord of the Rings quest']
+        })
+        model = ContentRecommender(df)
+        results = model.search('magic', top_n=2)
+        assert len(results) > 0
+        for r in results:
+            assert 'item_id' in r
+            assert isinstance(r['item_id'], str)
+            assert r['category'] == ''
+            assert r['description'] == ''
+            assert r['top_reviews'] == []
+
