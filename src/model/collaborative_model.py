@@ -85,10 +85,21 @@ class CollaborativeRecommender:
                 self.user_factors = np.ones((n_users, 1))
                 self.item_factors = np.ones((1, n_items))
 
+        # Precompute user seen items for fast O(1) lookup in predict_for_user
+        self._user_seen_items = {
+            uid: set(group['title'].tolist())
+            for uid, group in self.df.groupby('user_id')
+        }
+
         # Build catalog map if catalog column is present in interaction_df
         self._catalog_map = {}
+        self._catalog_array = None
         if 'catalog' in self.df.columns:
             self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+            self._catalog_array = np.array([
+                str(self._catalog_map.get(t, '')).lower()
+                for t in self.title_list
+            ])
 
     def recommend(self, title, top_n=10, target_catalog=None):
         """
@@ -152,27 +163,33 @@ class CollaborativeRecommender:
         user_vec = self.user_factors[u_idx]
         scores = np.dot(user_vec, self.item_factors)
 
-        # Exclude already-interacted items
-        seen_items = set(
-            self.df[self.df['user_id'] == user_id]['title'].tolist()
-        )
+        # Exclude already-interacted items (O(1) lookup from precomputed dict)
+        seen_items = self._user_seen_items.get(user_id, set())
 
-        scored = []
-        for i, score in enumerate(scores):
-            t = self.title_list[i]
-            if t in seen_items:
-                continue
+        # Build mask to exclude seen items (vectorized)
+        mask = np.ones(len(self.title_list), dtype=bool)
+        for t in seen_items:
+            idx = self._title_to_idx.get(t)
+            if idx is not None:
+                mask[idx] = False
 
-            # Catalog filtering
-            if target_catalog and self._catalog_map:
-                item_catalog = self._catalog_map.get(t, '')
-                if str(item_catalog).lower() != str(target_catalog).lower():
-                    continue
+        # Catalog filtering mask (vectorized using precomputed array)
+        if target_catalog and self._catalog_array is not None:
+            cat_mask = self._catalog_array == str(target_catalog).lower()
+            mask = mask & cat_mask
 
-            scored.append((t, float(score)))
+        filtered_indices = np.where(mask)[0]
+        if len(filtered_indices) == 0:
+            return []
 
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [{'title': t, 'predicted_score': s} for t, s in scored[:top_n]]
+        filtered_scores = scores[filtered_indices]
+        top_local_indices = np.argsort(filtered_scores)[-top_n:][::-1]
+        top_global_indices = filtered_indices[top_local_indices]
+
+        return [
+            {'title': self.title_list[i], 'predicted_score': float(filtered_scores[top_local_indices[j]])}
+            for j, i in enumerate(top_global_indices)
+        ]
 
     def predict_rating(self, user_id, title):
         """Predict the rating a user would give to an item."""
@@ -183,28 +200,28 @@ class CollaborativeRecommender:
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
     
     def _popularity_fallback(self, top_n=10):
-    #Fallback for cold-start users — top-N by interaction count (popularity)
+        #Fallback for cold-start users — top-N by interaction count (popularity)
         import logging
         logger = logging.getLogger(__name__)
         logger.info("Using popularity-based fallback for cold-start user.")
-    
+
         item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
-    
-       # Bayesian rating
+
+        # Bayesian rating
         global_avg = item_counts['mean'].mean()
         m = 5
         item_counts['bayesian'] = (
             (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +
             (m / (item_counts['count'] + m)) * global_avg
         )
-    
+
         top_items = item_counts.nlargest(top_n, 'bayesian')
-    
+
         return [
-        {
-            'title': row['title'],
-            'predicted_score': round(float(row['bayesian']), 4),
-            'fallback': True
-        }
-        for _, row in top_items.iterrows()
+            {
+                'title': row['title'],
+                'predicted_score': round(float(row['bayesian']), 4),
+                'fallback': True,
+            }
+            for _, row in top_items.iterrows()
         ]
