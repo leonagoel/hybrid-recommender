@@ -27,3 +27,14 @@ def test_missing_user_returns_none(tmp_path):
 def test_missing_item_returns_none(tmp_path):
     store = FeatureStore(store_path=str(tmp_path))
     assert store.get_item_embedding("unknown_item") is None
+
+def test_custom_store_path_creation(tmp_path):
+    custom_dir = tmp_path / "custom_subdir"
+    assert not custom_dir.exists()
+    store = FeatureStore(store_path=str(custom_dir))
+    assert custom_dir.exists()
+
+def test_empty_keys_returns_none(tmp_path):
+    store = FeatureStore(store_path=str(tmp_path))
+    assert store.get_user_embedding("") is None
+    assert store.get_item_embedding("") is None
