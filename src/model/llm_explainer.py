@@ -245,6 +245,6 @@ _explainer_instance: Optional[LLMExplainer] = None
 def get_explainer(model_name: str = "gemini-pro") -> LLMExplainer:
     """Get or create a singleton LLMExplainer instance."""
     global _explainer_instance
-    if _explainer_instance is None:
+    if _explainer_instance is None or _explainer_instance.model_name != model_name:
         _explainer_instance = LLMExplainer(model_name=model_name)
     return _explainer_instance

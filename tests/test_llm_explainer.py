@@ -26,6 +26,13 @@ class TestLLMExplainerInit:
         explainer2 = get_explainer()
         assert explainer1 is explainer2
 
+    def test_singleton_model_switching(self):
+        """Test that get_explainer() recreates instance when model_name changes."""
+        explainer1 = get_explainer("gemini-pro")
+        explainer2 = get_explainer("gemini-1.5-flash")
+        assert explainer1 is not explainer2
+        assert explainer2.model_name == "gemini-1.5-flash"
+
 
 class TestFallbackExplanations:
     """Test fallback explanation generation."""
