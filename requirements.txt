@@ -11,5 +11,6 @@ scipy>=1.11.0
 streamlit>=1.28.0
 celery>=5.3.6
 redis>=5.0.1
+sentence-transformers>=2.2.0
 python-dotenv>=1.0.1
 sentence-transformers>=2.2.0
