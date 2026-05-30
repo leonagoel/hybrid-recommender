@@ -34,7 +34,8 @@ class HybridRecommender:
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None):
+                 causal_config=None, model_kwargs=None,
+                 kg_model=None, delta=0.0):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -334,6 +335,9 @@ class HybridRecommender:
         Get hybrid recommendations for a given item title.
         Returns list of dicts sorted by hybrid_score.
         """
+        # Resolve active weights
+        a, b, g = self._get_active_weights(self.alpha, self.beta, self.gamma, user_id=user_id)
+
         # 1. Content-based scores
         content_recs = self.content_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
         all_titles = {r['title'] for r in content_recs}
