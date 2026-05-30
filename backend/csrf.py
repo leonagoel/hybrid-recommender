@@ -28,7 +28,7 @@ import os
 import secrets
 import logging
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.responses import Response
@@ -155,6 +155,13 @@ def set_csrf_cookie(response: Response, token: str) -> None:
         httponly=False,             # JS must read this — see docstring above
         secure=_is_secure_context(),# HTTPS-only in production
     )
+
+
+async def csrf_header_dep(request: Request) -> None:
+    cookie_val = request.cookies.get(CSRF_COOKIE_NAME)
+    header_val = request.headers.get(CSRF_HEADER_NAME)
+    if not cookie_val or not header_val or not secrets.compare_digest(cookie_val, header_val):
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────

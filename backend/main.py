@@ -19,6 +19,8 @@ import json
 from redis import Redis
 from redis.exceptions import RedisError
 
+logger = logging.getLogger(__name__)
+
 try:
     import bleach
 except ModuleNotFoundError:
@@ -75,6 +77,15 @@ from backend.csrf import (
 def csrf_header_dep():
     """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
     return None
+from backend.csrf import (
+    csrf_header_dep,
+    CSRFMiddleware,
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    CSRFTokenResponse,
+    generate_csrf_token,
+    set_csrf_cookie,
+)
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
@@ -206,6 +217,7 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    global _cache_misses, _cache_hits
     return _response_cache.get(key)
 
 
@@ -233,22 +245,17 @@ def _set_cached_response(key: str, value: Any) -> None:
             _response_cache.pop(key, None)
             _cache_misses += 1
             return None
-
         _cache_hits += 1
         return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
     try:
-        _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
+        _redis_client.set(key, json.dumps(value))
     except (RedisError, TypeError):
         pass
-
     with _cache_lock:
-        _response_cache[key] = (
-            time.time() + CACHE_TTL_SECONDS,
-            value,
-        )
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 def _clear_response_cache() -> None:
     _response_cache.clear()
@@ -1197,6 +1204,7 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
+    _csrf: None = Depends(csrf_header_dep),
     admin=Depends(_require_admin_access)
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
