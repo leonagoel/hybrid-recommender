@@ -76,3 +76,19 @@ class TestCausalConfigSpec:
     def test_from_dict_validation_error(self):
         with pytest.raises(ValueError):
             CausalConfig.from_dict({'blend_lambda': -5.0})
+
+    def test_preset_uniqueness_and_validation(self):
+        disabled_1 = CausalConfig.disabled()
+        disabled_2 = CausalConfig.disabled()
+        assert disabled_1 is not disabled_2
+        assert disabled_1.validate() is disabled_1
+
+        conservative_1 = CausalConfig.conservative()
+        conservative_2 = CausalConfig.conservative()
+        assert conservative_1 is not conservative_2
+        assert conservative_1.validate() is conservative_1
+
+        aggressive_1 = CausalConfig.aggressive()
+        aggressive_2 = CausalConfig.aggressive()
+        assert aggressive_1 is not aggressive_2
+        assert aggressive_1.validate() is aggressive_1
