@@ -1186,13 +1186,13 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.put("/api/weights")
 def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
     try:
-        hybrid = models.get("hybrid")
-
-        if not models.get("ready") or hybrid is None:
+        if not models.get("ready") or not models.get("hybrid"):
             raise HTTPException(status_code=400, detail="Models not built")
 
-        if not hasattr(hybrid, "set_weights"):
-            raise HTTPException(status_code=400, detail="Hybrid model not initialized")
+        hybrid = models.get("hybrid")
+
+        if hybrid is None or not hasattr(hybrid, "set_weights"):
+            raise HTTPException(status_code=400, detail="Hybrid model not initialized properly")
 
         try:
             alpha = float(w.alpha)
@@ -1200,30 +1200,28 @@ def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
             gamma = float(w.gamma)
 
             if any(x != x for x in [alpha, beta, gamma]):
-                raise HTTPException(status_code=422, detail="NaN not allowed")
+                raise ValueError("NaN not allowed")
 
             hybrid.set_weights(alpha, beta, gamma)
 
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+        except ValueError as ve:
+            raise HTTPException(status_code=422, detail=str(ve))
 
         except Exception as e:
+            logger.exception("set_weights failed")
             raise HTTPException(status_code=400, detail="Invalid weight configuration")
 
-        try:
-            _clear_response_cache()
-        except Exception:
-            pass  # IMPORTANT: don't crash API
+        _clear_response_cache()
 
         return {
             "message": "Weights updated",
-            "weights": hybrid.get_weights(),
+            "weights": hybrid.get_weights()
         }
 
     except HTTPException:
         raise
 
-    except Exception as e:
+    except Exception:
         logger.exception("Weight update failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -1920,16 +1918,27 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
 # ── Categories ────────────────────────────────────────────────────────
 @app.get("/api/categories")
 def get_categories():
-    sb = get_supabase()
+    try:
+        sb = get_supabase()
+    except Exception:
+        return {"categories": []}
+
+    if not sb:
+        return {"categories": []}
+
     try:
         result = sb.rpc('get_categories', {}).execute()
         if result.data:
             return {"categories": result.data}
     except Exception:
         pass
+
     try:
         result = sb.table('products').select('category').limit(5000).execute()
-        cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
+        cats = list(set(
+            p.get('category') for p in (result.data or [])
+            if p.get('category')
+        ))
         cats.sort()
         return {"categories": cats}
     except Exception as e:
@@ -1967,6 +1976,8 @@ def create_purchase(
     }).execute()
     _clear_response_cache()
     return {"purchase": result.data}
+
+
 # ── Trending Products ───────────────────────────────────────────────
 
 TRENDING_CACHE = {

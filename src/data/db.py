@@ -1,4 +1,14 @@
 import os
+
+import os
+
+def get_supabase():
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_ANON_KEY")
+
+    if not url or not key:
+        raise RuntimeError("SUPABASE not configured (dev mode)")
+    
 import logging
 import threading
 from dotenv import load_dotenv
