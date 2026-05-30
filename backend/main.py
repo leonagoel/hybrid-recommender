@@ -1182,84 +1182,46 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 
 
 # ── Upload ────────────────────────────────────────────────────────────
-@app.post("/api/upload")
-async def upload_dataset(
-    file: UploadFile = File(...),
-    admin=Depends(_require_admin_access),
-    
+@app.put("/api/weights")
+def update_weights(
+    w: WeightsUpdate,
+    _admin: None = Depends(_admin_access_dep),
 ):
-    """Upload a CSV or JSON dataset and import into Supabase."""
-    import math
-    filename = file.filename or "data.csv"
-    ext = os.path.splitext(filename)[1].lower()
-    if ext not in ('.csv', '.json'):
-        raise HTTPException(400, "Only CSV and JSON files are supported.")
     try:
-        contents = await file.read()
-        _validate_upload_bytes(filename, ext, contents)
-        buf = io.BytesIO(contents)
-        raw_df = read_file(buf, file_format=ext.replace('.', ''))
-        adapted_df, meta = adapt_data(raw_df)
-        adapted_df = adapted_df.drop_duplicates(subset='title', keep='first')
-        try:
-            sb = get_supabase_admin()
-        except RuntimeError:
-            sb = get_supabase()
-        batch_size = 500
-        total = len(adapted_df)
-        imported = 0
-        errors = []
-        for start in range(0, total, batch_size):
-            chunk = adapted_df.iloc[start:start + batch_size]
-            rows = []
-            for _, row in chunk.iterrows():
-                raw_rating = row.get('rating', 0)
-                try:
-                    rating_val = float(raw_rating)
-                    if math.isnan(rating_val) or math.isinf(rating_val):
-                        rating_val = 0.0
-                except (ValueError, TypeError):
-                    rating_val = 0.0
-                title = str(row.get('title', 'Unknown')).strip()
-                if not title or title == 'nan' or title == 'Unknown':
-                    continue
-# --- sanitize HTML tags ---
-                title = bleach.clean(title, strip=True)[:500]
+        if not models["ready"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Models not built."
+            )
 
-                description = str(row.get('description', ''))
-                description = bleach.clean(description, strip=True)[:2000]
+        if models.get("hybrid") is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Hybrid model unavailable."
+            )
 
-                rows.append({
-                    'title': title,
-                    'description': description,
-                    'category': str(row.get('category', ''))[:200],
-                    'rating': round(rating_val, 2),
-                    'avg_sentiment': 0.0,
-                    'review_count': 0,
-                    'metadata': {},
-                })
-            if not rows:
-                continue
-            try:
-                sb.table('products').upsert(rows, on_conflict='title', ignore_duplicates=True).execute()
-                imported += len(rows)
-            except Exception as e:
-                errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
-        models["ready"] = False
+        models["hybrid"].set_weights(
+            w.alpha,
+            w.beta,
+            w.gamma,
+        )
+
         _clear_response_cache()
-        result = {
-            "message": f"Imported {imported:,} products from {filename}",
-            "imported": imported, "total_rows": total,
-            "meta": {"has_user_data": meta['has_user_data'], "has_reviews": meta['has_reviews']},
+
+        return {
+            "message": "Weights updated",
+            "weights": models["hybrid"].get_weights(),
         }
-        if errors:
-            result["warnings"] = errors[:5]
-        return result
+
     except HTTPException:
         raise
+
     except Exception as e:
-        logger.error("Upload failed for %s: %s", filename, e, exc_info=True)
-        raise HTTPException(400, "Upload failed. Check file format and try again.")
+        logger.exception("Weight update failed")
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )
 
 
 # ── Build Models ──────────────────────────────────────────────────────
@@ -1893,16 +1855,29 @@ def get_weights():
 
 
 @app.put("/api/weights")
-def update_weights(
-    w: WeightsUpdate,
-    
-    _admin: None = Depends(_admin_access_dep),
-):
-    if not models["ready"]:
-        raise HTTPException(400, "Models not built.")
-    models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
-    _clear_response_cache()
-    return {"message": "Weights updated", "weights": models["hybrid"].get_weights()}
+def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
+    try:
+        if not models.get("ready") or models.get("hybrid") is None:
+            raise HTTPException(status_code=400, detail="Models not built.")
+
+        try:
+            models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid weights: {str(e)}")
+
+        _clear_response_cache()
+
+        return {
+            "message": "Weights updated",
+            "weights": models["hybrid"].get_weights(),
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        logger.exception("Weight update failed")
+        raise HTTPException(status_code=400, detail="Internal error while updating weights")
 
 
 # ── Items ─────────────────────────────────────────────────────────────
