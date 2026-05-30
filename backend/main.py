@@ -205,56 +205,61 @@ def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
+try:
+    _redis_client = Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
+        decode_responses=True
+    )
+    _redis_client.ping()
+except Exception:
+    _redis_client = None
+
+_metrics_lock = Lock()
+
 def _get_cached_response(key: str):
-    return _response_cache.get(key)
+    global _cache_hits, _cache_misses
+    
+    # Try local thread-safe cache first
+    cached = _response_cache.get(key)
+    if cached is not None:
+        with _metrics_lock:
+            _cache_hits += 1
+        return cached
 
+    # Try Redis fallback
+    if _redis_client is not None:
+        try:
+            cached_str = _redis_client.get(key)
+            if cached_str is not None:
+                parsed = json.loads(cached_str)
+                # Store back in local cache to save Redis network hits
+                _response_cache.set(key, parsed)
+                with _metrics_lock:
+                    _cache_hits += 1
+                return parsed
+        except (RedisError, json.JSONDecodeError):
+            pass
+
+    with _metrics_lock:
+        _cache_misses += 1
+    return None
 
 def _set_cached_response(key: str, value: Any) -> None:
+    # Set in local thread-safe cache
     _response_cache.set(key, value)
-    try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            return json.loads(cached)
-
-    except (RedisError, json.JSONDecodeError):
-        pass
-
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-
-        _cache_hits += 1
-        return value
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
-    except (RedisError, TypeError):
-        pass
-
-    with _cache_lock:
-        _response_cache[key] = (
-            time.time() + CACHE_TTL_SECONDS,
-            value,
-        )
+    
+    # Set in Redis
+    if _redis_client is not None:
+        try:
+            _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
+        except (RedisError, TypeError):
+            pass
 
 def _clear_response_cache() -> None:
+    global _cache_hits, _cache_misses
     _response_cache.clear()
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
+    with _metrics_lock:
         _cache_hits = 0
         _cache_misses = 0
 
