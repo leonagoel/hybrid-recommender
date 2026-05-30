@@ -136,5 +136,6 @@ class ContentRecommender:
             })
             if len(results) >= top_n:
                 break
+
         return results
 
