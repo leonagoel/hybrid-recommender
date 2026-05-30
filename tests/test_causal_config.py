@@ -76,3 +76,11 @@ class TestCausalConfigSpec:
     def test_from_dict_validation_error(self):
         with pytest.raises(ValueError):
             CausalConfig.from_dict({'blend_lambda': -5.0})
+
+    def test_from_dict_non_numeric_lambda_raises_value_error(self):
+        with pytest.raises(ValueError):
+            CausalConfig.from_dict({'blend_lambda': 'invalid-number'})
+
+    def test_from_dict_non_numeric_clip_max_raises_value_error(self):
+        with pytest.raises(ValueError):
+            CausalConfig.from_dict({'clip_max': 'invalid-number'})
