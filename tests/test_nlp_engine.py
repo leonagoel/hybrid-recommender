@@ -14,6 +14,7 @@ from src.model.nlp_engine import (
     sentiment_label,
     batch_analyze,
     aggregate_sentiment_by_item,
+    compute_product_sentiment,
 )
 
 
@@ -192,6 +193,34 @@ class TestAggregateSentimentByItem:
         df = batch_analyze(df)
         result = aggregate_sentiment_by_item(df, item_col="product_name")
         assert "product_name" in result.columns
+
+
+class TestComputeProductSentiment:
+    """Test compute_product_sentiment function."""
+
+    def test_empty_reviews_list(self):
+        assert compute_product_sentiment([]) is None
+
+    def test_none_reviews(self):
+        assert compute_product_sentiment(None) is None
+
+    def test_non_string_reviews_only(self):
+        assert compute_product_sentiment([123, True, None]) is None
+
+    def test_empty_strings_and_whitespaces(self):
+        assert compute_product_sentiment(["", "   ", "\n"]) is None
+
+    def test_valid_reviews_sentiment(self):
+        reviews = ["I love this! Amazing product.", "Pretty good.", "It was okay."]
+        score = compute_product_sentiment(reviews)
+        assert score is not None
+        assert score > 0.0
+
+    def test_mixed_valid_and_invalid_reviews(self):
+        reviews = ["Excellent product!", "", 456, "Not good, quite bad."]
+        score = compute_product_sentiment(reviews)
+        assert score is not None
+        assert isinstance(score, float)
 
 
 if __name__ == "__main__":
