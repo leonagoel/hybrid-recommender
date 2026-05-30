@@ -1186,31 +1186,34 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.put("/api/weights")
 def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
     try:
-        if not models.get("ready") or models.get("hybrid") is None:
-            raise HTTPException(status_code=400, detail="Models not built.")
+        hybrid = models.get("hybrid")
 
-        hybrid = models["hybrid"]
+        if not models.get("ready") or hybrid is None:
+            raise HTTPException(status_code=400, detail="Models not built")
+
+        if not hasattr(hybrid, "set_weights"):
+            raise HTTPException(status_code=400, detail="Hybrid model not initialized")
 
         try:
             alpha = float(w.alpha)
             beta = float(w.beta)
             gamma = float(w.gamma)
 
-            # NaN check
             if any(x != x for x in [alpha, beta, gamma]):
-                raise ValueError("NaN not allowed")
+                raise HTTPException(status_code=422, detail="NaN not allowed")
 
             hybrid.set_weights(alpha, beta, gamma)
 
-        except Exception as e:
-            logger.exception("set_weights failed")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid weight configuration: {str(e)}"
-            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
-        # IMPORTANT: clear cache after successful update
-        _clear_response_cache()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail="Invalid weight configuration")
+
+        try:
+            _clear_response_cache()
+        except Exception:
+            pass  # IMPORTANT: don't crash API
 
         return {
             "message": "Weights updated",
@@ -1220,12 +1223,9 @@ def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
     except HTTPException:
         raise
 
-    except Exception:
+    except Exception as e:
         logger.exception("Weight update failed")
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error"
-        )
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ── Build Models ──────────────────────────────────────────────────────
