@@ -77,7 +77,7 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-        run: |
+          run: |
           pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest pytest-asyncio anyio
