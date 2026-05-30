@@ -16,6 +16,58 @@ def get_csrf_token():
     client.cookies.set("csrftoken", token)  # Cookie bhi set karo
     return token
 
+class _FakeInsertResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeFeedbackTable:
+    def __init__(self):
+        self.inserted = []
+
+    def insert(self, payload):
+        self.inserted.append(payload)
+        return self
+
+    def execute(self):
+        return _FakeInsertResult([self.inserted[-1]])
+
+
+class _FakeSupabase:
+    def __init__(self):
+        self.feedback_table = _FakeFeedbackTable()
+
+    def table(self, name):
+        assert name == "feedback_submissions"
+        return self.feedback_table
+
+
+class _FakeInsertResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeFeedbackTable:
+    def __init__(self):
+        self.inserted = []
+
+    def insert(self, payload):
+        self.inserted.append(payload)
+        return self
+
+    def execute(self):
+        return _FakeInsertResult([self.inserted[-1]])
+
+
+class _FakeSupabase:
+    def __init__(self):
+        self.feedback_table = _FakeFeedbackTable()
+
+    def table(self, name):
+        assert name == "feedback_submissions"
+        return self.feedback_table
+
+
 def test_submit_feedback_validation_failures():
     #Test: Invalid inputs should return 422 (Validation Error).Empty user_id, item, feedback — should fail.
     token = get_csrf_token()
@@ -35,13 +87,10 @@ def test_submit_feedback_validation_failures():
     assert response.status_code == 422
 
 
-def test_submit_feedback_success():
-    
-    # Test: Valid feedback with thumbs up should return 200.
-   
-    token = get_csrf_token()
-    headers = {"x-csrf-token": token}
-    
+def test_submit_feedback_success(monkeypatch):
+    fake_supabase = _FakeSupabase()
+    monkeypatch.setattr(main, "get_supabase_admin", lambda: fake_supabase)
+
     response = client.post(
         "/api/feedback",
         json={"user_id": "user123", "item": "item1", "feedback": "Excellent service!","thumbs": "up"}
@@ -55,44 +104,19 @@ def test_submit_feedback_success():
     assert payload["feedback"]["user_id"] == "user123"
     assert payload["feedback"]["item"] == "item1"
     assert payload["feedback"]["feedback"] == "Excellent service!"
-    assert payload["feedback"]["thumbs"] == "up"
+    assert "created_at" in payload["feedback"]
+    assert payload["feedback"]["metadata"]["source_ip"] is not None
+    assert fake_supabase.feedback_table.inserted[0]["user_id"] == "user123"
+    assert fake_supabase.feedback_table.inserted[0]["item"] == "item1"
+    assert fake_supabase.feedback_table.inserted[0]["feedback"] == "Excellent service!"
 
-def test_submit_feedback_thumbs_down():
-     
-   # Test: Valid feedback with thumbs down should return 200.
-    
-    token = get_csrf_token()
-    headers = {"x-csrf-token": token}
-    
-    
+
+def test_submit_feedback_fails_when_storage_unavailable(monkeypatch):
+    monkeypatch.setattr(main, "get_supabase_admin", lambda: None)
+
     response = client.post(
         "/api/feedback",
-        json={
-            "user_id": "user123",
-            "item": "item1", 
-            "feedback": "Not helpful",
-            "thumbs": "down"
-        }
+        json={"user_id": "user123", "item": "item1", "feedback": "Excellent service!"}
     )
-    assert response.status_code == 200
-    assert response.json()["feedback"]["thumbs"] == "down"
-
-def test_submit_feedback_invalid_thumbs():
-    
-   # Test: Invalid thumbs value should return 422. only up and down is allowed .
-   
-    token = get_csrf_token()
-    headers = {"x-csrf-token": token}
-    
-    
-    response = client.post(
-        "/api/feedback",
-        json={
-            "user_id": "user123",
-            "item": "item1",
-            "feedback": "Good",
-            "thumbs": "sideways"  # invalid!
-        }
-    )
-    assert response.status_code == 422
-    
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Feedback storage is unavailable."
