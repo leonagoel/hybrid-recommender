@@ -76,6 +76,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(levelname)s] %(asctime)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 from db import get_supabase, get_supabase_admin
 from backend.auth import _require_admin_access
 from backend.csrf import (
@@ -84,12 +90,22 @@ from backend.csrf import (
     generate_csrf_token,
     set_csrf_cookie,
 )
-
-
-def csrf_header_dep():
-    """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
-    return None
 from data_adapter import adapt_data, read_file
+
+# ── OpenAPI CSRF header dependency ────────────────────────────────────
+async def csrf_header_dep(
+    x_csrf_token: str = Header(
+        ...,
+        alias="X-CSRF-Token",
+        description=(
+            "CSRF token obtained from **GET /api/csrf-token**. "
+            "Required on all state-mutating requests (POST / PUT / PATCH / DELETE). "
+            "Must match the value stored in the `csrftoken` cookie."
+        ),
+    ),
+) -> None:
+    """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
+    pass
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
@@ -222,54 +238,40 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            return json.loads(cached)
-
+    global _cache_hits, _cache_misses
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
             if cached is not None:
+                _cache_hits += 1
                 return json.loads(cached)
         except (RedisError, json.JSONDecodeError):
             pass
 
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-
+    # Fallback to local _BoundedTTLCache
+    value = _response_cache.get(key)
+    if value is not None:
         _cache_hits += 1
         return value
 
+    _cache_misses += 1
+    return None
+
 
 def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    if _redis_client is not None:
+        try:
+            _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
+        except RedisError:
+            pass
+    _response_cache.set(key, value)
+
 
 def _clear_response_cache() -> None:
     _response_cache.clear()
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
+    global _cache_hits, _cache_misses
+    _cache_hits = 0
+    _cache_misses = 0
 
 
 @app.get("/api/cache_metrics")
@@ -2279,7 +2281,6 @@ def submit_feedback(
     data: FeedbackCreate,
     request: Request,
     response: Response,
-    _csrf: None = Depends(csrf_header_dep),
 ):
     limited_response = _apply_rate_limit(
         request,
