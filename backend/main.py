@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
@@ -180,8 +181,8 @@ def _set_cached_response(key: str, value: Any) -> None:
         _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
         # track misses -> when we set a value it was previously a miss for the next requests
         # metric updated in _get_cached_response when read.
-
-    except (RedisError, TypeError):
+        
+        except (RedisError, TypeError):
         pass
 
     with _cache_lock:
@@ -415,6 +416,26 @@ def _extract_bearer_token(value: str | None) -> str:
         return ""
     return token.strip()
 
+
+async def get_current_user(authorization: Optional[str] = Header(default=None)):
+    token = _extract_bearer_token(authorization)
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing auth token.")
+
+    sb = get_supabase()
+
+    try:
+        user_response = sb.auth.get_user(token)
+    except Exception as e:
+        # log real error internally
+        logger.error(f"Auth verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
+    if not user_response or not getattr(user_response, "user", None):
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
+    return user_response.user
 
 def _require_admin_access(request: Request) -> None:
     expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
@@ -1138,7 +1159,7 @@ async def upload_dataset(
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
     _csrf: None = Depends(csrf_header_dep),
-):
+
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
@@ -1920,6 +1941,7 @@ def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
 def create_purchase(
     data: PurchaseCreate,
     _csrf: None = Depends(csrf_header_dep),
+    current_user=Depends(get_current_user),
 ):
     sb = get_supabase()
     result = sb.table('purchases').insert({
@@ -2070,6 +2092,7 @@ def submit_feedback(
     request: Request,
     response: Response,
     _csrf: None = Depends(csrf_header_dep),
+    current_user=Depends(get_current_user),
 ):
     limited_response = _apply_rate_limit(
         request,

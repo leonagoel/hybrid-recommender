@@ -465,7 +465,16 @@ async function initAuth() {
     }
     try {
         const { data: { session } } = await sbClient.auth.getSession();
-
+        sbClient.auth.onAuthStateChange((event, session) => {
+            if (event === 'TOKEN_REFRESHED') {
+            setUser(session.user);
+        }
+        if (event === 'SIGNED_OUT') {
+            state.user = null;
+            state.isGuest = true;
+            els.authLabel.textContent = 'Sign In';
+        }
+    });
         if (session) {
             setUser(session.user);
         } else {
