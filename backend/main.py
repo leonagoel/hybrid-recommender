@@ -121,6 +121,7 @@ CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
 _response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
+_redis_client: Redis | None = None
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
@@ -224,14 +225,15 @@ def _get_cached_response(key: str):
 def _set_cached_response(key: str, value: Any) -> None:
     _response_cache.set(key, value)
     global _cache_misses, _cache_hits
-    try:
-        cached = _redis_client.get(key)
+    if _redis_client is not None:
+        try:
+            cached = _redis_client.get(key)
 
-        if cached is not None:
-            return json.loads(cached)
+            if cached is not None:
+                return json.loads(cached)
 
-    except (RedisError, json.JSONDecodeError):
-        pass
+        except (RedisError, json.JSONDecodeError):
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
