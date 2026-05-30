@@ -147,3 +147,41 @@ class TestContentRecommender:
         results_upper = content_model.search('WIZARD', top_n=3)
         assert isinstance(results_lower, list)
         assert isinstance(results_upper, list)
+
+    def test_explain_similarity_valid_titles(self, content_model):
+        explanation = content_model.explain_similarity('Harry Potter', 'Lord of the Rings')
+        assert isinstance(explanation, list)
+        assert len(explanation) == 1
+        assert explanation[0]['term'] == 'semantic_similarity'
+        assert 0.0 <= explanation[0]['score'] <= 1.0
+
+    def test_explain_similarity_invalid_source(self, content_model):
+        explanation = content_model.explain_similarity('Nonexistent', 'Lord of the Rings')
+        assert explanation == []
+
+    def test_explain_similarity_invalid_candidate(self, content_model):
+        explanation = content_model.explain_similarity('Harry Potter', 'Nonexistent')
+        assert explanation == []
+
+    def test_recommend_with_catalog_filtering(self, sample_item_df):
+        df = sample_item_df.copy()
+        df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
+        model = ContentRecommender(df)
+        recs = model.recommend('Harry Potter', top_n=5, target_catalog='movies')
+        for r in recs:
+            # Lord of the Rings and Game of Thrones are movies
+            assert r['title'] in ['Lord of the Rings', 'Game of Thrones']
+
+    def test_search_with_catalog_filtering(self, sample_item_df):
+        df = sample_item_df.copy()
+        df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
+        model = ContentRecommender(df)
+        results = model.search('wizard', top_n=5, target_catalog='books')
+        for r in results:
+            assert r['title'] in ['Harry Potter', 'The Hobbit', 'Dune']
+
+    def test_init_with_small_batch_size(self, sample_item_df):
+        # Using a batch size of 2 to exercise sequentially encoded slices loop
+        model = ContentRecommender(sample_item_df, batch_size=2)
+        assert model.matrix.shape[0] == len(sample_item_df)
+
