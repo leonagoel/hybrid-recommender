@@ -192,6 +192,29 @@ const CONFIG = {
   MAX_COMPARE_ITEMS: 20
 };
 
+/**
+ * Securely merges objects to prevent prototype pollution.
+ */
+function safeMerge(target, source) {
+    for (const key in source) {
+        if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+
+        const sourceVal = source[key];
+        const targetVal = target[key];
+
+        if (typeof sourceVal === 'object' && sourceVal !== null && !Array.isArray(sourceVal)) {
+            if (typeof targetVal !== 'object' || targetVal === null || Array.isArray(targetVal)) {
+                target[key] = {};
+            }
+            safeMerge(target[key], sourceVal);
+        } else {
+            target[key] = sourceVal;
+        }
+    }
+    return target;
+}
+
 function loadPreferences() {
     const saved = localStorage.getItem('userPreferences');
 
@@ -200,13 +223,12 @@ function loadPreferences() {
     try {
         const prefs = JSON.parse(saved);
 
-        state.filters.category = prefs.category || '';
-        state.filters.rating = prefs.rating || '';
-        state.filters.sentiment = prefs.sentiment || '';
+        // Safely merge parsed preferences into state.filters
+        safeMerge(state.filters, prefs);
 
-        els.categoryFilter.value = state.filters.category;
-        els.ratingFilter.value = state.filters.rating;
-        els.sentimentFilter.value = state.filters.sentiment;
+        els.categoryFilter.value = state.filters.category || '';
+        els.ratingFilter.value = state.filters.rating || '';
+        els.sentimentFilter.value = state.filters.sentiment || '';
 
     } catch (err) {
         console.warn('Failed to load preferences:', err);
