@@ -41,4 +41,3 @@ def test_cache_metrics_hit_miss():
     _ = backend._get_cached_response('k1')
     after = client.get('/api/cache_metrics').json()
     assert after['hits'] >= 1
-*** End File
