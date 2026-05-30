@@ -50,6 +50,8 @@ class ContentRecommender:
         idx = self._title_to_idx[title.lower()]
         query_vec = self.matrix[idx].reshape(1, -1)
         scores = cosine_similarity(query_vec, self.matrix).flatten()
+        self._last_scores = scores
+        self._last_query_title = title.lower()
         
         sim_scores = list(enumerate(scores))
         sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
@@ -85,15 +87,23 @@ class ContentRecommender:
         if source_title.lower() not in self._title_to_idx or candidate_title.lower() not in self._title_to_idx:
             return []
 
-        source_idx = self._title_to_idx[source_title.lower()]
-        candidate_idx = self._title_to_idx[candidate_title.lower()]
-        
-        score = cosine_similarity(
-            self.matrix[source_idx].reshape(1, -1), 
-            self.matrix[candidate_idx].reshape(1, -1)
-        )[0][0]
-        
-        return [{'term': 'semantic_similarity', 'score': round(float(score), 4)}]
+        # Reuse cached scores if available and source matches
+        if (
+            hasattr(self, '_last_scores')
+            and self._last_query_title == source_title.lower()
+            and candidate_title.lower() in self._title_to_idx
+        ):
+            candidate_idx = self._title_to_idx[candidate_title.lower()]
+            score = float(self._last_scores[candidate_idx])
+        else:
+            # Fallback: compute directly (e.g. called standalone)
+            source_idx = self._title_to_idx[source_title.lower()]
+            candidate_idx = self._title_to_idx[candidate_title.lower()]
+            score = float(
+                self.matrix[source_idx] @ self.matrix[candidate_idx]
+            )  # dot product valid since embeddings are L2-normalized
+
+        return [{'term': 'semantic_similarity', 'score': round(score, 4)}]
 
     def search(self, query, top_n=20, target_catalog=None):
         """
@@ -138,4 +148,3 @@ class ContentRecommender:
                 break
 
         return results
-
