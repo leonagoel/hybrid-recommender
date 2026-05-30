@@ -160,12 +160,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    
     try:
         cached = _redis_client.get(key)
 
@@ -741,15 +735,20 @@ def dashboard(request: Request):
     avg_recommendation_score = 0.0
     avg_sentiment_score = 0.0
     try:
-        prod_stats = sb.table('products').select('rating, avg_sentiment').limit(50000).execute().data or []
-        ratings = [float(p['rating']) for p in prod_stats if p.get('rating') not in (None, 0)]
-        sentiments = [float(p['avg_sentiment']) for p in prod_stats if p.get('avg_sentiment') is not None]
-        if ratings:
-            avg_recommendation_score = round(sum(ratings) / len(ratings), 4)
-        if sentiments:
-            avg_sentiment_score = round(sum(sentiments) / len(sentiments), 4)
+        avg_rating_result = sb.rpc('get_product_avg_rating').execute()
+        avg_rating_data = avg_rating_result.data
+        if avg_rating_data is not None:
+            avg_recommendation_score = round(float(avg_rating_data), 4)
     except Exception as e:
-        logger.warning("Dashboard: averages query failed: %s", e)
+        logger.warning("Dashboard: avg rating RPC failed: %s", e)
+
+    try:
+        avg_sentiment_result = sb.rpc('get_product_avg_sentiment').execute()
+        avg_sentiment_data = avg_sentiment_result.data
+        if avg_sentiment_data is not None:
+            avg_sentiment_score = round(float(avg_sentiment_data), 4)
+    except Exception as e:
+        logger.warning("Dashboard: avg sentiment RPC failed: %s", e)
 
     top_products = []
     try:

@@ -24,3 +24,17 @@ AS $$
     ORDER BY interaction_count DESC
     LIMIT 5;
 $$;
+
+CREATE OR REPLACE FUNCTION get_product_avg_rating()
+RETURNS numeric
+LANGUAGE sql
+AS $$
+    SELECT COALESCE(AVG(rating)::numeric, 0) FROM products WHERE rating IS NOT NULL AND rating > 0;
+$$;
+
+CREATE OR REPLACE FUNCTION get_product_avg_sentiment()
+RETURNS numeric
+LANGUAGE sql
+AS $$
+    SELECT COALESCE(AVG(avg_sentiment)::numeric, 0) FROM products WHERE avg_sentiment IS NOT NULL;
+$$;
