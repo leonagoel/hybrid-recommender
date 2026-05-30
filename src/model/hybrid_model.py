@@ -59,8 +59,8 @@ class HybridRecommender:
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-        self.kg_model = kg_model
-        self.delta = delta
+        self.kg_model = None
+        self.delta = 0
 
         # Expose model kwargs explicitly as structural configuration dictionaries
         # Legacy compatibility: no explicit model_kwargs parameter in signature,
@@ -123,6 +123,7 @@ class HybridRecommender:
         self._category_map = {}
         self._popularity_map = {}
         self._catalog_map = {}
+        self._item_metadata = {}
 
         if item_df is not None:
             global_avg = item_df['rating'].mean() if 'rating' in item_df.columns else 3.0
@@ -145,6 +146,10 @@ class HybridRecommender:
                 )
                 self._category_map[title] = row.get('category', '')
                 self._catalog_map[title] = row.get('catalog', '')
+                self._item_metadata[title] = {
+                    'description': str(row.get('description', ''))[:200],
+                    'top_reviews': row.get('top_reviews', []) if isinstance(row.get('top_reviews', []), list) else [],
+                }
 
             # Popularity rank (0-1 scale, higher = more popular)
             if 'review_count' in item_df.columns:
@@ -371,7 +376,14 @@ class HybridRecommender:
 
         items = list(candidates.values())
 
-        # 4. Normalize each component using configured normalizer
+        # 4. Resolve active weights
+        a, b, g = self._get_active_weights(
+            self.alpha, self.beta, self.gamma,
+            user_id=user_id,
+            candidate_titles=[it['title'] for it in items],
+        )
+
+        # 5. Normalize each component using configured normalizer
         content_raws = [it['raw_content'] for it in items]
         collab_raws = [it['raw_collab'] for it in items]
         sentiment_raws = [it['raw_sentiment'] for it in items]
@@ -406,7 +418,7 @@ class HybridRecommender:
             candidate_titles=all_titles,
         )
 
-        # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
+        # 6. Compute hybrid score with capped popularity boost
         results = []
         for i, item in enumerate(items):
             hybrid_base = (
@@ -422,18 +434,12 @@ class HybridRecommender:
             # Enforce strict upper bound limit check
             hybrid = min(1.0, hybrid_base + popularity_bonus)
 
-            # Lookup info from content model's df
-            row_data = self.content_model.df[
-                self.content_model.df['title'] == item['title']
-            ]
+            # Lookup metadata from precomputed O(1) map
+            meta = self._item_metadata.get(item['title'], {})
             avg_rating = self._rating_map.get(item['title'], 0.0)
             category = self._category_map.get(item['title'], '')
-            description = ''
-            top_reviews = []
-            if len(row_data) > 0:
-                description = str(row_data.iloc[0].get('description', ''))[:200]
-                tp = row_data.iloc[0].get('top_reviews', [])
-                top_reviews = tp if isinstance(tp, list) else []
+            description = meta.get('description', '')
+            top_reviews = meta.get('top_reviews', [])
 
             result = {
                 'title': item['title'],
@@ -508,14 +514,10 @@ class HybridRecommender:
         for r in collab_recs[:top_n]:
             item_title = r['title']
 
-            row_data = self.content_model.df[self.content_model.df['title'] == item_title]
+            meta = self._item_metadata.get(item_title, {})
             category = self._category_map.get(item_title, '')
-            description = ''
-            top_reviews = []
-            if len(row_data) > 0:
-                description = str(row_data.iloc[0].get('description', ''))[:200]
-                tp = row_data.iloc[0].get('top_reviews', [])
-                top_reviews = tp if isinstance(tp, list) else []
+            description = meta.get('description', '')
+            top_reviews = meta.get('top_reviews', [])
 
             hybrid_score = r.get('predicted_score', 0.0)
             rating = self._rating_map.get(item_title, 0.0)
@@ -673,49 +675,50 @@ class HybridRecommender:
             })
         return results
     def _diversity_rerank(self, results, top_n, diversity=0.0, serendipity=0.0):
-            """
-            Re-ranks results to reduce filter bubbles.
+        """
+        Re-ranks results to reduce filter bubbles.
 
-            Args:
-                results: list of recommendation dicts sorted by hybrid_score
-                top_n: number of final results to return
-                diversity: 0.0 = no diversity, 1.0 = max category variety
-                serendipity: 0.0 = no surprises, 1.0 = more random/unexpected items
+        Args:
+            results: list of recommendation dicts sorted by hybrid_score
+            top_n: number of final results to return
+            diversity: 0.0 = no diversity, 1.0 = max category variety
+            serendipity: 0.0 = no surprises, 1.0 = more random/unexpected items
 
-            Returns:
-                Re-ranked list of recommendations
-            """
-            if not results:
-                return results
+        Returns:
+            Re-ranked list of recommendations
+        """
+        if not results:
+            return results
 
-            if diversity == 0.0 and serendipity == 0.0:
-                return results[:top_n]
+        if diversity == 0.0 and serendipity == 0.0:
+            return results[:top_n]
 
-            selected = []
-            remaining = results.copy()
-            seen_categories = []
+        selected = []
+        remaining = results.copy()
+        seen_categories = []
 
-            while len(selected) < top_n and remaining:
-                best = None
-                best_score = -1
+        while len(selected) < top_n and remaining:
+            best = None
+            best_score = -1
 
-                for item in remaining:
-                    score = item['hybrid_score']
-                    category = item.get('category', 'unknown')
+            for item in remaining:
+                score = item['hybrid_score']
+                category = item.get('category', 'unknown')
 
-                    times_seen = seen_categories.count(category)
-                    diversity_penalty = diversity * times_seen * 0.2
-                    score = score - diversity_penalty
+                times_seen = seen_categories.count(category)
+                diversity_penalty = diversity * times_seen * 0.2
+                score = score - diversity_penalty
 
-                    surprise_bonus = serendipity * np.random.uniform(0, 0.3)
-                    score = score + surprise_bonus
+                surprise_bonus = serendipity * np.random.uniform(0, 0.3)
+                score = score + surprise_bonus
 
-                    if score > best_score:
-                        best_score = score
-                        best = item
+                if score > best_score:
+                    best_score = score
+                    best = item
 
-                selected.append(best)
-                remaining.remove(best)
-                seen_categories.append(best.get('category', 'unknown'))
+            selected.append(best)
+            remaining.remove(best)
+            seen_categories.append(best.get('category', 'unknown'))
 
-            return selected
+        return selected
+    
