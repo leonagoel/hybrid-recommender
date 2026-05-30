@@ -116,7 +116,7 @@ def test_submit_feedback_fails_when_storage_unavailable(monkeypatch):
 
     response = client.post(
         "/api/feedback",
-        json={"user_id": "user123", "item": "item1", "feedback": "Excellent service!"}
+        json={"user_id": "user123", "item": "item1", "feedback": "Excellent service!", "thumbs": "up"}
     )
     assert response.status_code == 500
     assert response.json()["detail"] == "Feedback storage is unavailable."
