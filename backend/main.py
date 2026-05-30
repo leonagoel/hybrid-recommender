@@ -160,12 +160,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    
     try:
         cached = _redis_client.get(key)
 
@@ -2297,7 +2291,11 @@ def submit_feedback(
 
 # ── Export Dataset ────────────────────────────────────────────────────
 @app.get("/api/export/dataset")
-def export_dataset(columns: Optional[str] = Query(None)):
+def export_dataset(
+    request: Request,
+    _admin: None = Depends(_admin_access_dep),
+    columns: Optional[str] = Query(None),
+):
     if not models["ready"] or models["item_df"] is None:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     import pandas as pd
