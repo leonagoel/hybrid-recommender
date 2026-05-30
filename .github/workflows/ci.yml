@@ -78,9 +78,9 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
           run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio anyio
+            pip install --upgrade pip
+            pip install -r requirements.txt
+            pip install pytest pytest-asyncio anyio
 
       - name: Download NLTK data
         run: |
