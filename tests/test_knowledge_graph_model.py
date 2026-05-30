@@ -24,3 +24,14 @@ def test_kg_recommendations():
     assert len(recs) > 0
     assert 'title' in recs[0]
     assert 'kg_score' in recs[0]
+
+def test_kg_triples_capping():
+    # 100 books in the same category
+    df = pd.DataFrame({
+        'title': [f'Book {i}' for i in range(100)],
+        'category': ['Fantasy'] * 100
+    })
+
+    model = KnowledgeGraphRecommender(df)
+    # Expected capped triples: exactly 50 for same_category
+    assert len(model.triples) == 50

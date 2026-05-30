@@ -68,13 +68,21 @@ class KnowledgeGraphRecommender:
             for _, group in grouped:
                 titles = group['title'].tolist()
 
+                # Cap combinatorial generation to avoid O(N^2) complexity explosion on large groups
+                group_triples = 0
+                max_group_triples = 50
                 for i in range(len(titles)):
+                    if group_triples >= max_group_triples:
+                        break
                     for j in range(i + 1, len(titles)):
+                        if group_triples >= max_group_triples:
+                            break
                         h = self.entity_to_idx[titles[i]]
                         t = self.entity_to_idx[titles[j]]
                         r = self.relation_to_idx['same_category']
 
                         self.triples.append((h, r, t))
+                        group_triples += 1
 
         if 'author' in self.df.columns:
             grouped = self.df.groupby('author')
@@ -82,13 +90,20 @@ class KnowledgeGraphRecommender:
             for _, group in grouped:
                 titles = group['title'].tolist()
 
+                group_triples = 0
+                max_group_triples = 50
                 for i in range(len(titles)):
+                    if group_triples >= max_group_triples:
+                        break
                     for j in range(i + 1, len(titles)):
+                        if group_triples >= max_group_triples:
+                            break
                         h = self.entity_to_idx[titles[i]]
                         t = self.entity_to_idx[titles[j]]
                         r = self.relation_to_idx['same_author']
 
                         self.triples.append((h, r, t))
+                        group_triples += 1
 
     def _initialize_embeddings(self):
         n_entities = len(self.entity_to_idx)
