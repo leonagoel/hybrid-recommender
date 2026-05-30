@@ -160,12 +160,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    
     try:
         cached = _redis_client.get(key)
 
@@ -206,6 +200,10 @@ def _clear_response_cache() -> None:
     _response_cache.clear()
     _cache_hits = 0
     _cache_misses = 0
+
+def _clear_trending_cache() -> None:
+    global TRENDING_CACHE
+    TRENDING_CACHE = {"data": None, "timestamp": None}
 
 
 @app.get("/api/cache_metrics")
@@ -1212,6 +1210,7 @@ async def upload_dataset(
                 errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
         models["ready"] = False
         _clear_response_cache()
+        _clear_trending_cache()
         result = {
             "message": f"Imported {imported:,} products from {filename}",
             "imported": imported, "total_rows": total,
@@ -1353,10 +1352,36 @@ def build_models(
             "items": len(item_df),
             "has_collaborative": collab_model is not None,
             "build_time_seconds": build_time,
-            "precomputed_recommendations": precomputed_count,
-        }
-    finally:
-        _build_lock.release()
+        },
+        "status": "staging",
+        "metrics": {
+            "ndcg": 0.0,
+            "latency_ms": 0.0,
+            "error_rate": 0.0,
+        },
+    }
+
+    STAGING_MODEL_VERSION = version
+    
+    models["content"] = content_model
+    models["collab"] = collab_model
+    models["hybrid"] = hybrid_model
+    models["item_df"] = item_df
+    models["ready"] = True
+    models["build_time"] = build_time
+    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+    _clear_response_cache()
+    _clear_trending_cache()
+    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
+    return {
+        "message": "Models built successfully!",
+        "model_version": version,
+        "status": "staging",
+        "items": len(item_df),
+        "has_collaborative": collab_model is not None,
+        "build_time_seconds": build_time,
+        "precomputed_recommendations": precomputed_count,
+    }
 
 @app.post("/api/train/federated")
 def train_federated(
@@ -1436,6 +1461,7 @@ def train_federated(
     models["build_time"] = build_time
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
     _clear_response_cache()
+    _clear_trending_cache()
 
     return {
         "message": "Federated collaborative model trained successfully!",
@@ -2035,6 +2061,7 @@ def create_purchase(
         'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
     }).execute()
     _clear_response_cache()
+    _clear_trending_cache()
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 
