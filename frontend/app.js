@@ -561,24 +561,6 @@ function initTypeToSearch() {
 }
 
 // ── Search ──────────────────────────────────────────────────────────
-async function handleSearch(query) {
-    if (!query || query.length < 1) {
-        closeSearchDropdown();
-        return;
-    }
-
-    clearTimeout(state.searchTimer);
-    state.searchTimer = setTimeout(async () => {
-        try {
-            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
-            state.searchResults = data.items || [];
-            state.selectedSearchIdx = -1;
-            renderSearchDropdown(state.searchResults, query);
-        } catch {
-            closeSearchDropdown();
-        }
-    }, 200);
-}
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
