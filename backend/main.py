@@ -93,6 +93,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
 from dotenv import load_dotenv
+from fastapi import HTTPException
 
 load_dotenv()
 
@@ -1183,44 +1184,33 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 
 # ── Upload ────────────────────────────────────────────────────────────
 @app.put("/api/weights")
-def update_weights(
-    w: WeightsUpdate,
-    _admin: None = Depends(_admin_access_dep),
-):
+def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
     try:
-        if not models["ready"]:
-            raise HTTPException(
-                status_code=400,
-                detail="Models not built."
-            )
+        if not models.get("ready") or models.get("hybrid") is None:
+            raise HTTPException(status_code=400, detail="Models not built.")
 
-        if models.get("hybrid") is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Hybrid model unavailable."
-            )
+        hybrid = models["hybrid"]
 
-        models["hybrid"].set_weights(
-            w.alpha,
-            w.beta,
-            w.gamma,
-        )
+        try:
+            hybrid.set_weights(w.alpha, w.beta, w.gamma)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid weights: {str(e)}")
 
         _clear_response_cache()
 
         return {
             "message": "Weights updated",
-            "weights": models["hybrid"].get_weights(),
+            "weights": hybrid.get_weights(),
         }
 
     except HTTPException:
         raise
 
-    except Exception as e:
+    except Exception:
         logger.exception("Weight update failed")
         raise HTTPException(
-            status_code=400,
-            detail=str(e),
+            status_code=500,
+            detail="Internal error while updating weights",
         )
 
 
@@ -1852,32 +1842,6 @@ def get_weights():
     if not models["ready"]:
         return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2}
     return models["hybrid"].get_weights()
-
-
-@app.put("/api/weights")
-def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
-    try:
-        if not models.get("ready") or models.get("hybrid") is None:
-            raise HTTPException(status_code=400, detail="Models not built.")
-
-        try:
-            models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid weights: {str(e)}")
-
-        _clear_response_cache()
-
-        return {
-            "message": "Weights updated",
-            "weights": models["hybrid"].get_weights(),
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        logger.exception("Weight update failed")
-        raise HTTPException(status_code=400, detail="Internal error while updating weights")
 
 
 # ── Items ─────────────────────────────────────────────────────────────
