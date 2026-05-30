@@ -104,7 +104,9 @@ class ContentRecommender:
         scores = cosine_similarity(query_vec, self.matrix).flatten()
         
         # Determine candidate indices matching similarity threshold or top N
-        top_indices = scores.argsort()[::-1]
+        k = min(top_n * 4 + 1, len(scores))
+        top_indices = np.argpartition(scores, -k)[-k:]
+        top_indices = top_indices[np.argsort(scores[top_indices])[::-1]]  # sort only k
 
         results = []
         seen = set()
