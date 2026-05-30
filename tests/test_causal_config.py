@@ -38,6 +38,19 @@ class TestCausalConfigSpec:
         with pytest.raises(ValueError, match="score_key must be a non-empty string"):
             CausalConfig(score_key="").validate()
 
+    def test_exact_lambda_clip_max_boundaries(self):
+        # blend_lambda at lower bound 0.0
+        cfg_lower = CausalConfig(blend_lambda=0.0)
+        assert cfg_lower.validate().blend_lambda == 0.0
+
+        # blend_lambda at upper bound 1.0
+        cfg_upper = CausalConfig(blend_lambda=1.0)
+        assert cfg_upper.validate().blend_lambda == 1.0
+
+        # clip_max at small positive value
+        cfg_clip = CausalConfig(clip_max=0.0001)
+        assert cfg_clip.validate().clip_max == 0.0001
+
     def test_presets(self):
         disabled = CausalConfig.disabled()
         assert disabled.enabled is False
