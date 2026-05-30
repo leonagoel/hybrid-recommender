@@ -1,18 +1,28 @@
 """
 Generate a synthetic product-review dataset for testing the recommender.
 Output: datasets/sample_products.csv  (~2000 rows)
+
+Optimized via Issue #490: Implements strict pathlib absolute context mappings 
+to prevent relative lookup path anomalies across multi-tier runtime environments.
 """
 import os
 import sys
 import random
 import csv
+from pathlib import Path
+
+# --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---
+SCRIPT_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+# Anchor datasets location straight to the absolute project base layout
+OUTPUT_DIR = PROJECT_ROOT / "datasets"
+OUTPUT_FILE = OUTPUT_DIR / "sample_products.csv"
 
 # --- Configuration ---
 NUM_PRODUCTS = 200
 NUM_USERS = 100
 REVIEWS_PER_PRODUCT = (5, 15)  # min, max reviews per product
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datasets')
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'sample_products.csv')
 
 CATEGORIES = [
     'Electronics', 'Books', 'Clothing', 'Home & Kitchen', 'Sports',
@@ -103,6 +113,7 @@ def generate_review_and_rating():
 
 
 def main():
+    # Enforce safe directory presence before initialization
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     random.seed(42)
 
@@ -140,7 +151,7 @@ def main():
                 'purchases': purchases,
             })
 
-    # Write CSV
+    # Write CSV using verified absolute target references
     fieldnames = ['item_id', 'title', 'description', 'category', 'user_id', 'rating', 'review_text', 'views', 'purchases']
     with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
