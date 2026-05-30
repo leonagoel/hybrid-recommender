@@ -160,12 +160,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    
     try:
         cached = _redis_client.get(key)
 
@@ -2008,7 +2002,12 @@ def get_categories():
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
+def get_user_purchases(
+    request: Request,
+    user_id: str,
+    _admin: None = Depends(_admin_access_dep),
+    limit: int = Query(50, ge=1, le=200),
+):
     _validate_user_id(user_id)  # allowlist-validate before any DB call
     sb = get_supabase()
     result = (
