@@ -1191,16 +1191,25 @@ def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
 
         hybrid = models["hybrid"]
 
-        # 🔥 strict validation before calling model
-        if any(x is None for x in [w.alpha, w.beta, w.gamma]):
-            raise HTTPException(status_code=422, detail="Weights cannot be null")
-
         try:
-            hybrid.set_weights(float(w.alpha), float(w.beta), float(w.gamma))
+            alpha = float(w.alpha)
+            beta = float(w.beta)
+            gamma = float(w.gamma)
+
+            # NaN check
+            if any(x != x for x in [alpha, beta, gamma]):
+                raise ValueError("NaN not allowed")
+
+            hybrid.set_weights(alpha, beta, gamma)
+
         except Exception as e:
             logger.exception("set_weights failed")
-            raise HTTPException(status_code=400, detail=f"Invalid weights: {str(e)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid weight configuration: {str(e)}"
+            )
 
+        # IMPORTANT: clear cache after successful update
         _clear_response_cache()
 
         return {
@@ -1213,7 +1222,10 @@ def update_weights(w: WeightsUpdate, _admin: None = Depends(_admin_access_dep)):
 
     except Exception:
         logger.exception("Weight update failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error"
+        )
 
 
 # ── Build Models ──────────────────────────────────────────────────────
