@@ -101,6 +101,13 @@ class TestSentimentLabel:
         """Test boundary case at -0.05."""
         assert sentiment_label(-0.05) == "negative"
 
+    def test_boundary_precision_cases(self):
+        """Test fine boundary values close to 0.05 and -0.05."""
+        assert sentiment_label(0.0499) == "neutral"
+        assert sentiment_label(0.0501) == "positive"
+        assert sentiment_label(-0.0499) == "neutral"
+        assert sentiment_label(-0.0501) == "negative"
+
 
 class TestBatchAnalyze:
     """Test batch_analyze function."""
