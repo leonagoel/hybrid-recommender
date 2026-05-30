@@ -233,7 +233,7 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = '${CONFIG.TOAST_EXIT_MS}ms ease';
+        el.style.transition = `${CONFIG.TOAST_EXIT_MS}ms ease`;
         setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
     }, CONFIG.TOAST_DURATION_MS);
 }
