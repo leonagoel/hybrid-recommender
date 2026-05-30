@@ -185,3 +185,17 @@ class TestContentRecommender:
         model = ContentRecommender(sample_item_df, batch_size=2)
         assert model.matrix.shape[0] == len(sample_item_df)
 
+    def test_recommend_catalog_filtering_invalid_catalog_value(self, sample_item_df):
+        df = sample_item_df.copy()
+        df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
+        model = ContentRecommender(df)
+        recs = model.recommend('Harry Potter', top_n=5, target_catalog='nonexistent_catalog')
+        assert len(recs) == 0
+
+    def test_recommend_catalog_filtering_missing_catalog_col(self, sample_item_df):
+        # DataFrame lacks 'catalog' column but we specify a target_catalog filter
+        model = ContentRecommender(sample_item_df)
+        recs = model.recommend('Harry Potter', top_n=5, target_catalog='movies')
+        # Should gracefully ignore or return empty
+        assert isinstance(recs, list)
+
