@@ -110,6 +110,7 @@ from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
+from federated_learning import train_federated_collaborative_model
 
 # ── App ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)

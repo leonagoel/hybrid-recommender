@@ -30,8 +30,8 @@ def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
 
 
 class HybridRecommender:
-    def __init__(self, content_model, collab_model=None, item_df=None,
-                 alpha=0.4, beta=0.35, gamma=0.25,
+    def __init__(self, content_model, collab_model=None, kg_model=None, item_df=None,
+                 alpha=0.35, beta=0.30, gamma=0.20, delta=0.15,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
                  causal_config=None, model_kwargs=None,

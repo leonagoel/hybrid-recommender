@@ -1,6 +1,8 @@
 """
 Unit and integration tests for federated learning modules and APIs.
 """
+import os
+os.environ["TESTING"] = "true"
 import pytest
 import numpy as np
 import pandas as pd
@@ -38,6 +40,7 @@ def test_federated_client_factor_calculation():
     assert user_factor.shape == (n_factors,)
     
     # If the user has no rated items in the global vocabulary
+
     client_empty = FederatedClient(user_id="user2", private_ratings={"Item Unknown": 5.0})
     empty_factor = client_empty.compute_local_user_factor(
         global_item_factors=global_item_factors,
@@ -46,6 +49,74 @@ def test_federated_client_factor_calculation():
         reg=0.05
     )
     assert np.allclose(empty_factor, 0.0)
+
+
+def test_federated_client_compute_local_user_factor_edge_cases():
+    n_factors = 3
+    title_to_idx = {"Item A": 0, "Item B": 1}
+    global_item_factors = np.array([
+        [0.1, 0.2],
+        [0.3, 0.4],
+        [0.5, 0.6]
+    ])
+
+    # 1. Empty private_ratings returns zero vector
+    client_empty = FederatedClient(user_id="user_empty", private_ratings={})
+    factor_empty = client_empty.compute_local_user_factor(
+        global_item_factors=global_item_factors,
+        title_to_idx=title_to_idx,
+        n_factors=n_factors,
+        reg=0.05
+    )
+    assert factor_empty.shape == (n_factors,)
+    assert np.allclose(factor_empty, 0.0)
+
+    # 2. Unknown items in private_ratings are ignored
+    client_unknown = FederatedClient(
+        user_id="user_unknown",
+        private_ratings={"Item A": 4.0, "Item Unknown": 5.0}
+    )
+    factor_unknown = client_unknown.compute_local_user_factor(
+        global_item_factors=global_item_factors,
+        title_to_idx=title_to_idx,
+        n_factors=n_factors,
+        reg=0.05
+    )
+    
+    client_known_only = FederatedClient(
+        user_id="user_known",
+        private_ratings={"Item A": 4.0}
+    )
+    factor_known_only = client_known_only.compute_local_user_factor(
+        global_item_factors=global_item_factors,
+        title_to_idx=title_to_idx,
+        n_factors=n_factors,
+        reg=0.05
+    )
+    assert np.allclose(factor_unknown, factor_known_only)
+
+    # 3. Ridge regression solution is computed correctly
+    client_both = FederatedClient(
+        user_id="user_both",
+        private_ratings={"Item A": 4.0, "Item B": 3.0}
+    )
+    factor_both = client_both.compute_local_user_factor(
+        global_item_factors=global_item_factors,
+        title_to_idx=title_to_idx,
+        n_factors=n_factors,
+        reg=0.05
+    )
+    
+    rated_titles = ["Item A", "Item B"]
+    indices = [0, 1]
+    V_u = global_item_factors[:, indices]
+    ratings_vec = np.array([4.0, 3.0], dtype=float)
+    
+    A_expected = np.dot(V_u, V_u.T) + 0.05 * np.eye(n_factors)
+    b_expected = np.dot(V_u, ratings_vec)
+    factor_expected = np.linalg.solve(A_expected, b_expected)
+    
+    assert np.allclose(factor_both, factor_expected)
 
 
 def test_federated_client_item_updates():
@@ -186,18 +257,25 @@ def test_api_train_federated_endpoint_success(monkeypatch):
     
     fake_sb = FakeSupabase(mock_products, mock_purchases)
     monkeypatch.setattr(main, "get_supabase", lambda: fake_sb)
+    monkeypatch.setenv("ADMIN_API_TOKEN", "test_admin_token")
     
     # Save the original state of models to restore after test
     orig_ready = main.models["ready"]
     orig_hybrid = main.models["hybrid"]
     
     try:
+        from backend.csrf import CSRF_HEADER_NAME
         client = TestClient(main.app)
+        csrf_res = client.get("/api/csrf-token")
+        csrf_token = csrf_res.json()["csrfToken"]
         response = client.post(
             "/api/train/federated",
-            json={"n_factors": 2, "epochs": 2, "lr": 0.1, "reg": 0.01}
+            json={"n_factors": 2, "epochs": 2, "lr": 0.1, "reg": 0.01},
+            headers={
+                CSRF_HEADER_NAME: csrf_token,
+                "x-admin-token": "test_admin_token"
+            }
         )
-        
         assert response.status_code == 200
         payload = response.json()
         assert "trained successfully" in payload["message"]
@@ -227,12 +305,19 @@ def test_api_train_federated_endpoint_not_enough_data(monkeypatch):
     
     fake_sb = FakeSupabase(mock_products, mock_purchases)
     monkeypatch.setattr(main, "get_supabase", lambda: fake_sb)
+    monkeypatch.setenv("ADMIN_API_TOKEN", "test_admin_token")
     
+    from backend.csrf import CSRF_HEADER_NAME
     client = TestClient(main.app)
+    csrf_res = client.get("/api/csrf-token")
+    csrf_token = csrf_res.json()["csrfToken"]
     response = client.post(
         "/api/train/federated",
-        json={"n_factors": 2, "epochs": 2, "lr": 0.1, "reg": 0.01}
+        json={"n_factors": 2, "epochs": 2, "lr": 0.1, "reg": 0.01},
+        headers={
+            CSRF_HEADER_NAME: csrf_token,
+            "x-admin-token": "test_admin_token"
+        }
     )
-    
     assert response.status_code == 400
     assert "Not enough interaction data" in response.json()["detail"]
