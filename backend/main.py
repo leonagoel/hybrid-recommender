@@ -160,12 +160,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    
     try:
         cached = _redis_client.get(key)
 
@@ -2024,8 +2018,10 @@ def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
 
 @app.post("/api/purchases")
 def create_purchase(
+    request: Request,
     data: PurchaseCreate,
     _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
 ):
     sb = get_supabase()
     result = sb.table('purchases').insert({
