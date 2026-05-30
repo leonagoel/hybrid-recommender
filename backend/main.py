@@ -142,6 +142,13 @@ CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
 _response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+_redis_client = Redis.from_url(
+    REDIS_URL,
+    decode_responses=True,
+)
+
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
