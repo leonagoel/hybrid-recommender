@@ -87,9 +87,6 @@ from backend.csrf import (
 )
 
 
-def csrf_header_dep():
-    """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
-    return None
 from backend.csrf import (
     csrf_header_dep,
     CSRFMiddleware,
@@ -238,40 +235,7 @@ def _get_cached_response(key: str):
 
 def _set_cached_response(key: str, value: Any) -> None:
     _response_cache.set(key, value)
-    
-    try:
-        cached = _redis_client.get(key)
 
-            if cached is not None:
-                return json.loads(cached)
-
-    if _redis_client is not None:
-        try:
-            cached = _redis_client.get(key)
-            if cached is not None:
-                return json.loads(cached)
-            except (RedisError, json.JSONDecodeError):
-                pass
-
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-    cached = _response_cache.get(key)
-    if cached is None:
-        _cache_misses += 1
-        return None
-    _cache_hits += 1
-    return cached
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
 
 def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
@@ -1224,7 +1188,6 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
-    _csrf: None = Depends(csrf_header_dep),
     _csrf: None = Depends(csrf_header_dep),
     admin=Depends(_require_admin_access),
 ):
