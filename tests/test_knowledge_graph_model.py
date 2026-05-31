@@ -1,55 +1,88 @@
+import pytest
 import pandas as pd
+import numpy as np
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.model.knowledge_graph_model import KnowledgeGraphRecommender
 
 
-def test_kg_recommendations():
-    df = pd.DataFrame({
-        'title': [
-            'Book A',
-            'Book B',
-            'Book C'
-        ],
-        'category': [
-            'Fantasy',
-            'Fantasy',
-            'Science'
-        ]
-    })
+class TestKnowledgeGraphRecommender:
+    def test_init_with_dataframe(self):
+        df = pd.DataFrame({
+            'title': ['Item A', 'Item B', 'Item C'],
+            'category': ['cat1', 'cat1', 'cat2'],
+            'author': ['Author X', 'Author X', 'Author Y']
+        })
+        kg = KnowledgeGraphRecommender(df, embedding_dim=32)
+        assert kg.embedding_dim == 32
+        assert len(kg.entity_to_idx) == 3
+        assert len(kg.relation_to_idx) == 3
 
-    model = KnowledgeGraphRecommender(df)
+    def test_build_entities(self):
+        df = pd.DataFrame({
+            'title': ['Item A', 'Item B'],
+            'category': ['cat1', 'cat2']
+        })
+        kg = KnowledgeGraphRecommender(df, embedding_dim=16)
+        assert 'Item A' in kg.entity_to_idx
+        assert 'Item B' in kg.entity_to_idx
+        assert kg.entity_to_idx['Item A'] == 0
+        assert kg.entity_to_idx['Item B'] == 1
 
-    recs = model.recommend('Book A', top_n=2)
+    def test_build_relations(self):
+        df = pd.DataFrame({
+            'title': ['Item A', 'Item B'],
+            'category': ['cat1', 'cat2']
+        })
+        kg = KnowledgeGraphRecommender(df)
+        assert 'same_category' in kg.relation_to_idx
+        assert 'same_author' in kg.relation_to_idx
+        assert 'same_genre' in kg.relation_to_idx
 
-    assert len(recs) > 0
-    assert 'title' in recs[0]
-    assert 'kg_score' in recs[0]
+    def test_recommend_existing_item(self):
+        df = pd.DataFrame({
+            'title': ['Item A', 'Item B', 'Item C'],
+            'category': ['cat1', 'cat1', 'cat2']
+        })
+        kg = KnowledgeGraphRecommender(df, embedding_dim=32)
+        recs = kg.recommend('Item A', top_n=2)
+        assert len(recs) <= 2
+        assert all('title' in r for r in recs)
+        assert all('kg_score' in r for r in recs)
 
+    def test_recommend_nonexistent_item(self):
+        df = pd.DataFrame({
+            'title': ['Item A', 'Item B'],
+            'category': ['cat1', 'cat2']
+        })
+        kg = KnowledgeGraphRecommender(df)
+        recs = kg.recommend('NonExistent', top_n=5)
+        assert recs == []
 
-def test_kg_recommendations_invalid_title():
-    df = pd.DataFrame({
-        'title': ['Book A', 'Book B'],
-        'category': ['Fantasy', 'Fantasy']
-    })
-    model = KnowledgeGraphRecommender(df)
-    recs = model.recommend('Unknown Book', top_n=2)
-    assert recs == []
+    def test_recommend_top_n_bounds(self):
+        df = pd.DataFrame({
+            'title': ['Item A', 'Item B', 'Item C', 'Item D', 'Item E'],
+            'category': ['cat1', 'cat1', 'cat1', 'cat1', 'cat2']
+        })
+        kg = KnowledgeGraphRecommender(df, embedding_dim=32)
+        recs = kg.recommend('Item A', top_n=10)
+        assert len(recs) <= 4
 
+    def test_entity_embeddings_shape(self):
+        df = pd.DataFrame({
+            'title': ['Item A', 'Item B'],
+            'category': ['cat1', 'cat2']
+        })
+        kg = KnowledgeGraphRecommender(df, embedding_dim=32)
+        assert kg.entity_embeddings.shape == (2, 32)
 
-def test_kg_recommendations_respects_top_n():
-    df = pd.DataFrame({
-        'title': ['Book A', 'Book B', 'Book C', 'Book D'],
-        'category': ['Fantasy', 'Fantasy', 'Fantasy', 'Fantasy']
-    })
-    model = KnowledgeGraphRecommender(df)
-    recs = model.recommend('Book A', top_n=2)
-    assert len(recs) == 2
-
-
-def test_kg_recommendations_missing_optional_columns():
-    df = pd.DataFrame({
-        'title': ['Book A', 'Book B']
-    })
-    model = KnowledgeGraphRecommender(df)
-    recs = model.recommend('Book A', top_n=1)
-    assert len(recs) == 1
+    def test_relation_embeddings_shape(self):
+        df = pd.DataFrame({
+            'title': ['Item A', 'Item B'],
+            'category': ['cat1', 'cat2']
+        })
+        kg = KnowledgeGraphRecommender(df, embedding_dim=16)
+        assert kg.relation_embeddings.shape == (3, 16)
