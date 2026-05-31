@@ -34,7 +34,8 @@ class HybridRecommender:
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None):
+                 causal_config=None, model_kwargs=None,
+                 kg_model=None, delta=0.1):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -336,7 +337,6 @@ class HybridRecommender:
         """
         # 1. Content-based scores
         content_recs = self.content_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-        all_titles = {r['title'] for r in content_recs}
 
         # 2. Collaborative scores
         collab_map = {}
@@ -347,21 +347,22 @@ class HybridRecommender:
                 all_titles.add(r['title'])
 
         # 3. Build unified candidates
-        candidates = {}
-        for r in content_recs:
-            candidates[r['title']] = {
+        all_titles = set(collab_map) | {r['title'] for r in content_recs}
+        candidates = {
+            r['title']: {
                 'title': r['title'],
                 'raw_content': r['content_score'],
                 'raw_collab': collab_map.get(r['title'], 0.0),
                 'raw_sentiment': self._sentiment_map.get(r['title'], 0.0),
             }
-
-        for t in collab_map:
+            for r in content_recs
+        }
+        for t, score in collab_map.items():
             if t not in candidates:
                 candidates[t] = {
                     'title': t,
                     'raw_content': 0.0,
-                    'raw_collab': collab_map[t],
+                    'raw_collab': score,
                     'raw_sentiment': self._sentiment_map.get(t, 0.0),
                 }
 
@@ -380,11 +381,9 @@ class HybridRecommender:
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
         kg_scores = []
-        t
         if self.kg_model:
-            l
             kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
-           
+
             kg_map = {
                 item['title']: item['kg_score']
                 for item in kg_recs
@@ -394,11 +393,18 @@ class HybridRecommender:
                 kg_scores.append(kg_map.get(item['title'], 0.0))
 
             kg_scores = self._normalize_scores(kg_scores)
-
         else:
             kg_scores = [0.0] * len(items)
 
-        
+        # 5. Resolve active ranking weights
+        base_a = weights.get('alpha', self.alpha) if weights else self.alpha
+        base_b = weights.get('beta', self.beta) if weights else self.beta
+        base_g = weights.get('gamma', self.gamma) if weights else self.gamma
+        a, b, g = self._get_active_weights(
+            base_a, base_b, base_g,
+            user_id=user_id,
+            candidate_titles=all_titles,
+        )
 
         # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
@@ -713,4 +719,3 @@ class HybridRecommender:
                 seen_categories.append(best.get('category', 'unknown'))
 
             return selected
-    

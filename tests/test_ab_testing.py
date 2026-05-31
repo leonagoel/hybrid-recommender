@@ -140,3 +140,13 @@ def test_summarize_variant_metrics_returns_average_by_variant():
         {"variant": "content_heavy", "count": 1, "total": 1.0, "average": 1.0},
         {"variant": "control", "count": 2, "total": 1.0, "average": 0.5},
     ]
+
+
+def test_assign_variant_empty_variants_raises_value_error():
+    with pytest.raises(ValueError, match="At least one experiment variant is required."):
+        assign_variant("user", variants=[])
+
+
+def test_assign_variant_zero_traffic_raises_value_error():
+    with pytest.raises(ValueError, match="At least one experiment variant must receive traffic."):
+        assign_variant("user", variants=[ExperimentVariant("A", "A", {}, traffic=0)])
