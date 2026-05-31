@@ -50,9 +50,9 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -632,8 +632,8 @@ def get_api_metrics():
 
 # ── Config ────────────────────────────────────────────────────────────
 @app.get("/api/config")
-def get_config():
-    # Expose only the URL — never return keys over an unauthenticated endpoint.
+def get_config() -> dict:
+    """Serve Supabase public config to the frontend. Only exposes the anon key (safe for public use)."""
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
     }
@@ -641,7 +641,10 @@ def get_config():
 
 # ── Status ────────────────────────────────────────────────────────────
 @app.get("/api/status")
-def status():
+def status() -> dict:
+    sb = get_supabase()
+    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+    product_count = count_result.count or 0
     return {
         "status": "healthy",
         "model_ready": models["ready"],
@@ -1005,12 +1008,11 @@ async def upload_dataset(
 
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
-def build_models(_csrf: None = Depends(csrf_header_dep)):
-    global STAGING_MODEL_VERSION
-    try:
-       sb = get_supabase_admin()
-    except RuntimeError:
-        sb = get_supabase()
+def build_models() -> dict:
+    """Build recommendation models from Supabase data."""
+    sb = get_supabase()
+
+    # Fetch products
     all_products = []
     page_size = 1000
     offset = 0
@@ -1180,63 +1182,11 @@ def train_federated(req: FederatedTrainRequest):
 # ── Recommendations ───────────────────────────────────────────────────
 @app.get("/api/recommend")
 @app.get("/api/recommend/{item_title}")
-def get_recommendations(
-    response: Response,
-    item_title: Optional[str] = None,
-    title: Optional[str] = Query(None),
-    top_n: int = 10,
-    explain: bool = Query(False),
-    user_id: Optional[str] = Query(None),
-    target_catalog: Optional[str] = Query(None),
-    model_version: Optional[str] = Query(None),
-    strategy: Optional[str] = Query(None), 
-):
-    rate_limited = _apply_rate_limit(
-        request,
-        response,
-        scope="recommend",
-        limit_env="RATE_LIMIT_RECOMMEND_PER_MIN",
-        default_limit=20,
-    )
-    if rate_limited is not None:
-        return rate_limited
-
-# ----- EDGE CASES SAFE CHECK -----
-    # Agar model ready nahi hai ya database bilkul khali hai
-    if not models or "ready" not in models or not models["ready"]:
-        raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
-    # ---------------------------------
-    query_title = title or item_title
-    if not query_title:
-        raise HTTPException(422, "Query parameter 'title' is required.")
-    selected_models = models
-
-    if model_version == "staging":
-        if not STAGING_MODEL_VERSION:
-            raise HTTPException(404, "No staging model available.")
-
-        selected_models = MODEL_REGISTRY[STAGING_MODEL_VERSION]
-
-    elif model_version:
-        if model_version not in MODEL_REGISTRY:
-            raise HTTPException(404, "Requested model version not found.")
-
-        selected_models = MODEL_REGISTRY[model_version]
-
-    cache_key = _cache_key("recommend", query_title, top_n, explain, user_id or "")
-    cached = _get_cached_response(cache_key)
-    if cached is not None:
-        _set_cache_headers(response, "HIT")
-        return cached
-
-    recs = selected_models["hybrid"].recommend(
-        query_title, top_n=top_n, explain=explain, target_catalog=target_catalog
-    )
-  
-    if not recs and strategy == "popularity" and models["collab"]:
-        recs = models["collab"]._popularity_fallback(top_n)
-    
-    
+def get_recommendations(item_title: str, top_n: int = 10) -> dict:
+    """Get hybrid recommendations for an item."""
+    if not models["ready"]:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
+    recs = models["hybrid"].recommend(item_title, top_n=top_n)
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
 
@@ -1542,17 +1492,14 @@ def move_model_to_shadow(version: str, _csrf: None = Depends(csrf_header_dep)):
     }
 
 @app.get("/api/weights")
-def get_weights():
+def get_weights() -> dict:
     if not models["ready"]:
         return {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}
     return models["hybrid"].get_weights()
 
 
 @app.put("/api/weights")
-def update_weights(
-    w: WeightsUpdate,
-    _csrf: None = Depends(csrf_header_dep),
-):
+def update_weights(w: WeightsUpdate) -> dict:
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
     models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
@@ -1562,7 +1509,8 @@ def update_weights(
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = 1, per_page: int = 50) -> dict:
+    """List products from Supabase with pagination."""
     sb = get_supabase()
     offset = (page - 1) * limit
     result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).range(offset, offset + limit - 1).execute()
