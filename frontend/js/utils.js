@@ -29,3 +29,28 @@ export function isSafeRedirect(url) {
         return false;
     }
 }
+/**
+ * Securely merges objects to prevent prototype pollution.
+ * @param {Object} target
+ * @param {Object} source
+ * @returns {Object}
+ */
+export function safeMerge(target, source) {
+    for (const key in source) {
+        if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+
+        const sourceVal = source[key];
+        const targetVal = target[key];
+
+        if (typeof sourceVal === 'object' && sourceVal !== null && !Array.isArray(sourceVal)) {
+            if (typeof targetVal !== 'object' || targetVal === null || Array.isArray(targetVal)) {
+                target[key] = {};
+            }
+            safeMerge(target[key], sourceVal);
+        } else {
+            target[key] = sourceVal;
+        }
+    }
+    return target;
+}
