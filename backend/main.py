@@ -122,7 +122,6 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
-_response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 _redis_client: Redis | None = None
@@ -131,6 +130,53 @@ _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 _cache_lock = Lock()
 _train_lock = Lock()
+
+
+class _BoundedTTLCache:
+    """Thread-safe LRU cache with per-entry TTL and a hard entry cap.
+
+    Eviction order: expired entries are dropped on read; when the store is
+    full, the least-recently-used entry is evicted before inserting a new
+    one — matching the semantics of functools.lru_cache but with explicit
+    TTL support and a clear() method needed by upload/build invalidation.
+    """
+
+    def __init__(self, max_entries: int, ttl: int) -> None:
+        self._store: OrderedDict = OrderedDict()
+        self._max = max(1, max_entries)
+        self._ttl = ttl
+        self._lock = Lock()
+
+    def get(self, key: str):
+        with self._lock:
+            item = self._store.get(key)
+            if item is None:
+                return None
+            expires_at, value = item
+            if expires_at <= time.time():
+                del self._store[key]
+                return None
+            self._store.move_to_end(key)
+            return value
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if key in self._store:
+                self._store.move_to_end(key)
+            self._store[key] = (time.time() + self._ttl, value)
+            while len(self._store) > self._max:
+                self._store.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+
+_response_cache = _BoundedTTLCache(CACHE_MAX_ENTRIES, CACHE_TTL_SECONDS)
 
 MOCK_PRODUCTS = [
     {
