@@ -3,10 +3,30 @@ FastAPI Backend for Hybrid Recommender
 """
 import os
 import sys
+from pathlib import Path  # <-- Added
+from dotenv import load_dotenv  # <-- Added
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+import csv
+import io
+import json
+from datetime import datetime
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
+# Calculate absolute paths and load environment variables first
+CURRENT_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
+
+ENV_PATH = PROJECT_ROOT / ".env"
+if ENV_PATH.exists():
+    load_dotenv(dotenv_path=ENV_PATH)
+else:
+    load_dotenv()
+
+# Fix the path mapping so internal src imports work perfectly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.data.dataset_manager import DatasetManager
@@ -16,6 +36,18 @@ from src.model.hybrid_model import HybridRecommender
 from src.model.causal_config import CausalConfig
 
 app = FastAPI(title="Hybrid Recommender API")
+app.mount("/static", StaticFiles(directory=str(PROJECT_ROOT / "frontend")), name="static")
+# ===========================================================================
+# NEW: Dynamic Configuration Layout Environment Fetching
+# ===========================================================================
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://your-project-ref.supabase.co")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "your-anon-key-here")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# Fetch and clean the comma-separated CORS origins string into a clean list array
+RAW_CORS = os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
+CORS_ORIGINS = [origin.strip() for origin in RAW_CORS.split(",")]
+# ===========================================================================
 
 
 class RecommendationRequest(BaseModel):
@@ -29,15 +61,18 @@ class RecommendationRequest(BaseModel):
     causal_lambda: float = 0.5
     # IPS weight cap — prevents rare items from dominating after reweighting.
     causal_clip: float = 5.0
+    fairness: Optional[bool] = None
+    fairness_key: Optional[str] = None
+    fairness_max_share: Optional[float] = None
 
 
 # Global read-only model state — never mutated after startup.
 _content_model: Optional[ContentRecommender] = None
 _collab_model: Optional[CollaborativeRecommender] = None
 _item_df = None
-    fairness: Optional[bool] = None
-    fairness_key: Optional[str] = None
-    fairness_max_share: Optional[float] = None
+fairness: Optional[bool] = None
+fairness_key: Optional[str] = None
+fairness_max_share: Optional[float] = None
 
 
 @app.on_event("startup")
@@ -73,29 +108,125 @@ def get_recommendations(req: RecommendationRequest):
     if _content_model is None:
         raise HTTPException(status_code=503, detail="Models not loaded")
 
-    # Build a fresh HybridRecommender per request so causal config is
-    # request-scoped and never mutates shared global state.
-    # ContentRecommender and CollaborativeRecommender are read-only after
-    # construction, so sharing them across requests is safe.
-    causal_cfg = (
-        CausalConfig(
-            enabled=True,
-            blend_lambda=req.causal_lambda,
-            clip_max=req.causal_clip,
+    # ===================================================================
+    # Try the Primary Hybrid Pipeline
+    # ===================================================================
+    try:
+        causal_cfg = (
+            CausalConfig(
+                enabled=True,
+                blend_lambda=req.causal_lambda,
+                clip_max=req.causal_clip,
+            )
+            if req.use_causal
+            else CausalConfig.disabled()
         )
-        if req.use_causal
-        else CausalConfig.disabled()
-    )
 
-    model = HybridRecommender(
-        _content_model,
-        _collab_model,
-        _item_df,
-        causal_config=causal_cfg,
-    )
+        model = HybridRecommender(
+            _content_model,
+            _collab_model,
+            _item_df,
+            causal_config=causal_cfg,
+        )
 
-    recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
-    return {
-        "recommendations": recs,
-        "causal_debiasing_applied": req.use_causal,
-    }
+        recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
+        return {
+            "recommendations": recs,
+            "causal_debiasing_applied": req.use_causal,
+            "fallback": False
+        }
+
+    # ===================================================================
+    # Graceful Popularity Fallback Recovery Layer (#678)
+    # ===================================================================
+    except Exception as exc:
+        import logging
+        logger = logging.getLogger("uvicorn.error")
+        logger.error(f"Primary recommendation engine failed: {str(exc)}. Triggering popularity fallback.")
+        
+        try:
+            # Fallback calculation: safe data pull from the global item dataframe
+            if '_item_df' in globals() and _item_df is not None and not _item_df.empty:
+                # Fall back to picking items safely from your active dataframe asset
+                popular_items = _item_df.head(req.top_n)["title"].tolist()
+            else:
+                # Absolute zero-dependency static default array
+                popular_items = ["Top Trending Item A", "Top Trending Item B", "Top Trending Item C"]
+            
+            # Format the payload items to mimic real recommendation results
+            fallback_recs = [
+                {
+                    "title": item,
+                    "hybrid_score": 1.0,
+                    "content_score": "—",
+                    "collab_score": "—",
+                    "sentiment_score": "—",
+                    "rating": "5.0",
+                    "category": "Trending"
+                }
+                for item in popular_items
+            ]
+            
+            return {
+                "recommendations": fallback_recs,
+                "causal_debiasing_applied": False,
+                "fallback": True,
+                "note": "Primary pipeline encountered an error. Serving trending fallback layout."
+            }
+            
+        except Exception as fallback_exc:
+            logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
+            raise HTTPException(status_code=500, detail="Recommendation engine completely offline.")
+
+@app.post("/api/export")
+async def export_recommendations(request: Request):
+    try:
+        body = await request.json()
+        fmt = body.get("format", "csv").lower()
+        recommendations = body.get("recommendations", [])
+
+        if not recommendations:
+            raise HTTPException(status_code=400, detail="No recommendations provided.")
+        if fmt not in ("csv", "json"):
+            raise HTTPException(status_code=400, detail="format must be 'csv' or 'json'.")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"recommendations_{timestamp}.{fmt}"
+
+        if fmt == "csv":
+            output = io.StringIO()
+            writer = csv.DictWriter(
+                output,
+                fieldnames=["rank", "title", "score", "source"],
+                extrasaction="ignore"
+            )
+            writer.writeheader()
+            for i, rec in enumerate(recommendations, start=1):
+                writer.writerow({
+                    "rank": rec.get("rank", i),
+                    "title": rec.get("title", ""),
+                    "score": round(float(rec.get("score", 0)), 4),
+                    "source": rec.get("source", "hybrid"),
+                })
+            output.seek(0)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+        else:
+            export_data = {
+                "exported_at": datetime.now().isoformat(),
+                "count": len(recommendations),
+                "recommendations": recommendations
+            }
+            json_bytes = json.dumps(export_data, indent=2).encode("utf-8")
+            return StreamingResponse(
+                iter([json_bytes]),
+                media_type="application/json",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")

@@ -147,3 +147,70 @@ class TestContentRecommender:
         results_upper = content_model.search('WIZARD', top_n=3)
         assert isinstance(results_lower, list)
         assert isinstance(results_upper, list)
+
+    def test_explain_similarity_valid_titles(self, content_model):
+        explanation = content_model.explain_similarity('Harry Potter', 'Lord of the Rings')
+        assert isinstance(explanation, list)
+        assert len(explanation) == 1
+        assert explanation[0]['term'] == 'semantic_similarity'
+        assert 0.0 <= explanation[0]['score'] <= 1.0
+
+    def test_explain_similarity_invalid_source(self, content_model):
+        explanation = content_model.explain_similarity('Nonexistent', 'Lord of the Rings')
+        assert explanation == []
+
+    def test_explain_similarity_invalid_candidate(self, content_model):
+        explanation = content_model.explain_similarity('Harry Potter', 'Nonexistent')
+        assert explanation == []
+
+    def test_recommend_with_catalog_filtering(self, sample_item_df):
+        df = sample_item_df.copy()
+        df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
+        model = ContentRecommender(df)
+        recs = model.recommend('Harry Potter', top_n=5, target_catalog='movies')
+        for r in recs:
+            # Lord of the Rings and Game of Thrones are movies
+            assert r['title'] in ['Lord of the Rings', 'Game of Thrones']
+
+    def test_search_with_catalog_filtering(self, sample_item_df):
+        df = sample_item_df.copy()
+        df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
+        model = ContentRecommender(df)
+        results = model.search('wizard', top_n=5, target_catalog='books')
+        for r in results:
+            assert r['title'] in ['Harry Potter', 'The Hobbit', 'Dune']
+
+    def test_init_with_small_batch_size(self, sample_item_df):
+        # Using a batch size of 2 to exercise sequentially encoded slices loop
+        model = ContentRecommender(sample_item_df, batch_size=2)
+        assert model.matrix.shape[0] == len(sample_item_df)
+
+    def test_search_metadata_fallbacks(self, sample_item_df):
+        # Create a df missing 'item_id', 'category', 'description', and 'top_reviews' columns
+        df = pd.DataFrame({
+            'title': ['Harry Potter', 'Lord of the Rings'],
+            'combined': ['Harry Potter magic', 'Lord of the Rings quest']
+        })
+        model = ContentRecommender(df)
+        results = model.search('magic', top_n=2)
+        assert len(results) > 0
+        for r in results:
+            assert 'item_id' in r
+            assert isinstance(r['item_id'], str)
+            assert r['category'] == ''
+            assert r['description'] == ''
+            assert r['top_reviews'] == []
+    def test_recommend_catalog_filtering_invalid_catalog_value(self, sample_item_df):
+        df = sample_item_df.copy()
+        df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
+        model = ContentRecommender(df)
+        recs = model.recommend('Harry Potter', top_n=5, target_catalog='nonexistent_catalog')
+        assert len(recs) == 0
+
+    def test_recommend_catalog_filtering_missing_catalog_col(self, sample_item_df):
+        # DataFrame lacks 'catalog' column but we specify a target_catalog filter
+        model = ContentRecommender(sample_item_df)
+        recs = model.recommend('Harry Potter', top_n=5, target_catalog='movies')
+        # Should gracefully ignore or return empty
+        assert isinstance(recs, list)
+

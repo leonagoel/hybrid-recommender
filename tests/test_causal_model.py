@@ -463,3 +463,36 @@ class TestHybridCausalIntegration:
                          'sentiment_score', 'rating', 'category', 'description'}
         for r in recs_causal:
             assert existing_keys.issubset(r.keys())
+
+    def test_propensity_model_direct_stats(self, item_df):
+        from src.model.propensity_model import PropensityModel
+        pm = PropensityModel(item_df)
+        scores = pm.all_scores()
+        assert len(scores) == len(item_df)
+        assert pm.get('Nonexistent') == 1.0
+        assert pm.get_ips_weight('Nonexistent', 5.0) == 1.0
+
+    def test_debiaser_extreme_clip(self, item_df):
+        d = CausalDebiaser(item_df, blend_lambda=0.5, clip_max=100.0)
+        assert d.clip_max == 100.0
+        w = d.get_ips_weight('Rare E')
+        assert w <= 100.0
+
+    def test_debias_batch_missing_score_key_defaults_to_zero(self, item_df):
+        d = CausalDebiaser(item_df, blend_lambda=0.5)
+        items = [{'title': 'Blockbuster A'}]
+        out = d.debias_batch(items)
+        assert out[0]['hybrid_score'] == 0.0
+        assert out[0]['original_score'] == 0.0
+
+    def test_debias_batch_zero_mean_weights_fallback(self, item_df):
+        d = CausalDebiaser(item_df, blend_lambda=0.5)
+        original_get_ips_weight = d._propensity_model.get_ips_weight
+        try:
+            d._propensity_model.get_ips_weight = lambda title, clip_max: 0.0
+            items = [{'title': 'Blockbuster A', 'hybrid_score': 0.8}]
+            out = d.debias_batch(items)
+            assert abs(out[0]['hybrid_score'] - 0.8) < 1e-6
+        finally:
+            d._propensity_model.get_ips_weight = original_get_ips_weight
+

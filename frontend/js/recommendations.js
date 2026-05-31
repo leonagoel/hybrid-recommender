@@ -139,6 +139,7 @@ function renderRecommendations(data) {
 
   const recsSection = document.getElementById('recs-section');
   if (recsSection) recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  injectExportUI(recs);
 }
 
 async function loadRecommendationsOverHttp(title) {
@@ -229,4 +230,64 @@ const API = {
     if (!res.ok) throw new Error(`API error: ${res.status}`);
     return res.json();
   },
+};
+function injectExportUI(recs) {
+  if (document.getElementById('export-controls')) {
+    window._currentRecommendations = recs;
+    return;
+  }
+  const recsSection = document.getElementById('recs-section');
+  if (!recsSection) return;
+  window._currentRecommendations = recs;
+  recsSection.insertAdjacentHTML('afterbegin', `
+    <div id="export-controls" style="display:flex;align-items:center;gap:10px;margin:12px 0 4px;flex-wrap:wrap;">
+      <span style="font-size:13px;color:var(--text-muted);">Export results:</span>
+      <button onclick="exportRecommendations('csv')" style="padding:5px 14px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer;font-size:13px;">⬇ CSV</button>
+      <button onclick="exportRecommendations('json')" style="padding:5px 14px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card);cursor:pointer;font-size:13px;">⬇ JSON</button>
+      <span id="export-status" style="font-size:12px;color:var(--text-muted);"></span>
+    </div>
+  `);
+}
+
+window.exportRecommendations = async function(format) {
+  const status = document.getElementById('export-status');
+  const recommendations = (window._currentRecommendations || []).map((r, i) => ({
+    rank: i + 1,
+    title: r.title || '',
+    score: r.hybrid_score || 0,
+    source: r.source || 'hybrid',
+  }));
+
+  if (!recommendations.length) {
+    if (status) status.textContent = '⚠ Nothing to export.';
+    return;
+  }
+  if (status) status.textContent = 'Exporting...';
+  try {
+    const response = await fetch('/api/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format, recommendations }),
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Export failed');
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    a.href = url;
+    a.download = `recommendations_${ts}.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    if (status) {
+      status.textContent = `✓ Downloaded!`;
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    }
+  } catch (err) {
+    if (status) status.textContent = `✗ ${err.message}`;
+  }
 };

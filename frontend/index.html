@@ -39,6 +39,7 @@
                     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
                 <input type="text" id="search-input" aria-label="Search products" placeholder="Search products..." autocomplete="off" spellcheck="false">
+                <button id="clear-search-btn" class="clear-search-btn" aria-label="Clear search" style="display: none;">✕</button>
                 <span class="search-spinner" id="search-spinner" role="status" aria-live="polite" aria-label="Loading search results" hidden></span>
                 <div class="search-char-counter" id="search-char-counter" style="display: none;">0/100</div>
 
@@ -340,7 +341,7 @@
         <a href="https://github.com/your-username/hybrid-recommender" target="_blank">
             GitHub Repository
         </a>
-        <img src="https://gssoc.girlscript.tech/badges/postman.png" alt="GSSoC Badge" class="gssoc-badge" />
+        <img src="https://gssoc.girlscript.tech/badges/postman.png" alt="GSSoC Badge" class="gssoc-badge" loading="lazy" />
     </div>
 
     <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
@@ -375,6 +376,6 @@
         </div>
     </div>
 </div>
-    <script src="/static/app.js"></script>
+    <script type="module" src="/static/app.js"></script>
 </body>
 </html>

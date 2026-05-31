@@ -105,10 +105,7 @@ async function initSupabase() {
 const state = {
     user: null,
     isGuest: true,
-    products: [],
-    allProducts: [],
-    trending: [],
-    page: 1,
+    products: [],    trending: [],    page: 1,
     perPage: 20,
     totalProducts: 0,
     isLoading: false,
@@ -121,14 +118,6 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
-    compareList: [],
-    heatmapSelected: [],
-    activeChips: new Set(['all']),
-    filters: {
-        category: '',
-        rating: '',
-        sentiment: '',
-    },
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -203,6 +192,29 @@ const CONFIG = {
   MAX_COMPARE_ITEMS: 20
 };
 
+/**
+ * Securely merges objects to prevent prototype pollution.
+ */
+function safeMerge(target, source) {
+    for (const key in source) {
+        if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+
+        const sourceVal = source[key];
+        const targetVal = target[key];
+
+        if (typeof sourceVal === 'object' && sourceVal !== null && !Array.isArray(sourceVal)) {
+            if (typeof targetVal !== 'object' || targetVal === null || Array.isArray(targetVal)) {
+                target[key] = {};
+            }
+            safeMerge(target[key], sourceVal);
+        } else {
+            target[key] = sourceVal;
+        }
+    }
+    return target;
+}
+
 function loadPreferences() {
     const saved = localStorage.getItem('userPreferences');
 
@@ -211,13 +223,12 @@ function loadPreferences() {
     try {
         const prefs = JSON.parse(saved);
 
-        state.filters.category = prefs.category || '';
-        state.filters.rating = prefs.rating || '';
-        state.filters.sentiment = prefs.sentiment || '';
+        // Safely merge parsed preferences into state.filters
+        safeMerge(state.filters, prefs);
 
-        els.categoryFilter.value = state.filters.category;
-        els.ratingFilter.value = state.filters.rating;
-        els.sentimentFilter.value = state.filters.sentiment;
+        els.categoryFilter.value = state.filters.category || '';
+        els.ratingFilter.value = state.filters.rating || '';
+        els.sentimentFilter.value = state.filters.sentiment || '';
 
     } catch (err) {
         console.warn('Failed to load preferences:', err);
@@ -571,28 +582,30 @@ function initTypeToSearch() {
     });
 }
 
-// ── Search Dropdown ──────────────────────────────────────────────────
+// ── Search ──────────────────────────────────────────────────────────
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
-        closeSearchDropdown();
+        els.searchDropdown.innerHTML = `
+            <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
+                No results for "${query}"
+            </div>`;
+        els.searchDropdown.classList.add('active');
+        setSearchDropdownExpanded(true);
         return;
     }
 
-    els.searchDropdown.innerHTML = results
-        .map((title, index) => {
-            const safeTitle = escapeHtml(title);
-            return `
-            <div
-                class="search-result ${index === state.selectedSearchIdx ? 'active' : ''}"
-                data-title="${safeTitle}"
-                data-idx="${index}"
-            >
-                <span class="search-result__icon">🔍</span>
-                <div class="search-result__info">
-                    <div class="search-result__title">
-                        ${highlightMatch(title, query)}
-                    </div>
+    els.searchDropdown.innerHTML = results.map((r, i) => `
+        <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
+            tabindex="0"
+            role="button"
+             data-title="${r.title}" data-idx="${i}">
+            <span style="font-size:20px;">${categoryIcon(r.category)}</span>
+            <div class="search-result__info">
+                <div class="search-result__title">${highlightMatch(r.title, query)}</div>
+                <div class="search-result__meta">
+                    ★ ${(r.rating || 0).toFixed(1)}
+                    ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
                 </div>
             </div>
         `;
@@ -600,6 +613,7 @@ function renderSearchDropdown(results, query) {
         .join('');
 
     els.searchDropdown.classList.add('active');
+    setSearchDropdownExpanded(true);
 
     // Click suggestion
     els.searchDropdown.querySelectorAll('.search-result').forEach((el) => {
@@ -607,6 +621,28 @@ function renderSearchDropdown(results, query) {
             const title = el.dataset.title;
             selectSearchResult(title);
         });
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        el.click();
+            }
+        });
+        el.addEventListener('keydown', (e) => {
+    const items = [...els.searchDropdown.querySelectorAll('.search-result')];
+    const currentIndex = items.indexOf(el);
+
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = items[(currentIndex + 1) % items.length];
+        next.focus();
+    }
+
+    if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = items[(currentIndex - 1 + items.length) % items.length];
+        prev.focus();
+    }
+});
     });
 }
 
@@ -630,10 +666,14 @@ function selectSearchResult(title) {
     loadRecommendations(title);
 }
 
+function setSearchDropdownExpanded(expanded) {
+    els.searchInput.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
 
 function closeSearchDropdown() {
     els.searchDropdown.classList.remove('active');
     state.selectedSearchIdx = -1;
+    setSearchDropdownExpanded(false);
 }
 
 // Close dropdown when clicking outside
@@ -1051,13 +1091,7 @@ function renderProducts(products, options = {}) {
 
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
-            const wishlistBtn = card.querySelector('.wishlist-btn');
-
-            wishlistBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            toggleWishlist(p);
-            });
-
             const title = e.target.dataset.title;
             loadRecommendations(title);
             toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
@@ -1096,13 +1130,28 @@ function renderProducts(products, options = {}) {
         }
 
         card.addEventListener('click', () => {
-            loadRecommendations(title);
+            loadRecommendations(p.title);
         });
 
         fragment.appendChild(card);
     });
 
     els.productGrid.appendChild(fragment);
+}
+
+function handleRecommendationClick(e) {
+    e.stopPropagation();
+
+    const title = e.currentTarget.dataset.title;
+
+    if (!title) return;
+
+    loadRecommendations(title);
+
+    toast(
+        `Finding recommendations for "${title.substring(0, 40)}..."`,
+        'info'
+    );
 }
 
 // ── Recommendations ─────────────────────────────────────────────────
@@ -1420,6 +1469,7 @@ function closeProductModal() {
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
+    els.searchInput.setAttribute('aria-expanded', 'false');
     els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
     els.searchInput.addEventListener('keydown', handleSearchKeydown);
     els.searchInput.addEventListener('focus', () => {
@@ -1800,7 +1850,7 @@ function renderProducts(products, options = {}) {
             ${
                 !p.image || p.image === 'undefined'
                 ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
-                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" />`
+                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" loading="lazy" />`
              }
             </div>
             <div class="product-card__body">
@@ -1934,12 +1984,19 @@ async function loadCategories() {
         const data = await API.get('/api/categories');
         const categories = data.categories || [];
 
-        els.categoryFilter.innerHTML = `
-            <option value="All Categories">All Categories</option>
-            ${categories.map(cat => `
-                <option value="${cat}">${cat}</option>
-            `).join('')}
-        `;
+        els.categoryFilter.textContent = '';
+
+        const allOption = document.createElement('option');
+        allOption.value = 'All Categories';
+        allOption.textContent = 'All Categories';
+        els.categoryFilter.appendChild(allOption);
+
+        categories.forEach((category) => {
+            const option = document.createElement('option');
+            option.value = String(category ?? '');
+            option.textContent = String(category ?? '');
+            els.categoryFilter.appendChild(option);
+        });
     } catch (err) {
         console.error('Failed to load categories', err);
     }
@@ -2001,7 +2058,6 @@ document.querySelectorAll(".product-card").forEach(card => {
     });
 });
 
-document.addEventListener('DOMContentLoaded', init);
 document.addEventListener('DOMContentLoaded', init);
 
 // ── Language Toggle ─────────────────────────────────────────────────
