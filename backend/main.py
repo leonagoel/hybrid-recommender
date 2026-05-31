@@ -2041,8 +2041,10 @@ def get_user_purchases(
 
 @app.post("/api/purchases")
 def create_purchase(
+    request: Request,
     data: PurchaseCreate,
     _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
 ):
     sb = get_supabase()
     result = sb.table('purchases').insert({
