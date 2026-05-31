@@ -31,6 +31,22 @@ class FeatureStore:
         self._load("item_embeddings.pkl", self._item_embeddings)
         return self._item_embeddings.get(item_id, None)
 
+    def clear_user_embeddings(self):
+        self._user_embeddings.clear()
+        user_file = os.path.join(self.store_path, "user_embeddings.pkl")
+        if os.path.exists(user_file):
+            os.remove(user_file)
+
+    def clear_item_embeddings(self):
+        self._item_embeddings.clear()
+        item_file = os.path.join(self.store_path, "item_embeddings.pkl")
+        if os.path.exists(item_file):
+            os.remove(item_file)
+
+    def clear_all(self):
+        self.clear_user_embeddings()
+        self.clear_item_embeddings()
+
     def _persist(self, filename, data):
         path = os.path.join(self.store_path, filename)
         with open(path, "wb") as f:
