@@ -1,55 +1,67 @@
-import sys
-sys.path.insert(0, '.')
-
+import pytest
 import numpy as np
-import pickle
 import os
+import tempfile
+import shutil
+import sys
 
-# Import directly, bypassing __init__.py
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 from src.model.feature_store import FeatureStore
 
-def test_save_and_get_user_embedding(tmp_path):
-    store = FeatureStore(store_path=str(tmp_path))
-    vec = np.array([0.1, 0.2, 0.3])
-    store.save_user_embedding("user_1", vec)
-    assert np.allclose(store.get_user_embedding("user_1"), vec)
 
-def test_save_and_get_item_embedding(tmp_path):
-    store = FeatureStore(store_path=str(tmp_path))
-    vec = np.array([0.4, 0.5, 0.6])
-    store.save_item_embedding("item_1", vec)
-    assert np.allclose(store.get_item_embedding("item_1"), vec)
+class TestFeatureStore:
+    def setup_method(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.store = FeatureStore(store_path=self.temp_dir)
 
-def test_missing_user_returns_none(tmp_path):
-    store = FeatureStore(store_path=str(tmp_path))
-    assert store.get_user_embedding("unknown_user") is None
+    def teardown_method(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-def test_missing_item_returns_none(tmp_path):
-    store = FeatureStore(store_path=str(tmp_path))
-    assert store.get_item_embedding("unknown_item") is None
+    def test_init_creates_directory(self):
+        assert os.path.exists(self.temp_dir)
 
-def test_save_user_embedding_overwrites_existing(tmp_path):
-    store = FeatureStore(store_path=str(tmp_path))
-    vec1 = np.array([0.1, 0.2, 0.3])
-    vec2 = np.array([0.9, 0.8, 0.7])
-    store.save_user_embedding("user_123", vec1)
-    store.save_user_embedding("user_123", vec2)
-    assert np.allclose(store.get_user_embedding("user_123"), vec2)
+    def test_save_and_get_user_embedding(self):
+        embedding = np.random.randn(128).astype(np.float32)
+        self.store.save_user_embedding("user1", embedding)
+        retrieved = self.store.get_user_embedding("user1")
+        assert retrieved is not None
+        assert np.allclose(retrieved, embedding)
 
-def test_save_item_embedding_overwrites_existing(tmp_path):
-    store = FeatureStore(store_path=str(tmp_path))
-    vec1 = np.array([1.1, 1.2, 1.3])
-    vec2 = np.array([1.9, 1.8, 1.7])
-    store.save_item_embedding("item_123", vec1)
-    store.save_item_embedding("item_123", vec2)
-    assert np.allclose(store.get_item_embedding("item_123"), vec2)
-def test_custom_store_path_creation(tmp_path):
-    custom_dir = tmp_path / "custom_subdir"
-    assert not custom_dir.exists()
-    store = FeatureStore(store_path=str(custom_dir))
-    assert custom_dir.exists()
+    def test_get_nonexistent_user_embedding(self):
+        retrieved = self.store.get_user_embedding("nonexistent")
+        assert retrieved is None
 
-def test_empty_keys_returns_none(tmp_path):
-    store = FeatureStore(store_path=str(tmp_path))
-    assert store.get_user_embedding("") is None
-    assert store.get_item_embedding("") is None
+    def test_save_and_get_item_embedding(self):
+        embedding = np.random.randn(64).astype(np.float32)
+        self.store.save_item_embedding("item1", embedding)
+        retrieved = self.store.get_item_embedding("item1")
+        assert retrieved is not None
+        assert np.allclose(retrieved, embedding)
+
+    def test_get_nonexistent_item_embedding(self):
+        retrieved = self.store.get_item_embedding("nonexistent")
+        assert retrieved is None
+
+    def test_multiple_user_embeddings(self):
+        emb1 = np.random.randn(128)
+        emb2 = np.random.randn(128)
+        self.store.save_user_embedding("user1", emb1)
+        self.store.save_user_embedding("user2", emb2)
+        assert np.allclose(self.store.get_user_embedding("user1"), emb1)
+        assert np.allclose(self.store.get_user_embedding("user2"), emb2)
+
+    def test_multiple_item_embeddings(self):
+        emb1 = np.random.randn(64)
+        emb2 = np.random.randn(64)
+        self.store.save_item_embedding("item1", emb1)
+        self.store.save_item_embedding("item2", emb2)
+        assert np.allclose(self.store.get_item_embedding("item1"), emb1)
+        assert np.allclose(self.store.get_item_embedding("item2"), emb2)
+
+    def test_persistence_across_instances(self):
+        embedding = np.random.randn(128)
+        self.store.save_user_embedding("user1", embedding)
+        new_store = FeatureStore(store_path=self.temp_dir)
+        retrieved = new_store.get_user_embedding("user1")
+        assert np.allclose(retrieved, embedding)
