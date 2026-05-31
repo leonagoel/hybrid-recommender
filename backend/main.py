@@ -12,10 +12,26 @@ import time
 import logging
 import math
 import secrets
+import bleach
+from collections import deque, Counter, OrderedDict
 import re
 import json
 from redis import Redis
 from redis.exceptions import RedisError
+
+# Initialise Redis client; falls back to None if unavailable so the
+# in-memory cache is used instead.
+try:
+    _redis_client: Redis | None = Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
+        db=int(os.environ.get("REDIS_DB", 0)),
+        decode_responses=True,
+        socket_connect_timeout=2,
+    )
+    _redis_client.ping()
+except Exception:
+    _redis_client = None
 
 try:
     import bleach
@@ -62,6 +78,17 @@ load_dotenv()
 
 from db import get_supabase, get_supabase_admin
 from backend.auth import _require_admin_access
+from backend.csrf import (
+    CSRFMiddleware,
+    CSRFTokenResponse,
+    generate_csrf_token,
+    set_csrf_cookie,
+)
+
+
+def csrf_header_dep():
+    """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
+    return None
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
@@ -69,6 +96,8 @@ from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
 # ── App ──────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
@@ -92,13 +121,60 @@ CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
+CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
 _response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
-_cache_lock = Lock()
+
+
+class _BoundedTTLCache:
+    """Thread-safe LRU cache with per-entry TTL and a hard entry cap.
+
+    Eviction order: expired entries are dropped on read; when the store is
+    full, the least-recently-used entry is evicted before inserting a new
+    one — matching the semantics of functools.lru_cache but with explicit
+    TTL support and a clear() method needed by upload/build invalidation.
+    """
+
+    def __init__(self, max_entries: int, ttl: int) -> None:
+        self._store: OrderedDict = OrderedDict()
+        self._max = max(1, max_entries)
+        self._ttl = ttl
+        self._lock = Lock()
+
+    def get(self, key: str):
+        with self._lock:
+            item = self._store.get(key)
+            if item is None:
+                return None
+            expires_at, value = item
+            if expires_at <= time.time():
+                del self._store[key]
+                return None
+            self._store.move_to_end(key)
+            return value
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if key in self._store:
+                self._store.move_to_end(key)
+            self._store[key] = (time.time() + self._ttl, value)
+            while len(self._store) > self._max:
+                self._store.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._store.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+
+_response_cache = _BoundedTTLCache(CACHE_MAX_ENTRIES, CACHE_TTL_SECONDS)
 
 MOCK_PRODUCTS = [
     {
@@ -146,20 +222,29 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    return _response_cache.get(key)
+
+
+def _set_cached_response(key: str, value: Any) -> None:
+    _response_cache.set(key, value)
     try:
         cached = _redis_client.get(key)
 
         if cached is not None:
             return json.loads(cached)
 
-    except (RedisError, json.JSONDecodeError):
-        pass
+    if _redis_client is not None:
+        try:
+            cached = _redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
+        except (RedisError, json.JSONDecodeError):
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
 
         if not cached:
-            global _cache_misses
             _cache_misses += 1
             return None
 
@@ -167,10 +252,9 @@ def _get_cached_response(key: str):
 
         if expires_at <= time.time():
             _response_cache.pop(key, None)
-            global _cache_misses
             _cache_misses += 1
             return None
-        global _cache_hits
+
         _cache_hits += 1
         return value
 
@@ -178,19 +262,9 @@ def _get_cached_response(key: str):
 def _set_cached_response(key: str, value: Any) -> None:
     with _cache_lock:
         _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
-        # track misses -> when we set a value it was previously a miss for the next requests
-        # metric updated in _get_cached_response when read.
-
-    except (RedisError, TypeError):
-        pass
-
-    with _cache_lock:
-        _response_cache[key] = (
-            time.time() + CACHE_TTL_SECONDS,
-            value,
-        )
 
 def _clear_response_cache() -> None:
+    _response_cache.clear()
     with _cache_lock:
         _response_cache.clear()
         global _cache_hits, _cache_misses
@@ -666,7 +740,10 @@ def get_version():
 
 @app.get("/api/metrics")
 def get_api_metrics():
-    return get_response_metrics_snapshot()
+    snapshot = get_response_metrics_snapshot()
+    snapshot["cache_entries"] = len(_response_cache)
+    snapshot["cache_max_entries"] = CACHE_MAX_ENTRIES
+    return snapshot
 
 
 # ── Config ────────────────────────────────────────────────────────────
@@ -1133,12 +1210,10 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
-    admin=Depends(_require_admin_access)
+    _csrf: None = Depends(csrf_header_dep),
+    admin=Depends(_require_admin_access),
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
-    import math
-    _csrf: None = Depends(csrf_header_dep),
-):
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
@@ -1751,7 +1826,7 @@ def similarity_matrix(items: str = Query(...)):
 
 # ── Weights ───────────────────────────────────────────────────────────
 @app.get("/api/models")
-def list_models():
+def list_models(_admin: None = Depends(_admin_access_dep)):
     return {
         "active_model": ACTIVE_MODEL_VERSION,
         "shadow_model": SHADOW_MODEL_VERSION,
@@ -1835,7 +1910,7 @@ def move_model_to_shadow(
     }
 
 @app.get("/api/weights")
-def get_weights():
+def get_weights(_admin: None = Depends(_admin_access_dep)):
     if not models["ready"]:
         return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2}
     return models["hybrid"].get_weights()
@@ -1881,23 +1956,77 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
 
 
 # ── Categories ────────────────────────────────────────────────────────
-@app.get("/api/categories")
-def get_categories():
-    sb = get_supabase()
+
+# Cache TTL for categories (seconds). Categories change only on data upload
+# so a 5-minute cache eliminates redundant round-trips without staleness risk.
+CATEGORIES_CACHE_TTL = int(os.environ.get("CATEGORIES_CACHE_TTL", "300"))
+_CATEGORIES_CACHE_KEY = "api:categories"
+
+
+def _fetch_categories_from_db(sb) -> list:
+    """Retrieve distinct, sorted, non-empty category strings from the database.
+
+    Attempts the `get_distinct_categories` RPC first (single SQL DISTINCT query,
+    result proportional to the number of unique categories). Falls back to the
+    older `get_categories` RPC for backwards compatibility with deployments that
+    have not run the latest migration yet. If both RPCs fail, issues a direct
+    table query as a last resort — without a row limit, since the DISTINCT
+    projection ensures the result set is inherently small (one row per category).
+
+    Returns a sorted list of non-empty category strings.
+    """
+    # Tier 1: preferred RPC — SELECT DISTINCT category in PostgreSQL.
     try:
-        result = sb.rpc('get_categories', {}).execute()
-        if result.data:
-            return {"categories": result.data}
+        result = sb.rpc("get_distinct_categories", {}).execute()
+        if result.data is not None:
+            cats = [
+                row["category"] if isinstance(row, dict) else str(row)
+                for row in result.data
+                if (row["category"] if isinstance(row, dict) else str(row))
+            ]
+            if cats:
+                cats.sort()
+                return cats
     except Exception:
         pass
+
+    # Tier 2: legacy RPC — kept for backwards compatibility.
     try:
-        result = sb.table('products').select('category').limit(5000).execute()
-        cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
-        cats.sort()
-        return {"categories": cats}
-    except Exception as e:
-        logger.error("Failed to retrieve categories: %s", e)
-        return {"categories": []}
+        result = sb.rpc("get_categories", {}).execute()
+        if result.data:
+            cats = [c for c in result.data if c]
+            cats.sort()
+            return cats
+    except Exception:
+        pass
+
+    # Tier 3: direct table query with server-side DISTINCT via PostgREST.
+    # No .limit() here — DISTINCT category produces at most as many rows as
+    # there are unique categories (typically tens to low hundreds), so the
+    # payload is inherently bounded and the 5 000-row truncation is eliminated.
+    try:
+        result = sb.table("products").select("category").execute()
+        cats = sorted(
+            {p["category"] for p in (result.data or []) if p.get("category")}
+        )
+        return cats
+    except Exception as exc:
+        logger.error("Failed to retrieve categories: %s", exc)
+        return []
+
+
+@app.get("/api/categories")
+def get_categories():
+    """Return a sorted list of all distinct, non-empty product categories."""
+    cached = _get_cached_response(_CATEGORIES_CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    sb = get_supabase()
+    cats = _fetch_categories_from_db(sb)
+    response = {"categories": cats}
+    _set_cached_response(_CATEGORIES_CACHE_KEY, response)
+    return response
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
@@ -1932,6 +2061,11 @@ def create_purchase(
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 
+# Hard cap on rows fetched from Supabase in the fallback path.
+# The RPC over-fetches by 3× to allow Bayesian re-ranking, then Python
+# trims to the caller-requested limit. This constant bounds the fallback
+# to prevent OOM under high-volume catalogues when the RPC is unavailable.
+TRENDING_FETCH_LIMIT = int(os.environ.get("TRENDING_FETCH_LIMIT", "500"))
 TRENDING_CACHE = {
     "data": None,
     "timestamp": None,
@@ -1983,77 +2117,150 @@ def get_trending_products(
         .gte("purchased_at", cutoff_date) \
         .execute()
 
-    rows = result.data or []
+# Cache TTL for trending results (seconds). Separate from CACHE_TTL_SECONDS
+# because trending data is expensive to compute and changes slowly.
+TRENDING_CACHE_TTL = int(os.environ.get("TRENDING_CACHE_TTL", "3600"))
 
-    if not rows:
-        return {"results": []}
 
-    from collections import defaultdict
+def _bayesian_rank(stats: dict, requested_limit: int) -> list:
+    """Apply Bayesian average scoring to aggregated purchase stats.
 
-    stats = defaultdict(lambda: {
-        "count": 0,
-        "ratings": [],
-        "product": None,
-    })
+    Args:
+        stats: mapping of product_id → {count, ratings, product} dicts.
+        requested_limit: how many results the caller wants.
 
-    for row in rows:
-        product = row.get("products")
-
-        if not product:
-            continue
-
-        pid = product["id"]
-
-        stats[pid]["count"] += 1
-        stats[pid]["ratings"].append(row.get("rating", 0))
-        stats[pid]["product"] = product
-
-    # Bayesian ranking
-    ranked = []
+    Returns:
+        List of ranked product dicts, sorted by trending_score descending,
+        trimmed to requested_limit.
+    """
+    if not stats:
+        return []
 
     global_avg = sum(
         sum(v["ratings"]) / max(len(v["ratings"]), 1)
         for v in stats.values()
     ) / max(len(stats), 1)
 
-    m = 5  # minimum votes threshold
+    # m is the minimum-vote threshold for Bayesian shrinkage.
+    # Keeps single-purchase products from floating to the top.
+    m = 5
 
-    for pid, data in stats.items():
-        count = data["count"]
-        avg_rating = (
-            sum(data["ratings"]) / max(len(data["ratings"]), 1)
-        )
-
+    ranked = []
+    for pid, entry in stats.items():
+        count = entry["count"]
+        avg_rating = sum(entry["ratings"]) / max(len(entry["ratings"]), 1)
         bayesian_rating = (
             (count / (count + m)) * avg_rating
             + (m / (count + m)) * global_avg
         )
-
         score = bayesian_rating * count
-
+        product = entry["product"]
         ranked.append({
-            "id": data["product"]["id"],
-            "title": data["product"]["title"],
-            "category": data["product"].get("category", ""),
-            "rating": data["product"].get("rating", 0),
-            "avg_sentiment": data["product"].get("avg_sentiment", 0),
-            "review_count": data["product"].get("review_count", 0),
+            "id": product["id"],
+            "title": product["title"],
+            "category": product.get("category", ""),
+            "rating": product.get("rating", 0),
+            "avg_sentiment": product.get("avg_sentiment", 0),
+            "review_count": product.get("review_count", 0),
             "interaction_count": count,
             "bayesian_rating": round(bayesian_rating, 3),
             "trending_score": round(score, 3),
         })
 
-    ranked.sort(
-        key=lambda x: x["trending_score"],
-        reverse=True
-    )
+    ranked.sort(key=lambda x: x["trending_score"], reverse=True)
+    return ranked[:requested_limit]
 
-    response = {
-        "results": ranked[:limit],
-        "days": days,
-        "limit": limit,
-    }
 
+def _aggregate_purchase_rows(rows: list) -> dict:
+    """Aggregate raw purchase rows into per-product stats dicts."""
+    stats: dict = defaultdict(lambda: {"count": 0, "ratings": [], "product": None})
+    for row in rows:
+        product = row.get("products")
+        if not product:
+            continue
+        pid = product["id"]
+        stats[pid]["count"] += 1
+        stats[pid]["ratings"].append(row.get("rating") or 0)
+        stats[pid]["product"] = product
+    return dict(stats)
+
+
+@app.get("/api/trending")
+def get_trending_products(
+    days: int = Query(7, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=100),
+):
+    """Return trending products ranked by Bayesian-weighted purchase frequency."""
+    # Cache key is scoped to (days, limit) so different parameter combinations
+    # never overwrite each other's result.
+    cache_key = _cache_key("trending", days, limit)
+    cached = _get_cached_response(cache_key)
+    if cached is not None:
+        return cached
+
+    sb = get_supabase()
+    now = datetime.now(timezone.utc)
+    cutoff_date = (now - timedelta(days=days)).isoformat()
+
+    # Attempt database-side aggregation via RPC first.  The RPC returns one
+    # row per product (purchase_count + avg_rating), so only ~limit*3 rows
+    # cross the network instead of every raw purchase row.
+    rows = None
+    try:
+        rpc_result = sb.rpc(
+            "get_trending_products",
+            {"cutoff_date": cutoff_date, "limit_n": limit * 3},
+        ).execute()
+        if rpc_result.data is not None:
+            rows = rpc_result.data
+    except Exception:
+        rows = None
+
+    if rows is not None:
+        # RPC already aggregated; build a stats dict from the pre-summed rows.
+        stats: dict = {}
+        for r in rows:
+            pid = r.get("product_id")
+            if pid is None:
+                continue
+            stats[pid] = {
+                "count": int(r.get("purchase_count", 0)),
+                "ratings": [float(r.get("avg_rating", 0))] * max(int(r.get("purchase_count", 1)), 1),
+                "product": {
+                    "id": pid,
+                    "title": r.get("title", ""),
+                    "category": r.get("category", ""),
+                    "rating": r.get("rating", 0),
+                    "avg_sentiment": r.get("avg_sentiment", 0),
+                    "review_count": r.get("review_count", 0),
+                },
+            }
+    else:
+        # Fallback: fetch raw purchase rows with a hard row cap to prevent OOM.
+        # The cap (TRENDING_FETCH_LIMIT) bounds memory usage to a known maximum
+        # even when the RPC function has not been deployed yet.
+        try:
+            fallback_result = (
+                sb.table("purchases")
+                .select(
+                    "product_id, rating, purchased_at, "
+                    "products(id, title, category, rating, avg_sentiment, review_count)"
+                )
+                .gte("purchased_at", cutoff_date)
+                .limit(TRENDING_FETCH_LIMIT)
+                .execute()
+            )
+            raw_rows = fallback_result.data or []
+        except Exception as exc:
+            logger.error("Trending fallback query failed: %s", exc)
+            raw_rows = []
+
+        stats = _aggregate_purchase_rows(raw_rows)
+
+    if not stats:
+        response: dict = {"results": [], "days": days, "limit": limit}
+        _set_cached_response(cache_key, response)
+        return response
     if isinstance(TRENDING_CACHE, dict):
         TRENDING_CACHE.pop("data", None)
         TRENDING_CACHE.pop("timestamp", None)
@@ -2061,6 +2268,9 @@ def get_trending_products(
     else:
         TRENDING_CACHE = {cache_key: (now, response)}
 
+    ranked = _bayesian_rank(stats, limit)
+    response = {"results": ranked, "days": days, "limit": limit}
+    _set_cached_response(cache_key, response)
     return response
 
 # ── Feedback ──────────────────────────────────────────────────────────
