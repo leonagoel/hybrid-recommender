@@ -205,6 +205,24 @@ class TestAggregateSentimentByItem:
 class TestComputeProductSentiment:
     """Test compute_product_sentiment function."""
 
+    def test_compute_product_sentiment_empty_reviews(self):
+        assert compute_product_sentiment([]) is None
+
+    def test_compute_product_sentiment_none_input(self):
+        assert compute_product_sentiment(None) is None
+
+    def test_compute_product_sentiment_all_invalid(self):
+        assert compute_product_sentiment([42, {"key": "val"}, "   "]) is None
+
+    def test_compute_product_sentiment_valid(self):
+        reviews = [
+            "This is absolutely fantastic!",
+            "I hate this thing, it's terrible.",
+            "It is an average book.",
+        ]
+        score = compute_product_sentiment(reviews)
+        assert isinstance(score, float)
+        assert -1.0 <= score <= 1.0
     def test_empty_reviews_list(self):
         assert compute_product_sentiment([]) is None
 

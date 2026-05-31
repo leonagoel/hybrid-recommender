@@ -108,13 +108,36 @@ class FederatedServer:
         Aggregates local updates from multiple clients using Federated Averaging (FedAvg)
         and performs a global gradient descent update step.
         """
+        if client_updates_list is None:
+            raise ValueError("client_updates_list must not be None.")
+        if not isinstance(client_updates_list, list):
+            raise ValueError("client_updates_list must be a list.")
+        if not client_updates_list:
+            return
+
         aggregated_updates = {title: [] for title in self.item_list}
 
         # Gather updates for each item
-        for client_updates in client_updates_list:
+        for client_idx, client_updates in enumerate(client_updates_list):
+            if not isinstance(client_updates, dict):
+                raise ValueError(
+                    f"client_updates_list[{client_idx}] must be a dict, "
+                    f"got {type(client_updates).__name__}."
+                )
             for title, update in client_updates.items():
-                if title in aggregated_updates:
-                    aggregated_updates[title].append(update)
+                if title not in aggregated_updates:
+                    continue
+                update_arr = np.asarray(update, dtype=float)
+                if update_arr.ndim != 1 or update_arr.shape[0] != self.n_factors:
+                    raise ValueError(
+                        f"Update for '{title}' must be a 1-D array of length "
+                        f"{self.n_factors}, got shape {update_arr.shape}."
+                    )
+                if not np.all(np.isfinite(update_arr)):
+                    raise ValueError(
+                        f"Update for '{title}' must contain only finite values."
+                    )
+                aggregated_updates[title].append(update_arr)
 
         # Update global item factors
         for title, updates in aggregated_updates.items():
