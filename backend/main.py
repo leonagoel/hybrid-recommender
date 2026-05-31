@@ -12,12 +12,9 @@ import time
 import logging
 import math
 import secrets
-import bleach
 from collections import deque, Counter, OrderedDict
 import re
 import json
-from redis import Redis
-from redis.exceptions import RedisError
 
 try:
     import bleach
@@ -81,6 +78,8 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
+logger = logging.getLogger(__name__)
+
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
@@ -106,7 +105,6 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
-_response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
@@ -214,6 +212,34 @@ try:
     _redis_client.ping()
 except Exception:
     _redis_client = None
+def _get_cached_response(key: str):
+    global _cache_hits, _cache_misses
+    return _response_cache.get(key)
+
+
+def _set_cached_response(key: str, value: Any) -> None:
+    _response_cache.set(key, value)
+    
+    try:
+        cached = _redis_client.get(key)
+
+        if cached is not None:
+            return json.loads(cached)
+
+    if _redis_client is not None:
+        try:
+            cached = _redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
+        except (RedisError, json.JSONDecodeError):
+            pass
+
+    with _cache_lock:
+        cached = _response_cache.get(key)
+
+        if not cached:
+            _cache_misses += 1
+            return None
 
 _metrics_lock = Lock()
 
@@ -240,6 +266,12 @@ def _get_cached_response(key: str):
                 return parsed
         except (RedisError, json.JSONDecodeError):
             pass
+    cached = _response_cache.get(key)
+    if cached is None:
+        _cache_misses += 1
+        return None
+    _cache_hits += 1
+    return cached
 
     with _metrics_lock:
         _cache_misses += 1
@@ -255,6 +287,7 @@ def _set_cached_response(key: str, value: Any) -> None:
             _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
         except (RedisError, TypeError):
             pass
+    _response_cache.set(key, value)
 
 def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
@@ -262,6 +295,8 @@ def _clear_response_cache() -> None:
     with _metrics_lock:
         _cache_hits = 0
         _cache_misses = 0
+    _cache_hits = 0
+    _cache_misses = 0
 
 
 @app.get("/api/cache_metrics")
@@ -500,6 +535,12 @@ def _require_admin_access(request: Request) -> None:
 
 def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
+
+
+def csrf_header_dep(x_csrf_token: str = Header(..., alias="X-CSRF-Token")) -> None:
+    """Document the required CSRF echo header for mutating endpoints."""
+    if not x_csrf_token:
+        raise HTTPException(status_code=403, detail="CSRF token missing.")
 
 
 def _get_feedback_storage_client():
@@ -1202,10 +1243,12 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
-    admin=Depends(_require_admin_access)
+    _csrf: None = Depends(csrf_header_dep),
+    admin=Depends(_require_admin_access),
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
+
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
@@ -1818,7 +1861,7 @@ def similarity_matrix(items: str = Query(...)):
 
 # ── Weights ───────────────────────────────────────────────────────────
 @app.get("/api/models")
-def list_models():
+def list_models(_admin: None = Depends(_admin_access_dep)):
     return {
         "active_model": ACTIVE_MODEL_VERSION,
         "shadow_model": SHADOW_MODEL_VERSION,
@@ -1902,7 +1945,7 @@ def move_model_to_shadow(
     }
 
 @app.get("/api/weights")
-def get_weights():
+def get_weights(_admin: None = Depends(_admin_access_dep)):
     if not models["ready"]:
         return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2}
     return models["hybrid"].get_weights()
