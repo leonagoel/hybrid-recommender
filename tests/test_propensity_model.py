@@ -134,6 +134,21 @@ class TestPropensityModelSpec:
         assert scores['A'] > scores['B']
         assert pm.get_ips_weight('A') < pm.get_ips_weight('B')
 
+    def test_propensity_ips_weight_clipping_bounds(self, sample_catalog):
+        pm = PropensityModel(sample_catalog)
+        assert pm.get_ips_weight('D', clip_max=2.0) == 2.0
+        assert pm.get_ips_weight('D', clip_max=10.0) <= 10.0
+
+    def test_propensity_zero_propensity_failsafe(self):
+        df = pd.DataFrame({
+            'title': ['A'],
+            'review_count': [0],
+            'category': ['Tech']
+        })
+        pm = PropensityModel(df)
+        pm._scores['A'] = 0.0
+        weight = pm.get_ips_weight('A', clip_max=1000000.0)
+        assert weight <= 1e6
     def test_propensity_ips_weight_clip_max_boundary(self, sample_catalog):
         pm = PropensityModel(sample_catalog)
         # clip_max set to an extremely small positive bound like 0.1

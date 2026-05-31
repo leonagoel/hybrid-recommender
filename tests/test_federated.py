@@ -1,6 +1,10 @@
 """
 Unit and integration tests for federated learning modules and APIs.
 """
+import os
+
+os.environ.setdefault("TESTING", "true")
+
 import pytest
 import numpy as np
 import pandas as pd
@@ -103,6 +107,52 @@ def test_federated_server_aggregation():
     )
 
 
+def test_federated_server_aggregation_empty_list_no_op():
+    server = FederatedServer(item_list=["Item A"], n_factors=3, learning_rate=0.1)
+    initial_factors = server.global_item_factors.copy()
+
+    server.aggregate_updates([])
+
+    assert np.allclose(server.global_item_factors, initial_factors)
+
+
+def test_federated_server_aggregation_empty_client_dicts_no_op():
+    server = FederatedServer(item_list=["Item A"], n_factors=3, learning_rate=0.1)
+    initial_factors = server.global_item_factors.copy()
+
+    server.aggregate_updates([{}, {}])
+
+    assert np.allclose(server.global_item_factors, initial_factors)
+
+
+@pytest.mark.parametrize(
+    "client_updates_list, match",
+    [
+        (None, "client_updates_list must not be None"),
+        ({}, "client_updates_list must be a list"),
+        ([None], "client_updates_list\\[0\\] must be a dict"),
+        (["not a dict"], "client_updates_list\\[0\\] must be a dict"),
+        (
+            [{"Item A": np.array([0.1, 0.2])}],
+            "Update for 'Item A' must be a 1-D array of length 3",
+        ),
+        (
+            [{"Item A": np.array([np.nan, 0.2, 0.3])}],
+            "Update for 'Item A' must contain only finite values",
+        ),
+        (
+            [{"Item A": np.array([np.inf, 0.2, 0.3])}],
+            "Update for 'Item A' must contain only finite values",
+        ),
+    ],
+)
+def test_federated_server_aggregation_invalid_inputs(client_updates_list, match):
+    server = FederatedServer(item_list=["Item A"], n_factors=3, learning_rate=0.1)
+
+    with pytest.raises(ValueError, match=match):
+        server.aggregate_updates(client_updates_list)
+
+
 def test_train_federated_collaborative_model():
     # Make a small dummy interaction dataframe
     data = {
@@ -162,6 +212,16 @@ class FakeSupabase:
         raise ValueError(f"Unknown table: {name}")
 
 
+def _authenticated_post_headers(client, admin_token="test-admin-token"):
+    csrf_response = client.get("/api/csrf-token")
+    csrf_token = csrf_response.json()["csrfToken"]
+    client.cookies.set("csrftoken", csrf_token)
+    return {
+        "x-csrf-token": csrf_token,
+        "Authorization": f"Bearer {admin_token}",
+    }
+
+
 def test_api_train_federated_endpoint_success(monkeypatch):
     # Setup mock DB data
     mock_products = [
@@ -186,6 +246,7 @@ def test_api_train_federated_endpoint_success(monkeypatch):
     
     fake_sb = FakeSupabase(mock_products, mock_purchases)
     monkeypatch.setattr(main, "get_supabase", lambda: fake_sb)
+    monkeypatch.setenv(main.ADMIN_API_TOKEN_ENV, "test-admin-token")
     
     # Save the original state of models to restore after test
     orig_ready = main.models["ready"]
@@ -195,7 +256,8 @@ def test_api_train_federated_endpoint_success(monkeypatch):
         client = TestClient(main.app)
         response = client.post(
             "/api/train/federated",
-            json={"n_factors": 2, "epochs": 2, "lr": 0.1, "reg": 0.01}
+            json={"n_factors": 2, "epochs": 2, "lr": 0.1, "reg": 0.01},
+            headers=_authenticated_post_headers(client),
         )
         
         assert response.status_code == 200
@@ -227,11 +289,13 @@ def test_api_train_federated_endpoint_not_enough_data(monkeypatch):
     
     fake_sb = FakeSupabase(mock_products, mock_purchases)
     monkeypatch.setattr(main, "get_supabase", lambda: fake_sb)
+    monkeypatch.setenv(main.ADMIN_API_TOKEN_ENV, "test-admin-token")
     
     client = TestClient(main.app)
     response = client.post(
         "/api/train/federated",
-        json={"n_factors": 2, "epochs": 2, "lr": 0.1, "reg": 0.01}
+        json={"n_factors": 2, "epochs": 2, "lr": 0.1, "reg": 0.01},
+        headers=_authenticated_post_headers(client),
     )
     
     assert response.status_code == 400
