@@ -37,4 +37,3 @@ def test_recommendation_cache_user_segment(monkeypatch):
     assert r3.status_code == 200
     # Depending on segment prefix collision, this may be MISS or HIT; ensure call_count increased appropriately
     assert call_count['n'] >= 1
-*** End File

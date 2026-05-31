@@ -64,7 +64,7 @@ def test_predict_fallback_when_sklearn_missing():
         # Verify the classifier still computes a standard dict object instead of throwing an unhandled exception
         assert isinstance(prediction, dict)
         assert "type" in prediction
-        assert prediction["type"]["reason"] == "Default fallback framework" or "keyword" in prediction["type"]["reason"].lower()
+        assert prediction["type"]["reason"] == "Default fallback" or "keyword" in prediction["type"]["reason"].lower()
 
 
 def test_predict_no_matching_keywords_defaults():
@@ -155,3 +155,25 @@ async def test_triage_issue_executes_api_with_token(monkeypatch):
     
     assert res["github_api"]["labels"] == 200
     assert res["github_api"]["comment"] == 201
+
+
+def test_predict_completely_empty_issue():
+    """Verifies that the predict function behaves gracefully when title/body are empty or None."""
+    classifier = IssueClassifier()
+    # Should not raise exception
+    res = classifier.predict("", None)
+    assert isinstance(res, dict)
+    assert "type" in res
+    assert "domain" in res
+
+
+def test_format_triage_comment_custom_domain_mapping():
+    """Verifies that domains like 'ml' map cleanly to 'ml/ai' label inside format_triage_comment."""
+    mock_predictions = {
+        "type": {"label": "feature", "confidence": 0.95, "reason": "Reason"},
+        "domain": {"label": "ml", "confidence": 0.85, "reason": "Reason"},
+        "level": {"label": "advanced", "confidence": 0.75, "reason": "Reason"},
+        "priority": {"label": "high", "confidence": 0.65, "reason": "Reason"},
+    }
+    comment = format_triage_comment(mock_predictions, [])
+    assert "`ml/ai`" in comment

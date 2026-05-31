@@ -102,6 +102,13 @@ class TestSentimentLabel:
         """Test boundary case at -0.05."""
         assert sentiment_label(-0.05) == "negative"
 
+    def test_boundary_precision_cases(self):
+        """Test fine boundary values close to 0.05 and -0.05."""
+        assert sentiment_label(0.0499) == "neutral"
+        assert sentiment_label(0.0501) == "positive"
+        assert sentiment_label(-0.0499) == "neutral"
+        assert sentiment_label(-0.0501) == "negative"
+
 
 class TestBatchAnalyze:
     """Test batch_analyze function."""
@@ -216,6 +223,29 @@ class TestComputeProductSentiment:
         score = compute_product_sentiment(reviews)
         assert isinstance(score, float)
         assert -1.0 <= score <= 1.0
+    def test_empty_reviews_list(self):
+        assert compute_product_sentiment([]) is None
+
+    def test_none_reviews(self):
+        assert compute_product_sentiment(None) is None
+
+    def test_non_string_reviews_only(self):
+        assert compute_product_sentiment([123, True, None]) is None
+
+    def test_empty_strings_and_whitespaces(self):
+        assert compute_product_sentiment(["", "   ", "\n"]) is None
+
+    def test_valid_reviews_sentiment(self):
+        reviews = ["I love this! Amazing product.", "Pretty good.", "It was okay."]
+        score = compute_product_sentiment(reviews)
+        assert score is not None
+        assert score > 0.0
+
+    def test_mixed_valid_and_invalid_reviews(self):
+        reviews = ["Excellent product!", "", 456, "Not good, quite bad."]
+        score = compute_product_sentiment(reviews)
+        assert score is not None
+        assert isinstance(score, float)
 
 
 if __name__ == "__main__":
