@@ -12,9 +12,26 @@ import time
 import logging
 import math
 import secrets
+import bleach
 from collections import deque, Counter, OrderedDict
 import re
 import json
+from redis import Redis
+from redis.exceptions import RedisError
+
+# Initialise Redis client; falls back to None if unavailable so the
+# in-memory cache is used instead.
+try:
+    _redis_client: Redis | None = Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
+        db=int(os.environ.get("REDIS_DB", 0)),
+        decode_responses=True,
+        socket_connect_timeout=2,
+    )
+    _redis_client.ping()
+except Exception:
+    _redis_client = None
 
 try:
     import bleach
@@ -64,22 +81,11 @@ from backend.auth import _require_admin_access
 from backend.csrf import (
     CSRFMiddleware,
     CSRFTokenResponse,
-    generate_csrf_token,
-    set_csrf_cookie,
-)
-
-
-def csrf_header_dep():
-    """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
-    return None
-from backend.csrf import (
-    csrf_header_dep,
-    CSRFMiddleware,
     CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME,
-    CSRFTokenResponse,
     generate_csrf_token,
     set_csrf_cookie,
+    csrf_header_dep,
 )
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
@@ -90,9 +96,8 @@ from src.model.issue_triage import triage_issue
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 # ── App ──────────────────────────────────────────────────────────────
+
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
@@ -117,6 +122,7 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
+_response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 _redis_client: Redis | None = None
@@ -223,57 +229,7 @@ def _get_cached_response(key: str):
 
 def _set_cached_response(key: str, value: Any) -> None:
     _response_cache.set(key, value)
-    
-    try:
-        cached = _redis_client.get(key)
 
-            if cached is not None:
-                return json.loads(cached)
-
-    if _redis_client is not None:
-        try:
-            cached = _redis_client.get(key)
-            if cached is not None:
-                return json.loads(cached)
-            except (RedisError, json.JSONDecodeError):
-                pass
-
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-        _cache_hits += 1
-        return value
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        _redis_client.set(key, json.dumps(value))
-    try:
-        _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
-    except (RedisError, TypeError):
-        pass
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
-    cached = _response_cache.get(key)
-    if cached is None:
-        _cache_misses += 1
-        return None
-    _cache_hits += 1
-    return cached
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
 
 def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
@@ -518,12 +474,6 @@ def _require_admin_access(request: Request) -> None:
 
 def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
-
-
-def csrf_header_dep(x_csrf_token: str = Header(..., alias="X-CSRF-Token")) -> None:
-    """Document the required CSRF echo header for mutating endpoints."""
-    if not x_csrf_token:
-        raise HTTPException(status_code=403, detail="CSRF token missing.")
 
 
 def _get_feedback_storage_client():
@@ -1227,7 +1177,8 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 async def upload_dataset(
     file: UploadFile = File(...),
     _csrf: None = Depends(csrf_header_dep),
-    admin=Depends(_require_admin_access),,
+    admin=Depends(_require_admin_access),
+):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
 
