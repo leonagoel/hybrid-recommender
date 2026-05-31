@@ -235,6 +235,7 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    global _cache_hits, _cache_misses
     return _response_cache.get(key)
 
 
@@ -1233,6 +1234,8 @@ async def upload_dataset(
     _csrf: None = Depends(csrf_header_dep),
     admin=Depends(_require_admin_access),,
     """Upload a CSV or JSON dataset and import into Supabase."""
+    import math
+
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
