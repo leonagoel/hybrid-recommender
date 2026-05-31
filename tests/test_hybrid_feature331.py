@@ -42,3 +42,27 @@ def test_weight_matrix_warm_user_override():
     a, b, g = h._get_active_weights(0.5, 0.4, 0.1, user_id=42, candidate_titles=None)
     tot = 0.2 + 0.7 + 0.1
     assert abs(a - (0.2 / tot)) < 1e-6
+
+
+def test_diversity_rerank_empty_results():
+    h = HybridRecommender(None, None, item_df=None)
+    assert h._diversity_rerank([], top_n=5) == []
+
+
+def test_diversity_rerank_zeros():
+    h = HybridRecommender(None, None, item_df=None)
+    results = [{"title": "A", "hybrid_score": 0.9, "category": "X"}]
+    assert h._diversity_rerank(results, top_n=5, diversity=0.0, serendipity=0.0) == results
+
+
+def test_diversity_rerank_applies_diversity_penalty():
+    h = HybridRecommender(None, None, item_df=None)
+    results = [
+        {"title": "A", "hybrid_score": 0.9, "category": "X"},
+        {"title": "B", "hybrid_score": 0.8, "category": "X"},
+        {"title": "C", "hybrid_score": 0.7, "category": "Y"}
+    ]
+    reranked = h._diversity_rerank(results, top_n=2, diversity=1.0, serendipity=0.0)
+    assert len(reranked) == 2
+    assert reranked[0]["title"] == "A"
+    assert reranked[1]["title"] == "C"

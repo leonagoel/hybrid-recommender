@@ -1,6 +1,8 @@
 """Unit and contract validation tests for the Two-Tower Neural Retrieval engine."""
 import pytest
 import pandas as pd
+
+faiss = pytest.importorskip("faiss", reason="faiss not installed — skipping neural retrieval tests")
 from src.model.two_tower_retrieval import TwoTowerRetrievalEngine
 
 
