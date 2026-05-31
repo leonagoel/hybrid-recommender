@@ -1,3 +1,9 @@
+"""
+Dataset Manager — Loads, adapts, and merges multiple CSV datasets
+into a unified schema for the recommender pipeline.
+"""
+__all__ = ["DatasetManager"]
+
 import pandas as pd
 import os
 import uuid
