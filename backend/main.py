@@ -12,26 +12,9 @@ import time
 import logging
 import math
 import secrets
-import bleach
 from collections import deque, Counter, OrderedDict
 import re
 import json
-from redis import Redis
-from redis.exceptions import RedisError
-
-# Initialise Redis client; falls back to None if unavailable so the
-# in-memory cache is used instead.
-try:
-    _redis_client: Redis | None = Redis(
-        host=os.environ.get("REDIS_HOST", "localhost"),
-        port=int(os.environ.get("REDIS_PORT", 6379)),
-        db=int(os.environ.get("REDIS_DB", 0)),
-        decode_responses=True,
-        socket_connect_timeout=2,
-    )
-    _redis_client.ping()
-except Exception:
-    _redis_client = None
 
 try:
     import bleach
@@ -95,9 +78,9 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
-# ── App ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
+# ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 logger = logging.getLogger(__name__)
 
@@ -123,23 +106,11 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
-_response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
-_cache_lock = Lock()
-
-try:
-    _redis_client = Redis.from_url(
-        os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-        socket_connect_timeout=1,
-        socket_timeout=1,
-    )
-    _redis_client.ping()
-except Exception:
-    _redis_client = None
 
 
 class _BoundedTTLCache:
@@ -235,12 +206,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    
     try:
         cached = _redis_client.get(key)
 
@@ -255,29 +220,41 @@ def _set_cached_response(key: str, value: Any) -> None:
         except (RedisError, json.JSONDecodeError):
             pass
 
-    value = _response_cache.get(key)
-    if value is None:
-        _cache_misses += 1
-        return None
+    with _cache_lock:
+        cached = _response_cache.get(key)
 
-    _cache_hits += 1
-    return value
+        if not cached:
+            _cache_misses += 1
+            return None
+
+        expires_at, value = cached
+
+        if expires_at <= time.time():
+            _response_cache.pop(key, None)
+            _cache_misses += 1
+            return None
+
+        _cache_hits += 1
+        return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    if _redis_client is not None:
-        try:
-            _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
-        except (RedisError, TypeError):
-            pass
+    try:
+        if _redis_client:
+            _redis_client.setex(
+                key,
+                CACHE_TTL_SECONDS,
+                json.dumps(value),
+            )
+    except (RedisError, TypeError):
+        pass
 
-    _response_cache.set(key, value)
+    with _cache_lock:
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 def _clear_response_cache() -> None:
-    _response_cache.clear()
     global _cache_hits, _cache_misses
-    _cache_hits = 0
-    _cache_misses = 0
+    _response_cache.clear()
 
 
 @app.get("/api/cache_metrics")
@@ -516,6 +493,12 @@ def _require_admin_access(request: Request) -> None:
 
 def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
+
+
+def csrf_header_dep(x_csrf_token: str = Header(..., alias="X-CSRF-Token")) -> None:
+    """Document the required CSRF echo header for mutating endpoints."""
+    if not x_csrf_token:
+        raise HTTPException(status_code=403, detail="CSRF token missing.")
 
 
 def _get_feedback_storage_client():
@@ -1218,12 +1201,10 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
-    _csrf: None = Depends(csrf_header_dep),
     admin=Depends(_require_admin_access),
+    _csrf: None = Depends(csrf_header_dep),
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
-    import math
-
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
@@ -1235,10 +1216,9 @@ async def upload_dataset(
         raw_df = read_file(buf, file_format=ext.replace('.', ''))
         adapted_df, meta = adapt_data(raw_df)
         adapted_df = adapted_df.drop_duplicates(subset='title', keep='first')
-        try:
-            sb = get_supabase_admin()
-        except RuntimeError:
-            sb = get_supabase()
+        sb = get_supabase_admin()
+        if sb is None:
+            raise HTTPException(status_code=500, detail="Admin credentials not configured.")
         batch_size = 500
         total = len(adapted_df)
         imported = 0
@@ -1299,14 +1279,18 @@ async def upload_dataset(
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
 def build_models(
+    request: Request,
+    response: Response,
     _csrf: None = Depends(csrf_header_dep),
     _admin: None = Depends(_admin_access_dep),
 ):
+    rate_limited = _apply_rate_limit(
+        request, response, "build",
+        "BUILD_RATE_LIMIT", 1,
     global STAGING_MODEL_VERSION
-    try:
-       sb = get_supabase_admin()
-    except RuntimeError:
-        sb = get_supabase()
+    sb = get_supabase_admin()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
     all_products = []
     page_size = 1000
     offset = 0
@@ -1326,156 +1310,206 @@ def build_models(
         item_df['description'].fillna('').astype(str) + ' ' +
         item_df['category'].fillna('').astype(str)
     )
-    item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
-    start_time = time.time()
-    content_model = ContentRecommender(item_df)
-    collab_model = None
-    try:
-        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
-        purchases = purchases_result.data or []
-        if len(purchases) > 10:
-            product_title_map = {p['id']: p['title'] for p in all_products}
-            interaction_rows = []
-            for p in purchases:
-                title = product_title_map.get(p['product_id'])
-                if title:
-                    interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
-            if len(interaction_rows) > 10:
-                interaction_df = pd.DataFrame(interaction_rows)
-                if interaction_df['user_id'].nunique() > 1:
-                    collab_model = CollaborativeRecommender(interaction_df)
-    except Exception as e:
-        logger.warning("Collaborative model data load failed: %s", e)
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
-    build_time = round(time.time() - start_time, 2)
-    
-    version = generate_model_version()
+    if rate_limited is not None:
+        return rate_limited
 
-    MODEL_REGISTRY[version] = {
-        "content": content_model,
-        "collab": collab_model,
-        "hybrid": hybrid_model,
-        "item_df": item_df,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "training_metadata": {
+    if not _build_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="A model build is already in progress.")
+    global STAGING_MODEL_VERSION
+    sb = get_supabase_admin()
+    if sb is None:
+        _build_lock.release()
+        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
+    try:
+        all_products = []
+        page_size = 1000
+        offset = 0
+        while True:
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+            batch = result.data or []
+            all_products.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        if not all_products:
+            raise HTTPException(400, "No products in database. Upload data first.")
+        import pandas as pd
+        item_df = pd.DataFrame(all_products)
+        item_df['combined'] = (
+            item_df['title'].astype(str) + ' ' +
+            item_df['description'].fillna('').astype(str) + ' ' +
+            item_df['category'].fillna('').astype(str)
+        )
+        item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
+        start_time = time.time()
+        content_model = ContentRecommender(item_df)
+        collab_model = None
+        try:
+            purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+            purchases = purchases_result.data or []
+            if len(purchases) > 10:
+                product_title_map = {p['id']: p['title'] for p in all_products}
+                interaction_rows = []
+                for p in purchases:
+                    title = product_title_map.get(p['product_id'])
+                    if title:
+                        interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
+                if len(interaction_rows) > 10:
+                    interaction_df = pd.DataFrame(interaction_rows)
+                    if interaction_df['user_id'].nunique() > 1:
+                        collab_model = CollaborativeRecommender(interaction_df)
+        except Exception as e:
+            logger.warning("Collaborative model data load failed: %s", e)
+        hybrid_model = HybridRecommender(content_model, collab_model, item_df)
+        build_time = round(time.time() - start_time, 2)
+
+        version = generate_model_version()
+
+        MODEL_REGISTRY[version] = {
+            "content": content_model,
+            "collab": collab_model,
+            "hybrid": hybrid_model,
+            "item_df": item_df,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "training_metadata": {
+                "items": len(item_df),
+                "has_collaborative": collab_model is not None,
+                "build_time_seconds": build_time,
+            },
+            "status": "staging",
+            "metrics": {
+                "ndcg": 0.0,
+                "latency_ms": 0.0,
+                "error_rate": 0.0,
+            },
+        }
+
+        STAGING_MODEL_VERSION = version
+
+        models["content"] = content_model
+        models["collab"] = collab_model
+        models["hybrid"] = hybrid_model
+        models["item_df"] = item_df
+        models["ready"] = True
+        models["build_time"] = build_time
+        models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+        _clear_response_cache()
+        precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
+        return {
+            "message": "Models built successfully!",
+            "model_version": version,
+            "status": "staging",
             "items": len(item_df),
             "has_collaborative": collab_model is not None,
             "build_time_seconds": build_time,
-        },
-        "status": "staging",
-        "metrics": {
-            "ndcg": 0.0,
-            "latency_ms": 0.0,
-            "error_rate": 0.0,
-        },
-    }
-
-    STAGING_MODEL_VERSION = version
-    
-    models["content"] = content_model
-    models["collab"] = collab_model
-    models["hybrid"] = hybrid_model
-    models["item_df"] = item_df
-    models["ready"] = True
-    models["build_time"] = build_time
-    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
-    _clear_response_cache()
-    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
-    return {
-        "message": "Models built successfully!",
-        "model_version": version,
-        "status": "staging",
-        "items": len(item_df),
-        "has_collaborative": collab_model is not None,
-        "build_time_seconds": build_time,
-	"precomputed_recommendations": precomputed_count,
-    }
+            "precomputed_recommendations": precomputed_count,
+        }
+    finally:
+        _build_lock.release()
 
 @app.post("/api/train/federated")
 def train_federated(
+    request: Request,
+    response: Response,
     req: FederatedTrainRequest,
     _admin: None = Depends(_admin_access_dep),
 ):
-    sb = get_supabase()
-    all_products = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
-        batch = result.data or []
-        all_products.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-    if not all_products:
-        raise HTTPException(400, "No products in database. Upload data first.")
-
-    import pandas as pd
-    item_df = pd.DataFrame(all_products)
-    item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
+    rate_limited = _apply_rate_limit(
+        request, response, "federated",
+        "FEDERATED_RATE_LIMIT", 1,
     )
-    item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
+    if rate_limited is not None:
+        return rate_limited
 
-    start_time = time.time()
-    content_model = ContentRecommender(item_df)
+    if not _train_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="A federated training job is already in progress.")
 
+    sb = get_supabase_admin()
+    if sb is None:
+        _train_lock.release()
+        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
     try:
-        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
-        purchases = purchases_result.data or []
-    except Exception as e:
-        logger.error("Federated training: purchases load failed: %s", e)
-        raise HTTPException(500, f"Failed to retrieve purchases from database: {str(e)}")
+        all_products = []
+        page_size = 1000
+        offset = 0
+        while True:
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+            batch = result.data or []
+            all_products.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        if not all_products:
+            raise HTTPException(400, "No products in database. Upload data first.")
 
-    if len(purchases) <= 10:
-        raise HTTPException(400, "Not enough interaction data for federated training. Need at least 11 interactions.")
-
-    product_title_map = {p['id']: p['title'] for p in all_products}
-    interaction_rows = []
-    for p in purchases:
-        title = product_title_map.get(p['product_id'])
-        if title:
-            interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
-
-    if len(interaction_rows) <= 10:
-        raise HTTPException(400, "Not enough valid interaction rows matching product catalog.")
-
-    interaction_df = pd.DataFrame(interaction_rows)
-    if interaction_df['user_id'].nunique() <= 1:
-        raise HTTPException(400, "Federated training requires at least 2 unique users.")
-
-    try:
-        collab_model = train_federated_collaborative_model(
-            interaction_df,
-            n_factors=req.n_factors,
-            epochs=req.epochs,
-            lr=req.lr,
-            reg=req.reg
+        import pandas as pd
+        item_df = pd.DataFrame(all_products)
+        item_df['combined'] = (
+            item_df['title'].astype(str) + ' ' +
+            item_df['description'].fillna('').astype(str) + ' ' +
+            item_df['category'].fillna('').astype(str)
         )
-    except Exception as e:
-        logger.error("Federated training execution failed: %s", e)
-        raise HTTPException(500, f"Federated training execution failed: {str(e)}")
+        item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
 
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
-    build_time = round(time.time() - start_time, 2)
+        start_time = time.time()
+        content_model = ContentRecommender(item_df)
 
-    models["content"] = content_model
-    models["collab"] = collab_model
-    models["hybrid"] = hybrid_model
-    models["item_df"] = item_df
-    models["ready"] = True
-    models["build_time"] = build_time
-    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
-    _clear_response_cache()
+        try:
+            purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+            purchases = purchases_result.data or []
+        except Exception as e:
+            logger.error("Federated training: purchases load failed: %s", e)
+            raise HTTPException(500, f"Failed to retrieve purchases from database: {str(e)}")
 
-    return {
-        "message": "Federated collaborative model trained successfully!",
-        "items": len(item_df),
-        "users": int(interaction_df['user_id'].nunique()),
-        "build_time_seconds": build_time,
-    }
+        if len(purchases) <= 10:
+            raise HTTPException(400, "Not enough interaction data for federated training. Need at least 11 interactions.")
+
+        product_title_map = {p['id']: p['title'] for p in all_products}
+        interaction_rows = []
+        for p in purchases:
+            title = product_title_map.get(p['product_id'])
+            if title:
+                interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
+
+        if len(interaction_rows) <= 10:
+            raise HTTPException(400, "Not enough valid interaction rows matching product catalog.")
+
+        interaction_df = pd.DataFrame(interaction_rows)
+        if interaction_df['user_id'].nunique() <= 1:
+            raise HTTPException(400, "Federated training requires at least 2 unique users.")
+
+        try:
+            collab_model = train_federated_collaborative_model(
+                interaction_df,
+                n_factors=req.n_factors,
+                epochs=req.epochs,
+                lr=req.lr,
+                reg=req.reg
+            )
+        except Exception as e:
+            logger.error("Federated training execution failed: %s", e)
+            raise HTTPException(500, f"Federated training execution failed: {str(e)}")
+
+        hybrid_model = HybridRecommender(content_model, collab_model, item_df)
+        build_time = round(time.time() - start_time, 2)
+
+        models["content"] = content_model
+        models["collab"] = collab_model
+        models["hybrid"] = hybrid_model
+        models["item_df"] = item_df
+        models["ready"] = True
+        models["build_time"] = build_time
+        models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+        _clear_response_cache()
+
+        return {
+            "message": "Federated collaborative model trained successfully!",
+            "items": len(item_df),
+            "users": int(interaction_df['user_id'].nunique()),
+            "build_time_seconds": build_time,
+        }
+    finally:
+        _train_lock.release()
 
 
 # ── Recommendations ───────────────────────────────────────────────────
@@ -2041,7 +2075,12 @@ def get_categories():
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
+def get_user_purchases(
+    request: Request,
+    user_id: str,
+    _admin: None = Depends(_admin_access_dep),
+    limit: int = Query(50, ge=1, le=200),
+):
     _validate_user_id(user_id)  # allowlist-validate before any DB call
     sb = get_supabase()
     result = (
@@ -2057,8 +2096,10 @@ def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
 
 @app.post("/api/purchases")
 def create_purchase(
+    request: Request,
     data: PurchaseCreate,
     _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
 ):
     sb = get_supabase()
     result = sb.table('purchases').insert({
@@ -2330,7 +2371,11 @@ def submit_feedback(
 
 # ── Export Dataset ────────────────────────────────────────────────────
 @app.get("/api/export/dataset")
-def export_dataset(columns: Optional[str] = Query(None)):
+def export_dataset(
+    request: Request,
+    _admin: None = Depends(_admin_access_dep),
+    columns: Optional[str] = Query(None),
+):
     if not models["ready"] or models["item_df"] is None:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     import pandas as pd
