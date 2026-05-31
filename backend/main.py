@@ -12,26 +12,9 @@ import time
 import logging
 import math
 import secrets
-import bleach
 from collections import deque, Counter, OrderedDict
 import re
 import json
-from redis import Redis
-from redis.exceptions import RedisError
-
-# Initialise Redis client; falls back to None if unavailable so the
-# in-memory cache is used instead.
-try:
-    _redis_client: Redis | None = Redis(
-        host=os.environ.get("REDIS_HOST", "localhost"),
-        port=int(os.environ.get("REDIS_PORT", 6379)),
-        db=int(os.environ.get("REDIS_DB", 0)),
-        decode_responses=True,
-        socket_connect_timeout=2,
-    )
-    _redis_client.ping()
-except Exception:
-    _redis_client = None
 
 try:
     import bleach
@@ -95,9 +78,9 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
-# ── App ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
+# ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
@@ -122,7 +105,6 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
-_response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
@@ -178,6 +160,12 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
+    return _response_cache.get(key)
+
+
+def _set_cached_response(key: str, value: Any) -> None:
+    _response_cache.set(key, value)
+    
     try:
         cached = _redis_client.get(key)
 
@@ -214,12 +202,10 @@ def _set_cached_response(key: str, value: Any) -> None:
         _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 def _clear_response_cache() -> None:
+    global _cache_hits, _cache_misses
     _response_cache.clear()
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
+    _cache_hits = 0
+    _cache_misses = 0
 
 
 @app.get("/api/cache_metrics")
@@ -458,6 +444,12 @@ def _require_admin_access(request: Request) -> None:
 
 def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
+
+
+def csrf_header_dep(x_csrf_token: str = Header(..., alias="X-CSRF-Token")) -> None:
+    """Document the required CSRF echo header for mutating endpoints."""
+    if not x_csrf_token:
+        raise HTTPException(status_code=403, detail="CSRF token missing.")
 
 
 def _get_feedback_storage_client():
@@ -1246,6 +1238,28 @@ def build_models(
     rate_limited = _apply_rate_limit(
         request, response, "build",
         "BUILD_RATE_LIMIT", 1,
+    global STAGING_MODEL_VERSION
+    sb = get_supabase_admin()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
+    all_products = []
+    page_size = 1000
+    offset = 0
+    while True:
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+        batch = result.data or []
+        all_products.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    if not all_products:
+        raise HTTPException(400, "No products in database. Upload data first.")
+    import pandas as pd
+    item_df = pd.DataFrame(all_products)
+    item_df['combined'] = (
+        item_df['title'].astype(str) + ' ' +
+        item_df['description'].fillna('').astype(str) + ' ' +
+        item_df['category'].fillna('').astype(str)
     )
     if rate_limited is not None:
         return rate_limited
