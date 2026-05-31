@@ -19,6 +19,20 @@ import json
 from redis import Redis
 from redis.exceptions import RedisError
 
+# Initialise Redis client; falls back to None if unavailable so the
+# in-memory cache is used instead.
+try:
+    _redis_client: Redis | None = Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
+        db=int(os.environ.get("REDIS_DB", 0)),
+        decode_responses=True,
+        socket_connect_timeout=2,
+    )
+    _redis_client.ping()
+except Exception:
+    _redis_client = None
+
 try:
     import bleach
 except ModuleNotFoundError:
@@ -82,6 +96,8 @@ from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
 # ── App ──────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
@@ -215,8 +231,14 @@ def _set_cached_response(key: str, value: Any) -> None:
         cached = _redis_client.get(key)
         if cached is not None:
             return json.loads(cached)
-    except (RedisError, json.JSONDecodeError):
-        pass
+
+    if _redis_client is not None:
+        try:
+            cached = _redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
+        except (RedisError, json.JSONDecodeError):
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -241,16 +263,8 @@ def _set_cached_response(key: str, value: Any) -> None:
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
-    except (RedisError, TypeError):
-        pass
-
     with _cache_lock:
-        _response_cache[key] = (
-            time.time() + CACHE_TTL_SECONDS,
-            value,
-        )
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 <<<<<<< HEAD
 =======
@@ -1203,6 +1217,7 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 async def upload_dataset(
     file: UploadFile = File(...),
 <<<<<<< HEAD
+<<<<<<< HEAD
     admin=Depends(_require_admin_access),
     _csrf: None = Depends(csrf_header_dep),
 ):
@@ -1216,6 +1231,12 @@ async def upload_dataset(
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
 >>>>>>> upstream/main
+=======
+    _csrf: None = Depends(csrf_header_dep),
+    admin=Depends(_require_admin_access),
+):
+    """Upload a CSV or JSON dataset and import into Supabase."""
+>>>>>>> master
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
@@ -1828,7 +1849,7 @@ def similarity_matrix(items: str = Query(...)):
 
 # ── Weights ───────────────────────────────────────────────────────────
 @app.get("/api/models")
-def list_models():
+def list_models(_admin: None = Depends(_admin_access_dep)):
     return {
         "active_model": ACTIVE_MODEL_VERSION,
         "shadow_model": SHADOW_MODEL_VERSION,
@@ -1912,7 +1933,7 @@ def move_model_to_shadow(
     }
 
 @app.get("/api/weights")
-def get_weights():
+def get_weights(_admin: None = Depends(_admin_access_dep)):
     if not models["ready"]:
         return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2}
     return models["hybrid"].get_weights()

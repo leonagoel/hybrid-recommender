@@ -134,3 +134,17 @@ class TestPropensityModelSpec:
         assert scores['A'] > scores['B']
         assert pm.get_ips_weight('A') < pm.get_ips_weight('B')
 
+    def test_propensity_ips_weight_clip_max_boundary(self, sample_catalog):
+        pm = PropensityModel(sample_catalog)
+        # clip_max set to an extremely small positive bound like 0.1
+        w = pm.get_ips_weight('D', clip_max=0.1)
+        assert w == 0.1
+
+    def test_propensity_ips_weight_extreme_small_propensity(self, sample_catalog):
+        pm = PropensityModel(sample_catalog)
+        # Mock propensity score of 'A' to exactly 0 to test division by zero safety
+        pm._scores['A'] = 0.0
+        w = pm.get_ips_weight('A', clip_max=5.0)
+        # Minimum propensity is 1e-6, so weight is 1.0 / 1e-6 = 1000000, capped at clip_max (5.0)
+        assert w == 5.0
+
