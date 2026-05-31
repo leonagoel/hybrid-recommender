@@ -13,6 +13,10 @@ from src.evaluation.evaluation import (
     _recall_at_k,
     _dcg_at_k,
     _ndcg_at_k,
+    _mean_reciprocal_rank,
+    _hit_rate,
+    _catalog_coverage,
+    _intra_list_diversity,
 )
 
 
@@ -151,6 +155,33 @@ class TestNDCGAtK:
         relevant = set()
         result = _ndcg_at_k(recommended, relevant, 2)
         assert result == 0.0
+
+
+class TestSupplementaryMetrics:
+    """Test supplementary metrics helper functions."""
+
+    def test_mean_reciprocal_rank(self):
+        recommended = ["a", "b", "c"]
+        relevant = {"b", "x"}
+        # 'b' is first relevant item at rank 2 (index 1), so reciprocal rank = 1/2 = 0.5
+        assert _mean_reciprocal_rank(recommended, relevant, 3) == 0.5
+        assert _mean_reciprocal_rank(recommended, set(), 3) == 0.0
+
+    def test_hit_rate(self):
+        recommended = ["a", "b", "c"]
+        relevant = {"b", "x"}
+        assert _hit_rate(recommended, relevant, 3) == 1.0
+        assert _hit_rate(recommended, {"y", "z"}, 3) == 0.0
+
+    def test_catalog_coverage(self):
+        all_recommendations = [["a", "b"], ["b", "c"]]
+        assert _catalog_coverage(all_recommendations, 5) == 3.0 / 5.0
+        assert _catalog_coverage([], 5) == 0.0
+
+    def test_intra_list_diversity_insufficient_items(self):
+        import pandas as pd
+        df = pd.DataFrame({"title": ["a"]})
+        assert _intra_list_diversity(["a"], df, None) == 0.0
 
 
 if __name__ == "__main__":

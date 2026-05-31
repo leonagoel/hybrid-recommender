@@ -8,6 +8,13 @@ from dotenv import load_dotenv  # <-- Added
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+import csv
+import io
+import json
+from datetime import datetime
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
@@ -29,6 +36,7 @@ from src.model.hybrid_model import HybridRecommender
 from src.model.causal_config import CausalConfig
 
 app = FastAPI(title="Hybrid Recommender API")
+app.mount("/static", StaticFiles(directory=str(PROJECT_ROOT / "frontend")), name="static")
 # ===========================================================================
 # NEW: Dynamic Configuration Layout Environment Fetching
 # ===========================================================================
@@ -169,3 +177,56 @@ def get_recommendations(req: RecommendationRequest):
         except Exception as fallback_exc:
             logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
             raise HTTPException(status_code=500, detail="Recommendation engine completely offline.")
+
+@app.post("/api/export")
+async def export_recommendations(request: Request):
+    try:
+        body = await request.json()
+        fmt = body.get("format", "csv").lower()
+        recommendations = body.get("recommendations", [])
+
+        if not recommendations:
+            raise HTTPException(status_code=400, detail="No recommendations provided.")
+        if fmt not in ("csv", "json"):
+            raise HTTPException(status_code=400, detail="format must be 'csv' or 'json'.")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"recommendations_{timestamp}.{fmt}"
+
+        if fmt == "csv":
+            output = io.StringIO()
+            writer = csv.DictWriter(
+                output,
+                fieldnames=["rank", "title", "score", "source"],
+                extrasaction="ignore"
+            )
+            writer.writeheader()
+            for i, rec in enumerate(recommendations, start=1):
+                writer.writerow({
+                    "rank": rec.get("rank", i),
+                    "title": rec.get("title", ""),
+                    "score": round(float(rec.get("score", 0)), 4),
+                    "source": rec.get("source", "hybrid"),
+                })
+            output.seek(0)
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+        else:
+            export_data = {
+                "exported_at": datetime.now().isoformat(),
+                "count": len(recommendations),
+                "recommendations": recommendations
+            }
+            json_bytes = json.dumps(export_data, indent=2).encode("utf-8")
+            return StreamingResponse(
+                iter([json_bytes]),
+                media_type="application/json",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
