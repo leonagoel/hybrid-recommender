@@ -1229,6 +1229,7 @@ def build_models(
     rate_limited = _apply_rate_limit(
         request, response, "build",
         "BUILD_RATE_LIMIT", 1,
+    )
     global STAGING_MODEL_VERSION
     sb = get_supabase_admin()
     if sb is None:
