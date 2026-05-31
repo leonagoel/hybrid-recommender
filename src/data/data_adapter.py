@@ -4,6 +4,7 @@ Detects columns automatically and normalizes to a standard schema
 used by all recommender models.
 """
 
+from typing import Optional
 
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
@@ -160,6 +161,7 @@ def preprocess_sentiment_data(df) -> pd.DataFrame:
 
 
 def detect_column(columns, keywords) -> str | None:
+def detect_column(columns, keywords) -> Optional[str]:
     """Detect a column by matching against a list of keywords (case-insensitive)."""
     if not keywords:
         return None

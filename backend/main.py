@@ -14,6 +14,10 @@ import secrets
 import sys
 import time
 from collections import Counter, OrderedDict, deque
+import secrets
+from collections import deque, Counter, OrderedDict
+import re
+import json
 
 try:
     import bleach
@@ -216,6 +220,12 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
+    try:
+        cached = _redis_client.get(key)
+
+        if cached is not None:
+            return json.loads(cached)
+
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -241,6 +251,17 @@ def _set_cached_response(key: str, value: Any) -> None:
             pass
 
     _response_cache.set(key, value)
+        if expires_at <= time.time():
+            _response_cache.pop(key, None)
+            _cache_misses += 1
+            return None
+        _cache_hits += 1
+        return value
+
+
+def _set_cached_response(key: str, value: Any) -> None:
+    with _cache_lock:
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
@@ -1279,6 +1300,28 @@ def build_models(
     rate_limited = _apply_rate_limit(
         request, response, "build",
         "BUILD_RATE_LIMIT", 1,
+    global STAGING_MODEL_VERSION
+    sb = get_supabase_admin()
+    if sb is None:
+        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
+    all_products = []
+    page_size = 1000
+    offset = 0
+    while True:
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+        batch = result.data or []
+        all_products.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    if not all_products:
+        raise HTTPException(400, "No products in database. Upload data first.")
+    import pandas as pd
+    item_df = pd.DataFrame(all_products)
+    item_df['combined'] = (
+        item_df['title'].astype(str) + ' ' +
+        item_df['description'].fillna('').astype(str) + ' ' +
+        item_df['category'].fillna('').astype(str)
     )
     if rate_limited is not None:
         return rate_limited
@@ -2066,8 +2109,10 @@ def get_user_purchases(
 
 @app.post("/api/purchases")
 def create_purchase(
+    request: Request,
     data: PurchaseCreate,
     _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
 ):
     sb = get_supabase()
     result = sb.table('purchases').insert({
@@ -2343,6 +2388,7 @@ def export_dataset(
     request: Request,
     _admin: None = Depends(_admin_access_dep),
     columns: str | None = Query(None),
+    columns: Optional[str] = Query(None),
 ):
     if not models["ready"] or models["item_df"] is None:
         raise HTTPException(400, "Models not built. Build first via /api/build.")

@@ -1,6 +1,9 @@
 import hashlib
 import hmac
 import os
+import hashlib
+import hmac
+from typing import Optional
 
 from fastapi import Header, HTTPException
 
@@ -8,6 +11,10 @@ TOKEN_COMPARE_CONTEXT = b"hybrid-recommender-admin-token-v1"
 
 
 def _token_digest(token: str | None) -> bytes:
+TOKEN_COMPARE_CONTEXT = b"hybrid-recommender-admin-token-v1"
+
+
+def _token_digest(token: Optional[str]) -> bytes:
     """Return a fixed-length digest so equality checks never compare raw secrets."""
     normalized = "" if token is None else str(token)
     return hmac.new(
@@ -20,6 +27,8 @@ def _token_digest(token: str | None) -> bytes:
 def constant_time_token_equal(
     provided_token: str | None,
     expected_token: str | None,
+    provided_token: Optional[str],
+    expected_token: Optional[str],
 ) -> bool:
     if not provided_token or not expected_token:
         return False
