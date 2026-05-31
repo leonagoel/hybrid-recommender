@@ -112,6 +112,18 @@ ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 
+try:
+    from redis import Redis, RedisError
+    _redis_client = Redis.from_url(
+        os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+        socket_connect_timeout=1,
+        socket_timeout=1,
+    )
+    _redis_client.ping()
+except Exception:
+    _redis_client = None
+    RedisError = Exception
+
 
 class _BoundedTTLCache:
     """Thread-safe LRU cache with per-entry TTL and a hard entry cap.
@@ -206,12 +218,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            return json.loads(cached)
-
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -220,37 +226,23 @@ def _get_cached_response(key: str):
         except (RedisError, json.JSONDecodeError):
             pass
 
-    with _cache_lock:
-        cached = _response_cache.get(key)
+    value = _response_cache.get(key)
+    if value is None:
+        _cache_misses += 1
+        return None
 
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-
-        _cache_hits += 1
-        return value
+    _cache_hits += 1
+    return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        if _redis_client:
-            _redis_client.setex(
-                key,
-                CACHE_TTL_SECONDS,
-                json.dumps(value),
-            )
-    except (RedisError, TypeError):
-        pass
+    if _redis_client is not None:
+        try:
+            _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
+        except (RedisError, TypeError):
+            pass
 
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    _response_cache.set(key, value)
 
 def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
@@ -1287,28 +1279,6 @@ def build_models(
     rate_limited = _apply_rate_limit(
         request, response, "build",
         "BUILD_RATE_LIMIT", 1,
-    global STAGING_MODEL_VERSION
-    sb = get_supabase_admin()
-    if sb is None:
-        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
-    all_products = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
-        batch = result.data or []
-        all_products.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-    if not all_products:
-        raise HTTPException(400, "No products in database. Upload data first.")
-    import pandas as pd
-    item_df = pd.DataFrame(all_products)
-    item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
     )
     if rate_limited is not None:
         return rate_limited
