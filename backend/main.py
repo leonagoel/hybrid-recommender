@@ -12,7 +12,6 @@ import time
 import logging
 import math
 import secrets
-import bleach
 from collections import deque, Counter, OrderedDict
 import re
 import json
@@ -106,9 +105,9 @@ from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
 from hybrid_model import HybridRecommender
 
-# ── App ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
+# ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
@@ -133,7 +132,6 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
-_response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 _redis_client: Redis | None = None
@@ -240,9 +238,9 @@ def _get_cached_response(key: str):
 
 def _set_cached_response(key: str, value: Any) -> None:
     _response_cache.set(key, value)
-    if _redis_client is not None:
-        try:
-            cached = _redis_client.get(key)
+    
+    try:
+        cached = _redis_client.get(key)
 
             if cached is not None:
                 return json.loads(cached)
@@ -264,36 +262,22 @@ def _set_cached_response(key: str, value: Any) -> None:
 
         expires_at, value = cached
 
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-        _cache_hits += 1
-        return value
+    cached = _response_cache.get(key)
+    if cached is None:
+        _cache_misses += 1
+        return None
+    _cache_hits += 1
+    return cached
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        if _redis_client:
-            _redis_client.setex(
-                key,
-                CACHE_TTL_SECONDS,
-                json.dumps(value),
-            )
-    except (RedisError, TypeError):
-        pass
-
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    _response_cache.set(key, value)
 
 def _clear_response_cache() -> None:
+    global _cache_hits, _cache_misses
     _response_cache.clear()
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
+    _cache_hits = 0
+    _cache_misses = 0
 
 
 @app.get("/api/cache_metrics")
@@ -532,6 +516,12 @@ def _require_admin_access(request: Request) -> None:
 
 def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
+
+
+def csrf_header_dep(x_csrf_token: str = Header(..., alias="X-CSRF-Token")) -> None:
+    """Document the required CSRF echo header for mutating endpoints."""
+    if not x_csrf_token:
+        raise HTTPException(status_code=403, detail="CSRF token missing.")
 
 
 def _get_feedback_storage_client():

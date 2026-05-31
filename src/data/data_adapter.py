@@ -4,12 +4,14 @@ Detects columns automatically and normalizes to a standard schema
 used by all recommender models.
 """
 
+from typing import Optional
+
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
-def remove_duplicate_headers(df):
+def remove_duplicate_headers(df) -> pd.DataFrame:
     """
     Normalizes dataframe column headers by lowercasing and stripping whitespace.
     If duplicate semantic mappings are found, retains the column with fewer null values.
@@ -43,7 +45,7 @@ def remove_duplicate_headers(df):
     return df
 
 
-def preprocess_books_data(df):
+def preprocess_books_data(df) -> pd.DataFrame:
     """
     Preprocess books dataset.
     """
@@ -81,7 +83,7 @@ def preprocess_books_data(df):
     return df
 
 
-def preprocess_ratings_data(df):
+def preprocess_ratings_data(df) -> pd.DataFrame:
     """
     Preprocess ratings dataset.
     """
@@ -113,7 +115,7 @@ def preprocess_ratings_data(df):
     return df
 
 
-def preprocess_sentiment_data(df):
+def preprocess_sentiment_data(df) -> pd.DataFrame:
     """
     Preprocess customer sentiment dataset.
     """
@@ -159,7 +161,7 @@ def preprocess_sentiment_data(df):
     return df
 
 
-def detect_column(columns, keywords):
+def detect_column(columns, keywords) -> Optional[str]:
     """Detect a column by matching against a list of keywords (case-insensitive)."""
     if not keywords:
         return None
@@ -182,7 +184,7 @@ def detect_column(columns, keywords):
     return None
 
 
-def validate_dataframe(df):
+def validate_dataframe(df) -> bool:
     """
     Validate DataFrame.
     """
@@ -202,12 +204,12 @@ def validate_dataframe(df):
     return True
 
 
-def _has_blank_values(series):
+def _has_blank_values(series) -> bool:
     """Return True when a column contains nulls or blank string values."""
     return series.isna().any() or series.astype(str).str.strip().eq('').any()
 
 
-def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=None, rating_col=None):
+def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=None, rating_col=None) -> bool:
     """
     Validate columns that feed the recommender pipeline before normalization.
     """
@@ -246,7 +248,7 @@ def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=N
     return True
 
 
-def read_file(path_or_buffer, file_format=None):
+def read_file(path_or_buffer, file_format=None) -> pd.DataFrame:
     """
     Read CSV or JSON into DataFrame.
     """
@@ -312,7 +314,7 @@ def read_file(path_or_buffer, file_format=None):
     return df
 
 
-def adapt_data(df):
+def adapt_data(df) -> tuple[pd.DataFrame, dict]:
     """
     Adapt any DataFrame into unified schema (case‑insensitive column matching).
     """
