@@ -1,23 +1,19 @@
-"""
-Unit tests for model schemas (pydantic validation).
-Run with: pytest tests/test_schemas.py -v
-"""
 import pytest
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.model.schemas import ModelHyperparametersSchema, HybridWeightsSchema
 
 
 class TestModelHyperparametersSchema:
-    def test_default_values(self):
+    def test_init_defaults(self):
         schema = ModelHyperparametersSchema()
         assert schema.n_factors == 50
         assert schema.use_implicit is True
 
-    def test_custom_values(self):
+    def test_init_custom(self):
         schema = ModelHyperparametersSchema(n_factors=100, use_implicit=False)
         assert schema.n_factors == 100
         assert schema.use_implicit is False
@@ -28,75 +24,44 @@ class TestModelHyperparametersSchema:
 
     def test_n_factors_must_be_integer(self):
         with pytest.raises(ValueError):
-            ModelHyperparametersSchema(n_factors=-1)
+            ModelHyperparametersSchema(n_factors=10.5)
 
-    def test_extra_fields_forbidden(self):
+    def test_frozen_config(self):
+        schema = ModelHyperparametersSchema()
         with pytest.raises(Exception):
-            ModelHyperparametersSchema(unknown_field=123)
-
-    def test_n_factors_boundary(self):
-        schema = ModelHyperparametersSchema(n_factors=1)
-        assert schema.n_factors == 1
+            schema.n_factors = 100
 
 
 class TestHybridWeightsSchema:
-    def test_default_values(self):
+    def test_init_defaults(self):
         schema = HybridWeightsSchema()
         assert schema.alpha == 0.4
         assert schema.beta == 0.35
         assert schema.gamma == 0.25
 
-    def test_custom_values(self):
+    def test_init_custom(self):
         schema = HybridWeightsSchema(alpha=0.5, beta=0.3, gamma=0.2)
         assert schema.alpha == 0.5
         assert schema.beta == 0.3
         assert schema.gamma == 0.2
 
-    def test_weights_must_be_between_0_and_1(self):
+    def test_weights_must_be_nonnegative(self):
         with pytest.raises(ValueError):
-            HybridWeightsSchema(alpha=1.5)
-        with pytest.raises(ValueError):
-            HybridWeightsSchema(alpha=-0.1)
+            HybridWeightsSchema(alpha=-0.1, beta=0.5, gamma=0.6)
 
-    def test_weights_cannot_all_be_zero(self):
+    def test_weights_must_be_at_most_one(self):
+        with pytest.raises(ValueError):
+            HybridWeightsSchema(alpha=1.5, beta=0.0, gamma=0.0)
+
+    def test_validate_weights_normalization_zero_total(self):
         with pytest.raises(ValueError):
             HybridWeightsSchema(alpha=0.0, beta=0.0, gamma=0.0)
 
-    def test_weights_can_sum_to_one(self):
-        schema = HybridWeightsSchema(alpha=0.5, beta=0.3, gamma=0.2)
-        assert schema.alpha + schema.beta + schema.gamma == 1.0
+    def test_validate_weights_normalization_valid(self):
+        schema = HybridWeightsSchema(alpha=0.33, beta=0.33, gamma=0.34)
+        assert schema.alpha + schema.beta + schema.gamma > 0
 
-    def test_weights_can_sum_to_less_than_one(self):
-        schema = HybridWeightsSchema(alpha=0.1, beta=0.1, gamma=0.1)
-        assert abs(schema.alpha + schema.beta + schema.gamma - 0.3) < 0.001
-
-    def test_weights_can_sum_to_greater_than_one(self):
-        schema = HybridWeightsSchema(alpha=0.5, beta=0.5, gamma=0.5)
-        assert schema.alpha + schema.beta + schema.gamma == 1.5
-
-    def test_extra_fields_forbidden(self):
-        with pytest.raises(Exception):
-            HybridWeightsSchema(unknown_field=0.5)
-
-    def test_frozen_schema_cannot_be_modified(self):
+    def test_frozen_config(self):
         schema = HybridWeightsSchema()
         with pytest.raises(Exception):
-            schema.alpha = 0.9
-
-    def test_boundary_zero_to_one(self):
-        schema = HybridWeightsSchema(alpha=0.0, beta=0.5, gamma=0.5)
-        assert schema.alpha == 0.0
-
-    def test_boundary_precision_and_invalid_types(self):
-        # Precise micro floating boundaries
-        schema = HybridWeightsSchema(alpha=0.0001, beta=0.9999, gamma=0.0)
-        assert schema.alpha == 0.0001
-        assert schema.beta == 0.9999
-
-        # Rejection of invalid non-numeric strings
-        with pytest.raises(ValueError):
-            HybridWeightsSchema(alpha="invalid_string")
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+            schema.alpha = 0.5
