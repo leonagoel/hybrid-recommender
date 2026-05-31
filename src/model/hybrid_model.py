@@ -34,7 +34,8 @@ class HybridRecommender:
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None):
+                 causal_config=None,
+model_kwargs=None):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -100,6 +101,10 @@ class HybridRecommender:
                 else None
             )
             self._causal_config = None
+                    # Fairness configuration defaults
+        self.fairness_enabled = False
+        self.fairness_key = "category"
+        self.fairness_max_share = 1.0
 
         # Build sentiment + rating lookups
         self._sentiment_map = {}
@@ -109,6 +114,8 @@ class HybridRecommender:
         self._popularity_map = {}
         self._catalog_map = {}
 
+    
+       
         if item_df is not None:
             global_avg = item_df['rating'].mean() if 'rating' in item_df.columns else 3.0
 
