@@ -277,6 +277,45 @@ class TestFallbackExplanationEdgeCases:
         assert explainer is not None
         assert explainer.model_name == "gemini-pro"
 
+    def test_explain_recommendation_missing_text_attribute(self):
+        """Test fallback behavior when response lacks a .text attribute."""
+        class FakeResponseNoText:
+            pass
+
+        class FakeClient:
+            def generate_content(self, prompt):
+                return FakeResponseNoText()
+
+        explainer = LLMExplainer()
+        explainer.client = FakeClient()
+        explanation = explainer.explain_recommendation(
+            recommended_item="Product A",
+            query_item="Product B",
+            scores={"hybrid": 0.88, "content": 0.92},
+            description="Premium electronics",
+            category="Electronics",
+        )
+        assert isinstance(explanation, str)
+        assert len(explanation) > 0
+
+    def test_explain_recommendation_client_raises_exception(self):
+        """Test that client exceptions are caught safely and fallback is used."""
+        class FakeClientError:
+            def generate_content(self, prompt):
+                raise Exception("API Connection failure")
+
+        explainer = LLMExplainer()
+        explainer.client = FakeClientError()
+        explanation = explainer.explain_recommendation(
+            recommended_item="Product A",
+            query_item="Product B",
+            scores={"hybrid": 0.88, "content": 0.92},
+            description="Premium electronics",
+            category="Electronics",
+        )
+        assert isinstance(explanation, str)
+        assert len(explanation) > 0
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
