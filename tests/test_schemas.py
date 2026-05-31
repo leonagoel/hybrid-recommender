@@ -87,6 +87,16 @@ class TestHybridWeightsSchema:
         schema = HybridWeightsSchema(alpha=0.0, beta=0.5, gamma=0.5)
         assert schema.alpha == 0.0
 
+    def test_boundary_precision_and_invalid_types(self):
+        # Precise micro floating boundaries
+        schema = HybridWeightsSchema(alpha=0.0001, beta=0.9999, gamma=0.0)
+        assert schema.alpha == 0.0001
+        assert schema.beta == 0.9999
+
+        # Rejection of invalid non-numeric strings
+        with pytest.raises(ValueError):
+            HybridWeightsSchema(alpha="invalid_string")
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
