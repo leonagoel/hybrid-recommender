@@ -35,7 +35,7 @@ class HybridRecommender:
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
                  causal_config=None, model_kwargs=None,
-                 kg_model=None, delta=0.1):
+                 kg_model=None, delta=0.1, online_updater=None):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -154,6 +154,44 @@ class HybridRecommender:
                         self._popularity_map[row['title']] = (
                             row['review_count'] / max_reviews
                         )
+
+        # Online updater integration (lightweight). If provided, wire back-reference
+        # so the updater can mutate hybrid internals directly when ingesting.
+        self.online_updater = online_updater
+        if self.online_updater is not None:
+            try:
+                self.online_updater.hybrid = self
+            except Exception:
+                pass
+
+    def set_online_updater(self, updater):
+        """Attach an OnlineUpdater instance to this recommender.
+
+        The updater will be given a back-reference to this HybridRecommender so
+        it can update internal maps (`_rating_map`, `_popularity_map`, etc.)
+        when handling new interactions.
+        """
+        self.online_updater = updater
+        try:
+            updater.hybrid = self
+        except Exception:
+            pass
+
+    def apply_interaction(self, user_id, item_title, rating=None, review_text=None, timestamp=None):
+        """Apply a single interaction through the configured `OnlineUpdater`.
+
+        Returns the updater's result dict. Raises `RuntimeError` when no updater
+        is attached.
+        """
+        if getattr(self, 'online_updater', None) is None:
+            raise RuntimeError('No online_updater attached to HybridRecommender')
+        return self.online_updater.ingest_interaction(
+            user_id=user_id,
+            item_title=item_title,
+            rating=rating,
+            review_text=review_text,
+            timestamp=timestamp,
+        )
 
     def set_weights(self, alpha, beta, gamma):
         """Update the scoring weights. Normalized to sum to 1."""
