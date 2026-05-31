@@ -1,7 +1,7 @@
-import os
 import json
-from typing import Optional, Any
 import logging
+import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ except Exception as e:
 
 class RedisCache:
     @staticmethod
-    def get(key: str) -> Optional[Any]:
+    def get(key: str) -> Any | None:
         if not redis_client:
             return None
         try:

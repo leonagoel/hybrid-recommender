@@ -1,13 +1,11 @@
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-from typing import Union
 from pathlib import Path
-import os
+
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 BASE_DIR = Path(__file__).resolve().parent
 
-def preprocess_books_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "datasets" / "booksdata.csv"):
+def preprocess_books_data(data: str | Path | pd.DataFrame = BASE_DIR / "datasets" / "booksdata.csv"):
     """
     Preprocess the books dataset.
     - Removes duplicate entries
@@ -38,7 +36,7 @@ def preprocess_books_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "dat
     print(f"Final shape: {df.shape}")
     return df
 
-def preprocess_ratings_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "datasets" / "ratings.csv"):
+def preprocess_ratings_data(data: str | Path | pd.DataFrame = BASE_DIR / "datasets" / "ratings.csv"):
     """
     Preprocess the ratings dataset.
     - Removes duplicate user-book pairs
@@ -68,7 +66,7 @@ def preprocess_ratings_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "d
     print(f"Final shape: {df.shape}")
     return df
 
-def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "datasets" / "Customer_Sentiment.csv"):
+def preprocess_sentiment_data(data: str | Path | pd.DataFrame = BASE_DIR / "datasets" / "Customer_Sentiment.csv"):
     """
     Preprocess the customer sentiment dataset.
     - Removes duplicates
@@ -93,8 +91,8 @@ def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / 
 
     df = df.dropna()
 
-    categorical_cols = ['gender', 'age_group', 'region', 
-                       'product_category', 'purchase_channel', 
+    categorical_cols = ['gender', 'age_group', 'region',
+                       'product_category', 'purchase_channel',
                        'platform', 'sentiment']
     le = LabelEncoder()
     for col in categorical_cols:
@@ -111,13 +109,13 @@ def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / 
 if __name__ == "__main__":
     print("=== Preprocessing Books Data ===")
     books_df = preprocess_books_data()
-    
+
     print("\n=== Preprocessing Ratings Data ===")
     ratings_df = preprocess_ratings_data()
-    
+
     print("\n=== Preprocessing Sentiment Data ===")
     sentiment_df = preprocess_sentiment_data()
-    
+
     print("\n✅ All datasets preprocessed successfully!")
     print(f"Books: {books_df.shape}")
     print(f"Ratings: {ratings_df.shape}")

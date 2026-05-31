@@ -1,4 +1,3 @@
-import pytest
 
 def test_simple_triage():
     # A simple unit test for python model utilities

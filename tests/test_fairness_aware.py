@@ -2,9 +2,10 @@
 Unit tests specifically for Fairness-Aware Re-ranking in HybridRecommender.
 Run with: pytest tests/ -v
 """
-import pytest
-import pandas as pd
 from unittest.mock import MagicMock
+
+import pytest
+
 from src.model.hybrid_model import HybridRecommender
 
 

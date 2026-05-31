@@ -11,23 +11,22 @@ Covers:
 
 Run with: pytest tests/test_causal_integration.py -v
 """
-import sys
 import os
+import sys
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from src.model.propensity_model import PropensityModel
-from src.model.causal_model import CausalDebiaser
-from src.model.causal_config import CausalConfig
-from src.model.hybrid_model import HybridRecommender
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
 from src.evaluation.causal_evaluation import compare_causal_vs_baseline, score_key_distribution
-
+from src.model.causal_config import CausalConfig
+from src.model.causal_model import CausalDebiaser
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.model.propensity_model import PropensityModel
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

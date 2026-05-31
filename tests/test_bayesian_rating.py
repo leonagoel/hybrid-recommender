@@ -2,9 +2,10 @@
 Unit tests for the bayesian_rating function in hybrid_model module.
 Tests rating bias prevention using Bayesian smoothing.
 """
-import pytest
-import sys
 import os
+import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 

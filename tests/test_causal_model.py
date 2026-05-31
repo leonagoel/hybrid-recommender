@@ -2,20 +2,19 @@
 Unit tests for CausalDebiaser (IPS causal inference layer).
 Run with: pytest tests/ -v
 """
-import pytest
-import pandas as pd
-import numpy as np
-import sys
 import os
+import sys
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from src.model.causal_model import CausalDebiaser
 from src.model.causal_config import CausalConfig
-from src.model.hybrid_model import HybridRecommender
-from src.model.content_model import ContentRecommender
+from src.model.causal_model import CausalDebiaser
 from src.model.collaborative_model import CollaborativeRecommender
-
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 

@@ -4,10 +4,8 @@ Detects columns automatically and normalizes to a standard schema
 used by all recommender models.
 """
 
-from typing import Optional
 
 import pandas as pd
-import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
@@ -22,13 +20,13 @@ def remove_duplicate_headers(df) -> pd.DataFrame:
     for col in df.columns:
         # Convert to lowercase and strip spaces to detect duplicates like 'Product_ID' and 'product_id'
         norm_name = str(col).strip().lower()
-        
+
         if norm_name in normalized_cols:
             existing_col = normalized_cols[norm_name]
             # Compare missing/null value counts between the duplicates
             existing_nulls = df[existing_col].isnull().sum()
             current_nulls = df[col].isnull().sum()
-            
+
             # Keep the one with fewer null values, drop the other from the array
             if current_nulls < existing_nulls:
                 cols_to_drop.append(existing_col)
@@ -41,7 +39,7 @@ def remove_duplicate_headers(df) -> pd.DataFrame:
     # Drop duplicate column fields gracefully before parsing mapping states
     if cols_to_drop:
         df = df.drop(columns=cols_to_drop)
-        
+
     return df
 
 
@@ -161,7 +159,7 @@ def preprocess_sentiment_data(df) -> pd.DataFrame:
     return df
 
 
-def detect_column(columns, keywords) -> Optional[str]:
+def detect_column(columns, keywords) -> str | None:
     """Detect a column by matching against a list of keywords (case-insensitive)."""
     if not keywords:
         return None
@@ -171,7 +169,7 @@ def detect_column(columns, keywords) -> Optional[str]:
         for col in columns:
             if col.lower() == key:
                 return col
-                
+
     # Second pass: substring matches
     for key in keywords:
         for col in columns:
@@ -179,8 +177,11 @@ def detect_column(columns, keywords) -> Optional[str]:
                 # Avoid false positive where customer_rating is matched as user column
                 if key == 'customer' and ('rating' in col.lower() or 'score' in col.lower()):
                     continue
+                # Avoid false positive where customer_rating is matched as rating column
+                if key == 'rating' and col.lower().startswith('customer'):
+                    continue
                 return col
-                
+
     return None
 
 

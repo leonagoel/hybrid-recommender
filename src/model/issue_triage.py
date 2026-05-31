@@ -4,11 +4,11 @@ Classifies incoming issues by Type, Domain, Level, and Priority,
 recommends assignees based on domain expertise, and handles GitHub API actions.
 """
 
-import os
-import re
 import logging
+import re
+from typing import Any
+
 import httpx
-from typing import Dict, List, Tuple, Any
 import numpy as np
 
 # Ensure sklearn is installed
@@ -46,7 +46,7 @@ SEED_DATA = [
     {"text": "Bayesian ranking rating returns NaN when product vote count is zero", "type": "bug", "domain": "ml", "level": "beginner", "priority": "medium"},
     {"text": "Collaborative model predictions mismatch during evaluation cycle runs", "type": "bug", "domain": "ml", "level": "advanced", "priority": "medium"},
     {"text": "Sentiment analysis analyzer fails to load nltk VADER lexicon files", "type": "bug", "domain": "ml", "level": "beginner", "priority": "medium"},
-    
+
     # Features
     {"text": "Add federated learning training support to collaborative models", "type": "feature", "domain": "ml", "level": "advanced", "priority": "high"},
     {"text": "Implement cross-domain recommendation matching for multi-catalog data", "type": "feature", "domain": "ml", "level": "advanced", "priority": "high"},
@@ -63,7 +63,7 @@ SEED_DATA = [
     {"text": "Implement API response caching layer using Redis backend server", "type": "feature", "domain": "backend", "level": "advanced", "priority": "medium"},
     {"text": "Add rate limiting headers to prevent abuse on search endpoints", "type": "feature", "domain": "backend", "level": "beginner", "priority": "medium"},
     {"text": "Create purchase tracking POST API route to record user interactions", "type": "feature", "domain": "backend", "level": "beginner", "priority": "low"},
-    
+
     # Security
     {"text": "Migrate password hashing function from MD5 to bcrypt with cost factor 12", "type": "security", "domain": "backend", "level": "advanced", "priority": "critical"},
     {"text": "Prevent SQL injection in search RPC by using parameterized query binds", "type": "security", "domain": "backend", "level": "advanced", "priority": "critical"},
@@ -86,15 +86,15 @@ class IssueClassifier:
         self.vectorizer = None
         self.models = {}
         self.categories = ["type", "domain", "level", "priority"]
-        
+
         if HAS_SKLEARN:
             self._train()
-            
+
     def _train(self):
         texts = [item["text"].lower() for item in SEED_DATA]
         self.vectorizer = TfidfVectorizer(max_features=500, stop_words="english", ngram_range=(1, 2))
         X = self.vectorizer.fit_transform(texts)
-        
+
         for category in self.categories:
             y = [item[category] for item in SEED_DATA]
             clf = LogisticRegression(C=5.0, class_weight="balanced", random_state=42)
@@ -106,13 +106,13 @@ class IssueClassifier:
         text = re.sub(r'[^a-zA-Z0-9\s_]', ' ', text)
         return " ".join(text.lower().split())
 
-    def match_rules(self, text: str) -> Dict[str, Tuple[str, float, str]]:
+    def match_rules(self, text: str) -> dict[str, tuple[str, float, str]]:
         """
         Applies deterministic keyword and regex rules.
         Returns: Dict containing updates to predictions {category: (label, confidence, reason)}
         """
         rules = {}
-        
+
         # Security overrides
         sec_keywords = ["security", "vulnerability", "leak", "secret", "token", "password", "md5", "bcrypt", "csrf", "xss", "auth", "encrypt", "cve"]
         if any(kw in text for kw in sec_keywords):
@@ -141,7 +141,7 @@ class IssueClassifier:
             rules["level"] = ("beginner", 0.9, f"Matched beginner keyword(s): {[kw for kw in beginner_keywords if kw in text]}")
             if "priority" not in rules:
                 rules["priority"] = ("low", 0.9, "Beginner tasks marked as low priority")
-                
+
         advanced_keywords = ["advanced", "performance", "architecture", "federated", "concurrency", "race condition", "multithreading", "optimizing", "memory leak"]
         if any(kw in text for kw in advanced_keywords) and "level" not in rules:
             rules["level"] = ("advanced", 0.9, f"Matched advanced keyword(s): {[kw for kw in advanced_keywords if kw in text]}")
@@ -156,7 +156,7 @@ class IssueClassifier:
 
         return rules
 
-    def predict(self, title: str, body: str) -> Dict[str, Dict[str, Any]]:
+    def predict(self, title: str, body: str) -> dict[str, dict[str, Any]]:
         """
         Classifies the issue using NLP (if available) and Regex rules.
         Returns:
@@ -164,7 +164,7 @@ class IssueClassifier:
         """
         text = self.clean_text(title, body)
         predictions = {}
-        
+
         # NLP classifier prediction
         if HAS_SKLEARN and self.vectorizer is not None:
             X = self.vectorizer.transform([text])
@@ -205,12 +205,12 @@ class IssueClassifier:
         return predictions
 
 
-def get_suggested_assignees(domain: str) -> List[str]:
+def get_suggested_assignees(domain: str) -> list[str]:
     """Returns developer handles based on domain expertise mapping."""
     return DOMAIN_EXPERTISE_MAP.get(domain.lower(), [])
 
 
-def format_triage_comment(predictions: Dict[str, Dict[str, Any]], assignees: List[str]) -> str:
+def format_triage_comment(predictions: dict[str, dict[str, Any]], assignees: list[str]) -> str:
     """Formats a user-friendly GSSoC triage comment with reasoning."""
     def clean_label(cat: str, val: str) -> str:
         if cat == "type":
@@ -230,7 +230,7 @@ def format_triage_comment(predictions: Dict[str, Dict[str, Any]], assignees: Lis
         rows.append(f"| **{cat.capitalize()}** | `{label}` | {pred['reason']} (conf: {pred['confidence']:.2f}) |")
 
     assignee_str = ", ".join([f"@{a}" for a in assignees]) if assignees else "None suggested"
-    
+
     comment = f"""### 📌 GSSoC 2026 - Issue Auto-Triaged
 
 | Category | Detected Label | Reasoning |
@@ -249,10 +249,10 @@ def format_triage_comment(predictions: Dict[str, Dict[str, Any]], assignees: Lis
 async def apply_github_actions(
     repo_full_name: str,
     issue_number: int,
-    predictions: Dict[str, Dict[str, Any]],
-    assignees: List[str],
+    predictions: dict[str, dict[str, Any]],
+    assignees: list[str],
     token: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Interacts with GitHub API to:
     1. Apply labels corresponding to classification.
@@ -263,7 +263,7 @@ async def apply_github_actions(
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json"
     }
-    
+
     # Map raw predictions to GitHub label format
     labels = []
     # 1. Type
@@ -275,14 +275,14 @@ async def apply_github_actions(
     # 3. Level
     l_label = predictions["level"]["label"]
     labels.append(f"level:{l_label}")
-    
+
     # We also add 'gssoc:approved' by default since this is GSSoC auto-triage
     labels.append("gssoc:approved")
 
     api_url = f"https://api.github.com/repos/{repo_full_name}/issues/{issue_number}"
-    
+
     results = {}
-    
+
     # Add labels
     async with httpx.AsyncClient() as client:
         try:
@@ -295,7 +295,7 @@ async def apply_github_actions(
         except Exception as e:
             logger.error("GitHub API labels application failed: %s", e)
             results["labels"] = f"error: {str(e)}"
-            
+
         # Post comment
         comment_body = format_triage_comment(predictions, assignees)
         try:
@@ -318,20 +318,20 @@ async def triage_issue(
     body: str,
     repo_full_name: str,
     token: str = ""
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Main function called by webhook to process issue and apply actions."""
     classifier = IssueClassifier()
     predictions = classifier.predict(title, body)
-    
+
     domain = predictions["domain"]["label"]
     assignees = get_suggested_assignees(domain)
-    
+
     triage_info = {
         "issue_number": issue_number,
         "predictions": predictions,
         "suggested_assignees": assignees,
     }
-    
+
     if token:
         github_results = await apply_github_actions(
             repo_full_name=repo_full_name,
@@ -344,5 +344,5 @@ async def triage_issue(
     else:
         logger.info("Skipping GitHub API actions (GITHUB_TOKEN not configured).")
         triage_info["github_api"] = {"status": "skipped"}
-        
+
     return triage_info

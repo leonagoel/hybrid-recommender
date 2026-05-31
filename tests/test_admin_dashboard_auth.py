@@ -18,7 +18,11 @@ def test_extract_bearer_token_accepts_bearer_only():
 def test_admin_access_allows_when_token_not_configured(monkeypatch):
     monkeypatch.delenv("ADMIN_API_TOKEN", raising=False)
 
-    _require_admin_access(FakeRequest())
+    with pytest.raises(HTTPException) as exc:
+        _require_admin_access(FakeRequest())
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "Admin token not configured."
 
 
 @pytest.mark.parametrize(

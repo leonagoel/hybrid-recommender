@@ -13,8 +13,8 @@ Covers:
 """
 
 import os
+
 import pytest
-from fastapi import Response
 from fastapi.testclient import TestClient
 
 # Tell _is_secure_context() to return False so the Secure cookie flag is
@@ -23,15 +23,14 @@ from fastapi.testclient import TestClient
 # var makes the behaviour explicit and matches real local-dev usage.
 os.environ.setdefault("TESTING", "true")
 
-from backend.main import app                          # noqa: E402  (after env setup)
-from backend.csrf import (                            # noqa: E402
+from backend.csrf import (  # noqa: E402
     CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME,
     CSRF_TOKEN_BYTES,
     generate_csrf_token,
     set_csrf_cookie,
 )
-
+from backend.main import app  # noqa: E402  (after env setup)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

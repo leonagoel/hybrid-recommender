@@ -2,18 +2,17 @@
 Unit tests for Hybrid Recommender System
 Run with: pytest tests/ -v
 """
-import pytest
-import pandas as pd
-import numpy as np
-import sys
 import os
+import sys
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from src.model.hybrid_model import HybridRecommender, bayesian_rating
-from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
-
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender, bayesian_rating
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -160,7 +159,7 @@ class TestCollaborativeRecommender:
     def test_predict_for_unknown_user_returns_empty(self, collab_model):
         recs = collab_model.predict_for_user('unknown_user_xyz', top_n=3)
         assert isinstance(recs, list) #it will not be empty
-    
+
     def test_cold_start_returns_popular_items(self, collab_model):
    # New user should get popular items instead of empty list.
         recs = collab_model.predict_for_user('brand_new_user', top_n=3)
@@ -182,7 +181,7 @@ class TestCollaborativeRecommender:
     def test_predict_rating_unknown_returns_none(self, collab_model):
         result = collab_model.predict_rating('ghost_user', 'Product A')
         assert result is None
-    
+
 
 # ─── HybridRecommender ───────────────────────────────────────────────────────
 
@@ -265,7 +264,7 @@ class TestHybridRecommender:
         recs = hybrid_model.recommend_for_user('ghost_user', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
-        
+
     def test_recommend_for_user_no_collab_model(self, content_model, sample_item_df):
         """Missing collab model should gracefully fallback for any user."""
         hm = HybridRecommender(content_model, collab_model=None, item_df=sample_item_df)

@@ -1,14 +1,12 @@
-import pytest
 import pandas as pd
-import numpy as np
+import pytest
 
 from src.data.data_adapter import (
+    _has_blank_values,
     adapt_data,
+    detect_column,
     validate_dataframe,
     validate_recommender_inputs,
-    _has_blank_values,
-    detect_column,
-    read_file,
 )
 
 

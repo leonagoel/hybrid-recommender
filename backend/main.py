@@ -4,34 +4,16 @@ from __future__ import annotations
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
 Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
 """
-import os
-import re
-import sys
 import io
-import time
+import json
 import logging
 import math
-import secrets
-import bleach
-from collections import deque, Counter, OrderedDict
+import os
 import re
-import json
-from redis import Redis
-from redis.exceptions import RedisError
-
-# Initialise Redis client; falls back to None if unavailable so the
-# in-memory cache is used instead.
-try:
-    _redis_client: Redis | None = Redis(
-        host=os.environ.get("REDIS_HOST", "localhost"),
-        port=int(os.environ.get("REDIS_PORT", 6379)),
-        db=int(os.environ.get("REDIS_DB", 0)),
-        decode_responses=True,
-        socket_connect_timeout=2,
-    )
-    _redis_client.ping()
-except Exception:
-    _redis_client = None
+import secrets
+import sys
+import time
+from collections import Counter, OrderedDict, deque
 
 try:
     import bleach
@@ -43,40 +25,40 @@ except ModuleNotFoundError:
                 return str(value)
             return re.sub(r"<[^>]*>", "", str(value))
 
-from collections import deque, Counter
-from threading import Lock
-from datetime import datetime, timezone, timedelta
-
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from threading import Lock
 
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+from typing import Any
+
+from dotenv import load_dotenv
 from fastapi import (
-    FastAPI,
     Depends,
-    Header,
-    UploadFile,
+    FastAPI,
     File,
+    Header,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
-from dotenv import load_dotenv
 
 load_dotenv()
 
 from db import get_supabase, get_supabase_admin
+
 from backend.auth import _require_admin_access
 from backend.csrf import (
     CSRFMiddleware,
@@ -89,15 +71,14 @@ from backend.csrf import (
 def csrf_header_dep():
     """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
     return None
-from data_adapter import adapt_data, read_file
-from nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
+from content_model import ContentRecommender
+from data_adapter import adapt_data, read_file
 from hybrid_model import HybridRecommender
 
-# ── App ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
+# ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 logger = logging.getLogger(__name__)
 
@@ -123,7 +104,6 @@ CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 CACHE_MAX_ENTRIES = int(os.environ.get("CACHE_MAX_ENTRIES", "2000"))
-_response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
@@ -187,6 +167,7 @@ class _BoundedTTLCache:
 
 
 _response_cache = _BoundedTTLCache(CACHE_MAX_ENTRIES, CACHE_TTL_SECONDS)
+_train_lock = Lock()
 
 MOCK_PRODUCTS = [
     {
@@ -235,18 +216,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    
-    try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            return json.loads(cached)
-
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -274,8 +243,8 @@ def _set_cached_response(key: str, value: Any) -> None:
     _response_cache.set(key, value)
 
 def _clear_response_cache() -> None:
-    _response_cache.clear()
     global _cache_hits, _cache_misses
+    _response_cache.clear()
     _cache_hits = 0
     _cache_misses = 0
 
@@ -300,7 +269,7 @@ def _build_tfidf_for_items(item_df):
     return vec, matrix
 
 
-def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tuple[float, float, float] = (0.6, 0.3, 0.1), target_catalog: Optional[str] = None):
+def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tuple[float, float, float] = (0.6, 0.3, 0.1), target_catalog: str | None = None):
     """Cold-start blending of content similarity (TF-IDF) and simple popularity/rating signals.
 
     Returns list of dicts with blended score and components.
@@ -518,6 +487,12 @@ def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
 
 
+def csrf_header_dep(x_csrf_token: str = Header(..., alias="X-CSRF-Token")) -> None:
+    """Document the required CSRF echo header for mutating endpoints."""
+    if not x_csrf_token:
+        raise HTTPException(status_code=403, detail="CSRF token missing.")
+
+
 def _get_feedback_storage_client():
     client = get_supabase_admin()
     if client is None:
@@ -701,7 +676,7 @@ class RealtimeRecommendationRequest(BaseModel):
     item_title: str
     top_n: int = 10
     explain: bool = False
-    target_catalog: Optional[str] = None
+    target_catalog: str | None = None
 
 
 # ── CSRF Token ───────────────────────────────────────────────────────
@@ -899,16 +874,16 @@ def search_items(
                     'match_count': limit,
                     'offset_val': offset,
                 }).execute()
-    
+
                 products = result.data or []
-    
+
             except Exception as e:
                 logger.warning(
                     "Full-text search failed for query '%s': %s",
                     query.strip(),
                     e
                 )
-    
+
                 # Fallback: LIKE search
                 result = sb.table('products') \
                     .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -916,34 +891,34 @@ def search_items(
                     .order('rating', desc=True) \
                     .limit(limit) \
                     .execute()
-    
+
                 products = result.data or []
-    
+
             # 2. Fuzzy fallback
             if len(products) < 3:
                 is_fuzzy_fallback = True
-    
+
                 fuzzy_res = sb.rpc('fuzzy_search_products', {
                     'q': query,
                     'threshold': 0.3
                 }).execute()
-    
+
                 products = fuzzy_res.data or []
-    
+
         else:
             query_builder = sb.table('products').select(
                 'id, title, description, category, rating, avg_sentiment, review_count, metadata'
             )
-    
+
             if sort == "rating":
                 query_builder = query_builder.order('rating', desc=True)
             else:
                 query_builder = query_builder.order('rating', desc=True) \
                 .order('review_count', desc=True)
-    
+
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
-    
+
     except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
 
@@ -965,37 +940,37 @@ def search_items(
 
     # Format response
     results = []
-    
+
     for p in products:
-    
+
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
+
         # Newly added products may still have the default
         # sentiment value before the NLP batch pipeline runs.
         # Recompute dynamically so the UI never shows misleading 0.0.
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
-    
+
                 computed_sentiment = compute_product_sentiment(reviews)
-    
+
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
                     else "N/A"
                 )
-    
+
             except Exception:
                 sentiment_value = "N/A"
-    
+
         else:
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment != 0.0
                 else "N/A"
             )
-    
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
@@ -1006,69 +981,69 @@ def search_items(
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-    
-    
+
+
     def _product_price(product):
         metadata = product.get('metadata') or {}
-    
+
         raw_price = (
             product.get('price')
             if product.get('price') is not None
             else metadata.get('price')
         )
-    
+
         try:
             return float(raw_price or 0)
-    
+
         except (TypeError, ValueError):
             return 0.0
-    
-    
+
+
     if sort == "price-low":
         products = sorted(products, key=_product_price)
-    
+
     elif sort == "price-high":
         products = sorted(products, key=_product_price, reverse=True)
-    
+
     elif sort == "rating":
         products = sorted(
             products,
             key=lambda p: float(p.get('rating') or 0),
             reverse=True
         )
-    
-    
+
+
     results = []
-    
+
     for p in products:
-    
+
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
+
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
-    
+
                 computed_sentiment = compute_product_sentiment(reviews)
-    
+
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
                     else "N/A"
                 )
-    
+
             except Exception:
                 sentiment_value = "N/A"
-    
+
         else:
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment != 0.0
                 else "N/A"
             )
-    
+
         price = _product_price(p)
-    
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
@@ -1080,10 +1055,10 @@ def search_items(
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-    
-    
+
+
     result_count = len(results)
-    
+
     payload = {
         "results": results,
         "count": result_count,
@@ -1092,10 +1067,10 @@ def search_items(
         "sort": sort,
         "is_fallback": not query or is_fuzzy_fallback,
     }
-    
+
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
-    
+
     return payload
 
 
@@ -1150,28 +1125,28 @@ def fuzzy_search_items(
     try:
         sb = get_supabase()
         result = sb.rpc('fuzzy_search_products', {
-            'q': query, 
+            'q': query,
             'threshold': threshold
         }).execute()
-        
+
         products = result.data or []
-        
+
         results = []
         for p in products:
             metadata = p.get('metadata') or {}
             price = float(p.get('price') if p.get('price') is not None else metadata.get('price', 0.0))
             results.append({
-                'id': p.get('id'), 
+                'id': p.get('id'),
                 'title': p.get('title', ''),
                 'description': str(p.get('description', ''))[:200],
-                'category': p.get('category', ''), 
+                'category': p.get('category', ''),
                 'rating': p.get('rating', 0.0),
                 'price': price,
                 'avg_sentiment': p.get('avg_sentiment', 0.0),
-                'review_count': p.get('review_count', 0), 
+                'review_count': p.get('review_count', 0),
                 'rank': p.get('rank', 0.0),
             })
-            
+
         return {
             "results": results,
             "count": len(results),
@@ -1218,12 +1193,10 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
-    _csrf: None = Depends(csrf_header_dep),
     admin=Depends(_require_admin_access),
+    _csrf: None = Depends(csrf_header_dep),
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
-    import math
-
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
@@ -1235,10 +1208,9 @@ async def upload_dataset(
         raw_df = read_file(buf, file_format=ext.replace('.', ''))
         adapted_df, meta = adapt_data(raw_df)
         adapted_df = adapted_df.drop_duplicates(subset='title', keep='first')
-        try:
-            sb = get_supabase_admin()
-        except RuntimeError:
-            sb = get_supabase()
+        sb = get_supabase_admin()
+        if sb is None:
+            raise HTTPException(status_code=500, detail="Admin credentials not configured.")
         batch_size = 500
         total = len(adapted_df)
         imported = 0
@@ -1299,183 +1271,215 @@ async def upload_dataset(
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
 def build_models(
+    request: Request,
+    response: Response,
     _csrf: None = Depends(csrf_header_dep),
     _admin: None = Depends(_admin_access_dep),
 ):
-    global STAGING_MODEL_VERSION
-    try:
-       sb = get_supabase_admin()
-    except RuntimeError:
-        sb = get_supabase()
-    all_products = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
-        batch = result.data or []
-        all_products.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-    if not all_products:
-        raise HTTPException(400, "No products in database. Upload data first.")
-    import pandas as pd
-    item_df = pd.DataFrame(all_products)
-    item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
+    rate_limited = _apply_rate_limit(
+        request, response, "build",
+        "BUILD_RATE_LIMIT", 1,
     )
-    item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
-    start_time = time.time()
-    content_model = ContentRecommender(item_df)
-    collab_model = None
-    try:
-        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
-        purchases = purchases_result.data or []
-        if len(purchases) > 10:
-            product_title_map = {p['id']: p['title'] for p in all_products}
-            interaction_rows = []
-            for p in purchases:
-                title = product_title_map.get(p['product_id'])
-                if title:
-                    interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
-            if len(interaction_rows) > 10:
-                interaction_df = pd.DataFrame(interaction_rows)
-                if interaction_df['user_id'].nunique() > 1:
-                    collab_model = CollaborativeRecommender(interaction_df)
-    except Exception as e:
-        logger.warning("Collaborative model data load failed: %s", e)
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
-    build_time = round(time.time() - start_time, 2)
-    
-    version = generate_model_version()
+    if rate_limited is not None:
+        return rate_limited
 
-    MODEL_REGISTRY[version] = {
-        "content": content_model,
-        "collab": collab_model,
-        "hybrid": hybrid_model,
-        "item_df": item_df,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "training_metadata": {
+    if not _build_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="A model build is already in progress.")
+    global STAGING_MODEL_VERSION
+    sb = get_supabase_admin()
+    if sb is None:
+        _build_lock.release()
+        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
+    try:
+        all_products = []
+        page_size = 1000
+        offset = 0
+        while True:
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+            batch = result.data or []
+            all_products.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        if not all_products:
+            raise HTTPException(400, "No products in database. Upload data first.")
+        import pandas as pd
+        item_df = pd.DataFrame(all_products)
+        item_df['combined'] = (
+            item_df['title'].astype(str) + ' ' +
+            item_df['description'].fillna('').astype(str) + ' ' +
+            item_df['category'].fillna('').astype(str)
+        )
+        item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
+        start_time = time.time()
+        content_model = ContentRecommender(item_df)
+        collab_model = None
+        try:
+            purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+            purchases = purchases_result.data or []
+            if len(purchases) > 10:
+                product_title_map = {p['id']: p['title'] for p in all_products}
+                interaction_rows = []
+                for p in purchases:
+                    title = product_title_map.get(p['product_id'])
+                    if title:
+                        interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
+                if len(interaction_rows) > 10:
+                    interaction_df = pd.DataFrame(interaction_rows)
+                    if interaction_df['user_id'].nunique() > 1:
+                        collab_model = CollaborativeRecommender(interaction_df)
+        except Exception as e:
+            logger.warning("Collaborative model data load failed: %s", e)
+        hybrid_model = HybridRecommender(content_model, collab_model, item_df)
+        build_time = round(time.time() - start_time, 2)
+
+        version = generate_model_version()
+
+        MODEL_REGISTRY[version] = {
+            "content": content_model,
+            "collab": collab_model,
+            "hybrid": hybrid_model,
+            "item_df": item_df,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "training_metadata": {
+                "items": len(item_df),
+                "has_collaborative": collab_model is not None,
+                "build_time_seconds": build_time,
+            },
+            "status": "staging",
+            "metrics": {
+                "ndcg": 0.0,
+                "latency_ms": 0.0,
+                "error_rate": 0.0,
+            },
+        }
+
+        STAGING_MODEL_VERSION = version
+
+        models["content"] = content_model
+        models["collab"] = collab_model
+        models["hybrid"] = hybrid_model
+        models["item_df"] = item_df
+        models["ready"] = True
+        models["build_time"] = build_time
+        models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+        _clear_response_cache()
+        precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
+        return {
+            "message": "Models built successfully!",
+            "model_version": version,
+            "status": "staging",
             "items": len(item_df),
             "has_collaborative": collab_model is not None,
             "build_time_seconds": build_time,
-        },
-        "status": "staging",
-        "metrics": {
-            "ndcg": 0.0,
-            "latency_ms": 0.0,
-            "error_rate": 0.0,
-        },
-    }
-
-    STAGING_MODEL_VERSION = version
-    
-    models["content"] = content_model
-    models["collab"] = collab_model
-    models["hybrid"] = hybrid_model
-    models["item_df"] = item_df
-    models["ready"] = True
-    models["build_time"] = build_time
-    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
-    _clear_response_cache()
-    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
-    return {
-        "message": "Models built successfully!",
-        "model_version": version,
-        "status": "staging",
-        "items": len(item_df),
-        "has_collaborative": collab_model is not None,
-        "build_time_seconds": build_time,
-	"precomputed_recommendations": precomputed_count,
-    }
+            "precomputed_recommendations": precomputed_count,
+        }
+    finally:
+        _build_lock.release()
 
 @app.post("/api/train/federated")
 def train_federated(
+    request: Request,
+    response: Response,
     req: FederatedTrainRequest,
     _admin: None = Depends(_admin_access_dep),
 ):
-    sb = get_supabase()
-    all_products = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
-        batch = result.data or []
-        all_products.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-    if not all_products:
-        raise HTTPException(400, "No products in database. Upload data first.")
-
-    import pandas as pd
-    item_df = pd.DataFrame(all_products)
-    item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
+    rate_limited = _apply_rate_limit(
+        request, response, "federated",
+        "FEDERATED_RATE_LIMIT", 1,
     )
-    item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
+    if rate_limited is not None:
+        return rate_limited
 
-    start_time = time.time()
-    content_model = ContentRecommender(item_df)
+    if not _train_lock.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="A federated training job is already in progress.")
 
+    sb = get_supabase_admin()
+    if sb is None:
+        _train_lock.release()
+        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
     try:
-        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
-        purchases = purchases_result.data or []
-    except Exception as e:
-        logger.error("Federated training: purchases load failed: %s", e)
-        raise HTTPException(500, f"Failed to retrieve purchases from database: {str(e)}")
+        all_products = []
+        page_size = 1000
+        offset = 0
+        while True:
+            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+            batch = result.data or []
+            all_products.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        if not all_products:
+            raise HTTPException(400, "No products in database. Upload data first.")
 
-    if len(purchases) <= 10:
-        raise HTTPException(400, "Not enough interaction data for federated training. Need at least 11 interactions.")
-
-    product_title_map = {p['id']: p['title'] for p in all_products}
-    interaction_rows = []
-    for p in purchases:
-        title = product_title_map.get(p['product_id'])
-        if title:
-            interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
-
-    if len(interaction_rows) <= 10:
-        raise HTTPException(400, "Not enough valid interaction rows matching product catalog.")
-
-    interaction_df = pd.DataFrame(interaction_rows)
-    if interaction_df['user_id'].nunique() <= 1:
-        raise HTTPException(400, "Federated training requires at least 2 unique users.")
-
-    try:
-        collab_model = train_federated_collaborative_model(
-            interaction_df,
-            n_factors=req.n_factors,
-            epochs=req.epochs,
-            lr=req.lr,
-            reg=req.reg
+        import pandas as pd
+        item_df = pd.DataFrame(all_products)
+        item_df['combined'] = (
+            item_df['title'].astype(str) + ' ' +
+            item_df['description'].fillna('').astype(str) + ' ' +
+            item_df['category'].fillna('').astype(str)
         )
-    except Exception as e:
-        logger.error("Federated training execution failed: %s", e)
-        raise HTTPException(500, f"Federated training execution failed: {str(e)}")
+        item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
 
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
-    build_time = round(time.time() - start_time, 2)
+        start_time = time.time()
+        content_model = ContentRecommender(item_df)
 
-    models["content"] = content_model
-    models["collab"] = collab_model
-    models["hybrid"] = hybrid_model
-    models["item_df"] = item_df
-    models["ready"] = True
-    models["build_time"] = build_time
-    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
-    _clear_response_cache()
+        try:
+            purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+            purchases = purchases_result.data or []
+        except Exception as e:
+            logger.error("Federated training: purchases load failed: %s", e)
+            raise HTTPException(500, f"Failed to retrieve purchases from database: {str(e)}")
 
-    return {
-        "message": "Federated collaborative model trained successfully!",
-        "items": len(item_df),
-        "users": int(interaction_df['user_id'].nunique()),
-        "build_time_seconds": build_time,
-    }
+        if len(purchases) <= 10:
+            raise HTTPException(400, "Not enough interaction data for federated training. Need at least 11 interactions.")
+
+        product_title_map = {p['id']: p['title'] for p in all_products}
+        interaction_rows = []
+        for p in purchases:
+            title = product_title_map.get(p['product_id'])
+            if title:
+                interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
+
+        if len(interaction_rows) <= 10:
+            raise HTTPException(400, "Not enough valid interaction rows matching product catalog.")
+
+        interaction_df = pd.DataFrame(interaction_rows)
+        if interaction_df['user_id'].nunique() <= 1:
+            raise HTTPException(400, "Federated training requires at least 2 unique users.")
+
+        try:
+            collab_model = train_federated_collaborative_model(
+                interaction_df,
+                n_factors=req.n_factors,
+                epochs=req.epochs,
+                lr=req.lr,
+                reg=req.reg
+            )
+        except Exception as e:
+            logger.error("Federated training execution failed: %s", e)
+            raise HTTPException(500, f"Federated training execution failed: {str(e)}")
+
+        hybrid_model = HybridRecommender(content_model, collab_model, item_df)
+        build_time = round(time.time() - start_time, 2)
+
+        models["content"] = content_model
+        models["collab"] = collab_model
+        models["hybrid"] = hybrid_model
+        models["item_df"] = item_df
+        models["ready"] = True
+        models["build_time"] = build_time
+        models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+        _clear_response_cache()
+
+        return {
+            "message": "Federated collaborative model trained successfully!",
+            "items": len(item_df),
+            "users": int(interaction_df['user_id'].nunique()),
+            "build_time_seconds": build_time,
+        }
+    finally:
+        _train_lock.release()
 
 
 # ── Recommendations ───────────────────────────────────────────────────
@@ -1484,14 +1488,14 @@ def train_federated(
 def get_recommendations(
     request: Request,
     response: Response,
-    item_title: Optional[str] = None,
-    title: Optional[str] = Query(None),
+    item_title: str | None = None,
+    title: str | None = Query(None),
     top_n: int = 10,
     explain: bool = Query(False),
-    user_id: Optional[str] = Query(None),
-    target_catalog: Optional[str] = Query(None),
-    model_version: Optional[str] = Query(None),
-    strategy: Optional[str] = Query(None), 
+    user_id: str | None = Query(None),
+    target_catalog: str | None = Query(None),
+    model_version: str | None = Query(None),
+    strategy: str | None = Query(None),
 ):
     rate_limited = _apply_rate_limit(
         request,
@@ -1631,15 +1635,15 @@ def get_recommendations(
 @app.get("/api/recommend/cold_start")
 def recommend_cold_start(
     response: Response,
-    title: Optional[str] = Query(None),
-    description: Optional[str] = Query(None),
-    category: Optional[str] = Query(None),
-    tags: Optional[str] = Query(None),
+    title: str | None = Query(None),
+    description: str | None = Query(None),
+    category: str | None = Query(None),
+    tags: str | None = Query(None),
     top_n: int = Query(10, ge=1, le=100),
     alpha: float = Query(0.6),
     beta: float = Query(0.3),
     gamma: float = Query(0.1),
-    target_catalog: Optional[str] = Query(None),
+    target_catalog: str | None = Query(None),
 ):
     """Cold-start recommendation endpoint.
 
@@ -1679,14 +1683,14 @@ def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Quer
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-    
+
     is_fallback = False
     collab = models["hybrid"].collab_model
     if collab is None or user_id not in getattr(collab, "_user_to_idx", {}):
         is_fallback = True
 
     recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
-        
+
     return {
         "query_user": user_id,
         "recommendations": recs,
@@ -1757,7 +1761,7 @@ def get_similar_items(
     response: Response,
     item_id: str,
     top_n: int = Query(10, ge=1, le=100),
-    category: Optional[str] = Query(None),
+    category: str | None = Query(None),
     explain: bool = Query(False),
 ):
     rate_limited = _apply_rate_limit(
@@ -1995,7 +1999,7 @@ def _fetch_categories_from_db(sb) -> list:
                 if (row["category"] if isinstance(row, dict) else str(row))
             ]
             if cats:
-                cats.sort()
+                cats = sorted(set(cats))
                 return cats
     except Exception:
         pass
@@ -2041,7 +2045,12 @@ def get_categories():
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
+def get_user_purchases(
+    request: Request,
+    user_id: str,
+    _admin: None = Depends(_admin_access_dep),
+    limit: int = Query(50, ge=1, le=200),
+):
     _validate_user_id(user_id)  # allowlist-validate before any DB call
     sb = get_supabase()
     result = (
@@ -2330,10 +2339,13 @@ def submit_feedback(
 
 # ── Export Dataset ────────────────────────────────────────────────────
 @app.get("/api/export/dataset")
-def export_dataset(columns: Optional[str] = Query(None)):
+def export_dataset(
+    request: Request,
+    _admin: None = Depends(_admin_access_dep),
+    columns: str | None = Query(None),
+):
     if not models["ready"] or models["item_df"] is None:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-    import pandas as pd
     from fastapi.responses import StreamingResponse
     df = models["item_df"].copy()
     if columns:
@@ -2351,8 +2363,9 @@ def export_dataset(columns: Optional[str] = Query(None)):
 
 
 # ── GitHub Webhook Triage ─────────────────────────────────────────────
-import hmac
 import hashlib
+import hmac
+
 
 def _verify_github_signature(request_body: bytes, signature_header: str | None) -> None:
     secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
@@ -2362,13 +2375,13 @@ def _verify_github_signature(request_body: bytes, signature_header: str | None) 
         raise HTTPException(status_code=401, detail="Signature header X-Hub-Signature-256 missing.")
     if not signature_header.startswith("sha256="):
         raise HTTPException(status_code=400, detail="Invalid signature format.")
-        
+
     expected_signature = hmac.new(
         secret.encode(),
         request_body,
         hashlib.sha256
     ).hexdigest()
-    
+
     provided_signature = signature_header.partition("sha256=")[2].strip()
     if not hmac.compare_digest(expected_signature, provided_signature):
         raise HTTPException(status_code=403, detail="Invalid webhook signature.")
@@ -2389,21 +2402,21 @@ async def github_webhook(request: Request, response: Response):
     body_bytes = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
     _verify_github_signature(body_bytes, signature)
-    
+
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
-        
+
     event = request.headers.get("X-GitHub-Event")
     action = payload.get("action")
-    
+
     issue_number = None
     title = None
     body = None
     repo_full_name = None
     should_triage = False
-    
+
     if event == "issues" and action == "opened":
         issue = payload.get("issue", {})
         issue_number = issue.get("number")
@@ -2411,7 +2424,7 @@ async def github_webhook(request: Request, response: Response):
         body = issue.get("body", "")
         repo_full_name = payload.get("repository", {}).get("full_name")
         should_triage = True
-        
+
     elif event == "issue_comment" and action == "created":
         comment = payload.get("comment", {})
         comment_body = comment.get("body", "").strip()
@@ -2422,7 +2435,7 @@ async def github_webhook(request: Request, response: Response):
             body = issue.get("body", "")
             repo_full_name = payload.get("repository", {}).get("full_name")
             should_triage = True
-            
+
     if should_triage and issue_number and repo_full_name:
         token = os.environ.get("GITHUB_TOKEN", "").strip()
         triage_res = await triage_issue(
@@ -2433,7 +2446,7 @@ async def github_webhook(request: Request, response: Response):
             token=token
         )
         return {"status": "success", "action": "triaged", "details": triage_res}
-        
+
     return {"status": "skipped", "reason": f"No triage actions required for event '{event}' action '{action}'."}
 
 

@@ -9,9 +9,9 @@ Usage:
 Optimized via Issue #490: Implements strict pathlib absolute context mappings 
 to prevent relative lookup path anomalies across multi-tier runtime environments.
 """
+import argparse
 import os
 import sys
-import argparse
 from pathlib import Path
 
 # --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---
@@ -23,6 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 from tqdm import tqdm
+
 from src.data.data_adapter import adapt_data
 from src.data.db import get_supabase_admin
 
@@ -65,7 +66,7 @@ def import_dataset(file_path, batch_size=1000, run_sentiment=False):
     """Import a single dataset file into the products table."""
     # Ensure we use an absolute Path object for cross-platform naming resolution
     file_path_obj = Path(file_path).resolve()
-    
+
     print(f"\n{'='*60}")
     print(f"  Importing: {file_path_obj.name}")
     print(f"  Batch size: {batch_size}")
@@ -158,7 +159,7 @@ def main():
     for f in files:
         # Evaluate clean path context references regardless of execution boundaries
         path_check = f if f.is_absolute() else data_dir / f.name
-        
+
         if path_check.exists():
             total += import_dataset(str(path_check), args.batch_size, args.sentiment)
         else:

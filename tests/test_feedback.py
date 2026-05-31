@@ -1,7 +1,9 @@
 import os
-os.environ["TESTING"] = "true" 
+
+os.environ["TESTING"] = "true"
 
 from fastapi.testclient import TestClient
+
 from backend import main
 
 client = TestClient(main.app)
@@ -95,9 +97,9 @@ def test_submit_feedback_success(monkeypatch):
         "/api/feedback",
         json={"user_id": "user123", "item": "item1", "feedback": "Excellent service!","thumbs": "up"}
     )
-    print("Response:", response.json()) 
+    print("Response:", response.json())
     assert response.status_code == 200
-    
+
     payload = response.json()
     assert "message" in payload
     assert payload["message"] == "Feedback submitted successfully"

@@ -1,6 +1,6 @@
 import pytest
-from fastapi.testclient import TestClient
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 # Hum yahan ek chota sa fake app bana rahe hain jo project ke logic ko simulate karega
 # Isse tensorflow load hi nahi hoga aur error bypass ho jayega!
@@ -23,6 +23,6 @@ def test_recommendation_empty_or_not_ready_models(client):
     """Verify that the 400 error is raised when models are not ready."""
     models["ready"] = False
     response = client.get("/api/recommend?title=Inception")
-    
+
     assert response.status_code == 400
     assert "Models not built or dynamic dataset is empty." in response.json()["detail"]

@@ -24,9 +24,9 @@ Skipped methods: GET, HEAD, OPTIONS  (safe / pre-flight).
 WebSocket upgrades are also skipped — they are not affected by CSRF.
 """
 
+import logging
 import os
 import secrets
-import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse

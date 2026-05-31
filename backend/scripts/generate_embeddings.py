@@ -5,11 +5,12 @@ Run once after enabling pgvector and adding the vector column.
 
 import os
 import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from sentence_transformers import SentenceTransformer
 from db import get_supabase_admin
 from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 

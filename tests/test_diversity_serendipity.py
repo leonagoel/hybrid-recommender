@@ -1,5 +1,5 @@
-import sys
 import numpy as np
+
 
 # ── helper: copied logic from _diversity_rerank ──────────────────────
 def diversity_rerank(results, top_n, diversity=0.0, serendipity=0.0):
@@ -70,4 +70,3 @@ if __name__ == '__main__':
     test_empty_input()
     print()
     print('All 4 tests passed!')
-    

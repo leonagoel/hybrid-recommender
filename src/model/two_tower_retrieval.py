@@ -2,13 +2,11 @@
 Two-Tower Neural Retrieval Model for Scalable Candidate Generation.
 Uses dual encoders for users and items, indexed via FAISS for sub-10ms retrieval.
 """
-import os
-import numpy as np
+import faiss
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import faiss
 
 
 class UserTower(nn.Module):

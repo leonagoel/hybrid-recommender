@@ -2,17 +2,18 @@
 Unit tests for evaluation metric functions.
 Tests edge cases for precision, recall, DCG, and NDCG calculations.
 """
-import pytest
-import sys
 import os
+import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.evaluation.evaluation import (
-    _precision_at_k,
-    _recall_at_k,
     _dcg_at_k,
     _ndcg_at_k,
+    _precision_at_k,
+    _recall_at_k,
 )
 
 

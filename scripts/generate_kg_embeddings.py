@@ -2,7 +2,6 @@ import pandas as pd
 
 from src.model.knowledge_graph_model import KnowledgeGraphRecommender
 
-
 if __name__ == '__main__':
     from pathlib import Path
     _BASE_DIR = Path(__file__).resolve().parent.parent  # project root

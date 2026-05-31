@@ -3,9 +3,11 @@ Unit tests for the LLM Explainer module.
 Tests both LLM explanations and fallback explanations.
 """
 
-import pytest
-import sys
 import os
+import sys
+
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.model.llm_explainer import LLMExplainer, get_explainer
@@ -191,9 +193,9 @@ class TestExplainMultiple:
                 "category": "Category B"
             }
         ]
-        
+
         results = explainer.explain_multiple(recommendations, "Query Item")
-        
+
         assert len(results) == 2
         assert all("llm_explanation" in r for r in results)
         assert all(r.get("llm_explanation") is None or isinstance(r["llm_explanation"], str) for r in results)
@@ -208,9 +210,9 @@ class TestExplainMultiple:
                 "rating": 4.5
             }
         ]
-        
+
         results = explainer.explain_multiple(original_recs, "Query")
-        
+
         # Original fields should still exist
         assert results[0]["title"] == "Item A"
         assert results[0]["hybrid_score"] == 0.90
@@ -232,7 +234,7 @@ class TestPromptBuilding:
             top_reviews=["Amazing!", "Loved it"],
             category="Books"
         )
-        
+
         assert prompt is not None
         assert "Book A" in prompt
         assert "Book B" in prompt

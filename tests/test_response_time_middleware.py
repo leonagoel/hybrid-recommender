@@ -9,7 +9,6 @@ from backend.main import (
     reset_response_metrics,
 )
 
-
 client = TestClient(app)
 
 

@@ -5,10 +5,9 @@ Output: datasets/sample_products.csv  (~2000 rows)
 Optimized via Issue #490: Implements strict pathlib absolute context mappings 
 to prevent relative lookup path anomalies across multi-tier runtime environments.
 """
-import os
-import sys
-import random
 import csv
+import os
+import random
 from pathlib import Path
 
 # --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---

@@ -2,9 +2,9 @@
 Unit tests for DatasetManager.
 """
 import io
-import os
+
 import pytest
-import pandas as pd
+
 from src.data.dataset_manager import DatasetManager
 
 
@@ -23,7 +23,7 @@ def test_dataset_manager_load_and_remove():
     manager = DatasetManager()
     csv_data = "title,description,category\nBook A,Desc A,Fantasy\nBook B,Desc B,SciFi"
     buffer = io.StringIO(csv_data)
-    
+
     ds_id = manager.load_csv(buffer, name="test_data.csv")
     assert ds_id in manager._datasets
     assert len(manager.list_datasets()) == 1
@@ -52,7 +52,7 @@ def test_dataset_manager_merge_all():
     manager = DatasetManager()
     csv_data1 = "title,description,category,rating\nBook A,Desc A,Fantasy,4.0"
     csv_data2 = "title,description,category,rating\nBook A,Desc A,Fantasy,5.0\nBook B,Desc B,SciFi,3.0"
-    
+
     manager.load_csv(io.StringIO(csv_data1), name="ds1.csv")
     manager.load_csv(io.StringIO(csv_data2), name="ds2.csv")
 

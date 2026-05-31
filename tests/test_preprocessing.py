@@ -2,21 +2,21 @@
 Unit tests for data_preprocessing module.
 Run with: pytest tests/ -v
 """
-import pytest
-import pandas as pd
-import sys
 import os
+import sys
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.data.data_preprocessing import (
-    handle_missing_values,
-    remove_duplicates,
-    normalize_ratings,
     encode_categorical,
+    handle_missing_values,
+    normalize_ratings,
     preprocess,
+    remove_duplicates,
 )
-
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 

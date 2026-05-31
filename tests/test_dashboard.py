@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 
 from backend import main as backend_main
 
-
 # ─── Fake Supabase client ────────────────────────────────────────────
 
 class _FakeQuery:

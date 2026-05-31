@@ -9,7 +9,6 @@ Optimizations:
   Falls back to brute-force cosine similarity when hnswlib is not installed.
 """
 import numpy as np
-import pandas as pd
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -29,17 +28,17 @@ class ContentRecommender:
         """
         self.df = item_df.reset_index(drop=True)
         self.model = SentenceTransformer(model_name)
-        
+
         # Generate embeddings using optimized sequential batching
         texts = self.df['combined'].fillna('').tolist()
-        
+
         # FIX FOR ISSUE #485: Process text slices sequentially to prevent massive host RAM peaks
         embeddings_list = []
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i:i + batch_size]
             batch_encodings = self.model.encode(batch_texts, show_progress_bar=False)
             embeddings_list.append(batch_encodings)
-            
+
         # Stack slices cleanly into a single final continuous array allocation
         self.matrix = np.vstack(embeddings_list) if embeddings_list else np.empty((0, 0))
 
@@ -92,7 +91,7 @@ class ContentRecommender:
             t = self.df.iloc[i]['title']
             if t.lower() == title.lower() or t in seen:
                 continue
-            
+
             # Catalog filtering
             if target_catalog and 'catalog' in self.df.columns:
                 item_catalog = self.df.iloc[i].get('catalog', '')
@@ -119,12 +118,12 @@ class ContentRecommender:
 
         source_idx = self._title_to_idx[source_title.lower()]
         candidate_idx = self._title_to_idx[candidate_title.lower()]
-        
+
         score = cosine_similarity(
-            self.matrix[source_idx].reshape(1, -1), 
+            self.matrix[source_idx].reshape(1, -1),
             self.matrix[candidate_idx].reshape(1, -1)
         )[0][0]
-        
+
         return [{'term': 'semantic_similarity', 'score': round(float(score), 4)}]
 
     def search(self, query, top_n=20, target_catalog=None):

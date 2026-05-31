@@ -2,11 +2,11 @@
 Unit tests for Content-Based Recommender
 Run with: pytest tests/ -v
 """
-import pytest
-import pandas as pd
-import numpy as np
-import sys
 import os
+import sys
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -19,8 +19,8 @@ def sample_item_df():
     """Sample DataFrame for testing ContentRecommender."""
     return pd.DataFrame({
         'title': [
-            'Harry Potter', 
-            'Lord of the Rings', 
+            'Harry Potter',
+            'Lord of the Rings',
             'The Hobbit',
             'Game of Thrones',
             'Dune'

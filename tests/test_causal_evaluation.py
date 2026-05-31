@@ -1,18 +1,18 @@
 """
 Unit tests for Causal Evaluation Metrics.
 """
-import pytest
-import pandas as pd
-import numpy as np
-import sys
 import os
+import sys
+
+import numpy as np
+import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.evaluation.causal_evaluation import (
-    _build_popularity_rank,
-    _build_category_map,
     _avg_popularity_rank,
+    _build_category_map,
+    _build_popularity_rank,
     _intra_list_diversity,
     compare_causal_vs_baseline,
     score_key_distribution,
@@ -83,7 +83,7 @@ def test_compare_causal_vs_baseline():
         "review_count": [100, 50, 10, 5],
         "category": ["SciFi", "SciFi", "Fantasy", "Fantasy"]
     })
-    
+
     # Causal model recommends niche (less popular) items
     causal_recs = {
         "query1": [{"title": "C", "hybrid_score": 0.9}, {"title": "D", "hybrid_score": 0.8}]
@@ -92,10 +92,10 @@ def test_compare_causal_vs_baseline():
     baseline_recs = {
         "query1": [{"title": "A", "hybrid_score": 0.95}, {"title": "B", "hybrid_score": 0.85}]
     }
-    
+
     causal_model = MockModel(causal_recs)
     baseline_model = MockModel(baseline_recs)
-    
+
     results = compare_causal_vs_baseline(
         causal_model=causal_model,
         baseline_model=baseline_model,
@@ -103,7 +103,7 @@ def test_compare_causal_vs_baseline():
         query_titles=["query1"],
         top_n=2
     )
-    
+
     assert results["n_queries"] == 1
     # Niche items have lower rank, so popularity rank is lower, meaning bias reduction is positive
     assert results["popularity_bias_reduction"] > 0

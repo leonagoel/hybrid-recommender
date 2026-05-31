@@ -50,11 +50,9 @@ Usage
 from __future__ import annotations
 
 from collections import Counter
-from typing import Optional
 
 import numpy as np
 import pandas as pd
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -68,7 +66,7 @@ def _build_popularity_rank(item_df: pd.DataFrame) -> dict[str, float]:
     """
     if "review_count" not in item_df.columns or item_df.empty:
         titles = item_df["title"].tolist() if "title" in item_df.columns else []
-        return {t: 0.5 for t in titles}
+        return dict.fromkeys(titles, 0.5)
 
     df = item_df[["title", "review_count"]].copy()
     df["review_count"] = pd.to_numeric(df["review_count"], errors="coerce").fillna(0)

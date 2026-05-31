@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from backend import main
 from backend.main import _BoundedTTLCache
 
-
 # ── Fake collaborators ────────────────────────────────────────────────
 
 class FakeHybrid:

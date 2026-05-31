@@ -2,24 +2,25 @@
 Unit tests for the data_adapter module.
 Tests CSV/JSON reading and schema adaptation functions.
 """
-import pytest
-import pandas as pd
 import json
-import tempfile
-import sys
 import os
+import sys
+import tempfile
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.data.data_adapter import (
-    detect_column,
-    validate_dataframe,
-    validate_recommender_inputs,
-    read_file,
     adapt_data,
+    detect_column,
     preprocess_books_data,
     preprocess_ratings_data,
     preprocess_sentiment_data,
+    read_file,
+    validate_dataframe,
+    validate_recommender_inputs,
 )
 
 
@@ -111,7 +112,7 @@ class TestValidateRecommenderInputs:
             "item_id": ["i1", "i2"],
             "rating": [5.0, 4.0]
         })
-        with pytest.raises(ValueError, match="invalid value"):
+        with pytest.raises(ValueError, match="invalid or blank"):
             validate_recommender_inputs(
                 df,
                 user_col="user_id",
@@ -138,22 +139,22 @@ class TestHasBlankValues:
     def test_no_blanks_returns_false(self):
         from src.data.data_adapter import _has_blank_values
         s = pd.Series(['a', 'b', 'c'])
-        assert not _has_blank_values(s)   
+        assert not _has_blank_values(s)
 
     def test_nan_returns_true(self):
         from src.data.data_adapter import _has_blank_values
         s = pd.Series(['a', None, 'c'])
-        assert _has_blank_values(s)      
+        assert _has_blank_values(s)
 
     def test_empty_string_returns_true(self):
         from src.data.data_adapter import _has_blank_values
         s = pd.Series(['a', '', 'c'])
-        assert _has_blank_values(s)       
+        assert _has_blank_values(s)
 
     def test_whitespace_only_returns_true(self):
         from src.data.data_adapter import _has_blank_values
         s = pd.Series(['a', '   ', 'c'])
-        assert _has_blank_values(s)      
+        assert _has_blank_values(s)
 
 class TestReadFile:
     """Test read_file function."""

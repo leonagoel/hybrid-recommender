@@ -1,5 +1,7 @@
-from fastapi.testclient import TestClient
 from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+
 from backend import main
 
 client = TestClient(main.app)
@@ -49,7 +51,7 @@ def test_create_purchase_success(monkeypatch):
         json={"user_id": "user123", "product_id": 123, "rating": 4.5, "review_text": "Good!"}
     )
     assert response.status_code == 200
-    
+
     payload = response.json()
     assert "purchase" in payload
     assert payload["purchase"][0]["user_id"] == "user123"

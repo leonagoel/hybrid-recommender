@@ -214,7 +214,7 @@ class CausalDebiaser:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_config(cls, item_df: pd.DataFrame, config: CausalConfig) -> "CausalDebiaser":
+    def from_config(cls, item_df: pd.DataFrame, config: CausalConfig) -> CausalDebiaser:
         """
         Construct a CausalDebiaser from a CausalConfig instance.
 

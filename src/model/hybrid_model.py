@@ -71,7 +71,7 @@ class HybridRecommender:
         if self.collab_model and self.model_kwargs:
             n_factors = self.model_kwargs.get("n_factors")
             use_implicit = self.model_kwargs.get("use_implicit")
-            
+
             # Re-initialize or pass hyperparameters down safely if explicitly specified
             if n_factors is not None and hasattr(self.collab_model, 'n_factors'):
                 self.collab_model.n_factors = n_factors
@@ -340,6 +340,7 @@ class HybridRecommender:
 
         # 2. Collaborative scores
         collab_map = {}
+        all_titles = {r['title'] for r in content_recs}
         if self.collab_model:
             collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
             for r in collab_recs:
@@ -418,7 +419,7 @@ class HybridRecommender:
             # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
             popularity = self._popularity_map.get(item['title'], 0.5)
             popularity_bonus = 0.05 * popularity
-            
+
             # Enforce strict upper bound limit check
             hybrid = min(1.0, hybrid_base + popularity_bonus)
 
@@ -492,7 +493,7 @@ class HybridRecommender:
             return self._fair_rerank(results, top_n, key, max_share)
 
         return results[:top_n]
-    
+
     def recommend_for_user(self, user_id, top_n=10, explain=False):
         """
         Get recommendations for a specific user.
@@ -503,7 +504,7 @@ class HybridRecommender:
             return self._cold_start_fallback(title=None, top_n=top_n)
 
         collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
-        
+
         results = []
         for r in collab_recs[:top_n]:
             item_title = r['title']

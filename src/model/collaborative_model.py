@@ -9,10 +9,9 @@ Improvements:
 - User-based personalized recommendations
 """
 import numpy as np
-import pandas as pd
+from scipy.sparse import coo_matrix
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
-from scipy.sparse import coo_matrix
 
 
 class CollaborativeRecommender:
@@ -146,7 +145,7 @@ class CollaborativeRecommender:
             logger = logging.getLogger(__name__)
             logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
             return self._popularity_fallback(top_n)
-            
+
 
         u_idx = self._user_to_idx[user_id]
         user_vec = self.user_factors[u_idx]
@@ -181,15 +180,15 @@ class CollaborativeRecommender:
         u_idx = self._user_to_idx[user_id]
         i_idx = self._title_to_idx[title]
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
-    
+
     def _popularity_fallback(self, top_n=10):
     #Fallback for cold-start users — top-N by interaction count (popularity)
         import logging
         logger = logging.getLogger(__name__)
         logger.info("Using popularity-based fallback for cold-start user.")
-    
+
         item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
-    
+
        # Bayesian rating
         global_avg = item_counts['mean'].mean()
         m = 5
@@ -197,9 +196,9 @@ class CollaborativeRecommender:
             (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +
             (m / (item_counts['count'] + m)) * global_avg
         )
-    
+
         top_items = item_counts.nlargest(top_n, 'bayesian')
-    
+
         return [
         {
             'title': row['title'],

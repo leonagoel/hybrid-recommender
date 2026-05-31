@@ -13,7 +13,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from src.model.collaborative_model import CollaborativeRecommender
 
-
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
 

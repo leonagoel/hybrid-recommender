@@ -6,7 +6,6 @@ import io
 import os
 import urllib.error
 import urllib.request
-from typing import Optional
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request
 
@@ -29,7 +28,7 @@ def _max_fetch_bytes() -> int:
     return int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 
 
-def fetch_dataset_from_url(url: str, max_bytes: Optional[int] = None) -> bytes:
+def fetch_dataset_from_url(url: str, max_bytes: int | None = None) -> bytes:
     """
     Download dataset bytes from a public http(s) URL after SSRF validation.
     """
@@ -72,7 +71,7 @@ def filename_from_url(url: str) -> str:
     return "data.csv"
 
 
-def dataset_buffer_from_url(url: str, max_bytes: Optional[int] = None) -> tuple[io.BytesIO, str]:
+def dataset_buffer_from_url(url: str, max_bytes: int | None = None) -> tuple[io.BytesIO, str]:
     """Return (buffer, filename) for a validated remote dataset URL."""
     contents = fetch_dataset_from_url(url, max_bytes=max_bytes)
     return io.BytesIO(contents), filename_from_url(url)

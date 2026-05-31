@@ -7,6 +7,7 @@ causal inference layer without needing to know internal module paths.
 
 import importlib.util
 
+
 def _load_safe(module_name, class_name):
     try:
         module = importlib.import_module(module_name)

@@ -3,11 +3,12 @@ Celery application configuration for the Hybrid Recommender System.
 Uses Redis as both the message broker and the result backend.
 Includes fallback mechanisms for synchronous local execution if Redis is offline.
 """
-import os
 import logging
+import os
+
 from celery import Celery
-from redis import Redis
 from dotenv import load_dotenv
+from redis import Redis
 
 load_dotenv()
 
@@ -53,11 +54,11 @@ def dispatch_task_safely(task, *args, **kwargs):
         # Ping the Redis server with a strict 1-second connection timeout flag
         r = Redis.from_url(REDIS_URL, socket_connect_timeout=1.0)
         r.ping()
-        
+
         # If connection succeeds, dispatch asynchronously to the Celery worker cluster
         logger.info(f"Redis cluster verified healthy. Dispatching task {task.__name__} asynchronously.")
         return task.delay(*args, **kwargs)
-        
+
     except Exception as e:
         # If Redis is offline, degrade gracefully by executing the logic locally and synchronously
         logger.warning(

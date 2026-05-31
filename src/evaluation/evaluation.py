@@ -20,7 +20,6 @@ Usage as importable module (new — used by /api/evaluate endpoint):
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 from pathlib import Path
@@ -59,7 +58,7 @@ def _recall_at_k(recommended: list, relevant: set, k: int) -> float:
     if not relevant or k == 0 or not recommended:
         return 0.0
     hits = sum(1 for item in recommended[:k] if item in relevant)
-    
+
     # FIX FOR ISSUE #486: Guard cold states to prevent ZeroDivisionError
     denom = len(relevant)
     return hits / denom if denom > 0 else 0.0
@@ -80,7 +79,7 @@ def _ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
     """Normalised DCG at K (IDCG assumes all relevant items are at top)."""
     dcg = _dcg_at_k(recommended, relevant, k)
     ideal = _dcg_at_k(list(relevant)[:k], relevant, k)
-    
+
     # FIX FOR ISSUE #486: Handle zero baseline ideal scores gracefully
     return dcg / ideal if ideal > 0.0 else 0.0
 
@@ -325,8 +324,6 @@ def run_evaluation(
     """
     Run Precision@K, Recall@K, NDCG@K evaluation for the requested mode(s).
     """
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.decomposition import TruncatedSVD
 
     # --- resolve weights ---
     w = {"alpha": 0.4, "beta": 0.4, "gamma": 0.2}
@@ -395,7 +392,7 @@ def run_evaluation(
     )
 
     results: ResultsDict = {}
-    
+
     # Check out if user interaction signals exist in the dataset
     has_user_data = "user_id" in df.columns and len(df["user_id"].dropna().unique()) > 1
 
@@ -425,7 +422,7 @@ def run_evaluation(
                 # Hold out the last item as the evaluation truth target
                 query_item = user_profile.iloc[-1]["title"]
                 relevant = {query_item}
-                
+
                 # Baki bache items user history seed banenge
                 user_history = user_profile.iloc[:-1]["title"].tolist()
 
@@ -444,7 +441,7 @@ def run_evaluation(
                                 seed_title, df, tfidf_matrix, svd_matrix,
                                 w["alpha"], w["beta"], w["gamma"], k,
                             )
-                        
+
                         # Blend recommendation confidence arrays
                         for idx_rank, item_name in enumerate(recs_raw):
                             score = 1.0 / (idx_rank + 1)  # Rank-based reciprocal pooling fallback
@@ -470,7 +467,7 @@ def run_evaluation(
             # ----------------------------------------------------
             for idx in sample_indices:
                 title = df.iloc[idx]["title"]
-                
+
                 # Establish pseudo-relevance via category boundaries
                 relevant = set()
                 if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):

@@ -1,7 +1,12 @@
 import pytest
 from pydantic import ValidationError
 
-from backend.main import FeedbackCreate, PurchaseCreate, RealtimeRecommendationRequest, WeightsUpdate
+from backend.main import (
+    FeedbackCreate,
+    PurchaseCreate,
+    RealtimeRecommendationRequest,
+    WeightsUpdate,
+)
 
 
 @pytest.mark.parametrize(

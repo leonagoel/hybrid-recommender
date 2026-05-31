@@ -7,11 +7,10 @@ Run with:
     streamlit run app.py
 """
 
-import os
 import sys
 from pathlib import Path
+
 import streamlit as st
-import pandas as pd
 
 # ── Dynamic Path Mapping Fix (#490) ──────────────────────────────────────────
 CURRENT_DIR = Path(__file__).parent.resolve()
@@ -22,12 +21,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.data_adapter import adapt_data, read_file
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.hybrid_model import HybridRecommender
 from src.model.causal_config import CausalConfig
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender
 from src.model.llm_explainer import get_explainer
-
 
 # ── Page configuration ───────────────────────────────────────────────────────
 st.set_page_config(
@@ -103,7 +101,7 @@ with st.sidebar:
     alpha = st.slider("α — Content-Based",  min_value=0.0, max_value=1.0, value=0.40, step=0.05)
     beta  = st.slider("β — Collaborative",  min_value=0.0, max_value=1.0, value=0.35, step=0.05)
     gamma = st.slider("γ — Sentiment",      min_value=0.0, max_value=1.0, value=0.25, step=0.05)
-    
+
     # Live Normalized Weight Preview
     weights = {
         "Content-Based": alpha,
@@ -305,7 +303,7 @@ else:
                         }
                         for r in recs_raw
                     ]
-                    
+
                     query_item_for_explanation = f"User {query}"
 
                 else:
@@ -339,7 +337,7 @@ else:
                     else:
                         badge       = "🔀 HYBRID"
                         badge_color = "violet"
-                    
+
                     query_item_for_explanation = item_title
 
                 # ── Generate LLM explanations if enabled ──────────────────

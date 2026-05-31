@@ -2,13 +2,14 @@
 Unit tests for model schemas (pydantic validation).
 Run with: pytest tests/test_schemas.py -v
 """
-import pytest
-import sys
 import os
+import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from src.model.schemas import ModelHyperparametersSchema, HybridWeightsSchema
+from src.model.schemas import HybridWeightsSchema, ModelHyperparametersSchema
 
 
 class TestModelHyperparametersSchema:

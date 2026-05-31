@@ -2,19 +2,20 @@
 Unit tests for the NLP sentiment engine module.
 Tests NLTK VADER sentiment analysis functions.
 """
-import pytest
-import pandas as pd
-import sys
 import os
+import sys
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.model.nlp_engine import (
-    analyze_sentiment,
-    sentiment_label,
-    batch_analyze,
     aggregate_sentiment_by_item,
+    analyze_sentiment,
+    batch_analyze,
     compute_product_sentiment,
+    sentiment_label,
 )
 
 

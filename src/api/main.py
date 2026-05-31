@@ -1,20 +1,19 @@
 """
 FastAPI Backend for Hybrid Recommender
 """
-import os
-import sys
-from pathlib import Path  # <-- Added
-from dotenv import load_dotenv  # <-- Added
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional
 import csv
 import io
 import json
+import os
+import sys
 from datetime import datetime
-from fastapi import Request
+from pathlib import Path  # <-- Added
+
+from dotenv import load_dotenv  # <-- Added
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
@@ -30,10 +29,10 @@ else:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from src.data.dataset_manager import DatasetManager
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.hybrid_model import HybridRecommender
 from src.model.causal_config import CausalConfig
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender
 
 app = FastAPI(title="Hybrid Recommender API")
 app.mount("/static", StaticFiles(directory=str(PROJECT_ROOT / "frontend")), name="static")
@@ -52,7 +51,7 @@ CORS_ORIGINS = [origin.strip() for origin in RAW_CORS.split(",")]
 
 class RecommendationRequest(BaseModel):
     query: str
-    user_id: Optional[str] = None
+    user_id: str | None = None
     top_n: int = 10
     # Set to True to apply IPS causal debiasing on the hybrid score.
     # Downweights items that were over-exposed in training data (popularity/category bias).
@@ -61,18 +60,18 @@ class RecommendationRequest(BaseModel):
     causal_lambda: float = 0.5
     # IPS weight cap — prevents rare items from dominating after reweighting.
     causal_clip: float = 5.0
-    fairness: Optional[bool] = None
-    fairness_key: Optional[str] = None
-    fairness_max_share: Optional[float] = None
+    fairness: bool | None = None
+    fairness_key: str | None = None
+    fairness_max_share: float | None = None
 
 
 # Global read-only model state — never mutated after startup.
-_content_model: Optional[ContentRecommender] = None
-_collab_model: Optional[CollaborativeRecommender] = None
+_content_model: ContentRecommender | None = None
+_collab_model: CollaborativeRecommender | None = None
 _item_df = None
-fairness: Optional[bool] = None
-fairness_key: Optional[str] = None
-fairness_max_share: Optional[float] = None
+fairness: bool | None = None
+fairness_key: str | None = None
+fairness_max_share: float | None = None
 
 
 @app.on_event("startup")
@@ -141,7 +140,7 @@ def get_recommendations(req: RecommendationRequest):
         import logging
         logger = logging.getLogger("uvicorn.error")
         logger.error(f"Primary recommendation engine failed: {str(exc)}. Triggering popularity fallback.")
-        
+
         try:
             # Fallback calculation: safe data pull from the global item dataframe
             if '_item_df' in globals() and _item_df is not None and not _item_df.empty:
@@ -150,7 +149,7 @@ def get_recommendations(req: RecommendationRequest):
             else:
                 # Absolute zero-dependency static default array
                 popular_items = ["Top Trending Item A", "Top Trending Item B", "Top Trending Item C"]
-            
+
             # Format the payload items to mimic real recommendation results
             fallback_recs = [
                 {
@@ -164,14 +163,14 @@ def get_recommendations(req: RecommendationRequest):
                 }
                 for item in popular_items
             ]
-            
+
             return {
                 "recommendations": fallback_recs,
                 "causal_debiasing_applied": False,
                 "fallback": True,
                 "note": "Primary pipeline encountered an error. Serving trending fallback layout."
             }
-            
+
         except Exception as fallback_exc:
             logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
             raise HTTPException(status_code=500, detail="Recommendation engine completely offline.")

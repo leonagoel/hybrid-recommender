@@ -1,5 +1,7 @@
-from fastapi.testclient import TestClient
 from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+
 from backend import main
 
 client = TestClient(main.app)
@@ -50,7 +52,7 @@ def test_autocomplete_success(monkeypatch):
 
     response = client.get("/api/autocomplete?q=naruto&limit=3")
     assert response.status_code == 200
-    
+
     payload = response.json()
     assert "suggestions" in payload
     # Stripped and deduplicated

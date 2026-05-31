@@ -2,21 +2,22 @@
 Unit tests for evaluation metric helper functions.
 Tests _precision_at_k, _recall_at_k, _dcg_at_k, and _ndcg_at_k.
 """
-import pytest
-import sys
 import os
+import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.evaluation.evaluation import (
+    _catalog_coverage,
+    _dcg_at_k,
+    _hit_rate,
+    _intra_list_diversity,
+    _mean_reciprocal_rank,
+    _ndcg_at_k,
     _precision_at_k,
     _recall_at_k,
-    _dcg_at_k,
-    _ndcg_at_k,
-    _mean_reciprocal_rank,
-    _hit_rate,
-    _catalog_coverage,
-    _intra_list_diversity,
 )
 
 

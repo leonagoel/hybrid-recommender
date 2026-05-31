@@ -31,7 +31,7 @@ Design notes
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -59,7 +59,7 @@ class CausalConfig:
     clip_max: float = 5.0
     score_key: str = 'hybrid_score'
 
-    def validate(self) -> 'CausalConfig':
+    def validate(self) -> CausalConfig:
         """
         Validate all fields and return self for chaining.
         Raises ValueError on any invalid value.
@@ -84,7 +84,7 @@ class CausalConfig:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> 'CausalConfig':
+    def from_dict(cls, d: dict) -> CausalConfig:
         """Deserialise from a plain dict — useful for loading from .env or JSON config."""
         return cls(
             enabled=bool(d.get('enabled', True)),
@@ -96,16 +96,16 @@ class CausalConfig:
     # ── Preset factory methods ────────────────────────────────────────────────
 
     @classmethod
-    def disabled(cls) -> 'CausalConfig':
+    def disabled(cls) -> CausalConfig:
         """Return a config that completely disables causal debiasing."""
         return cls(enabled=False)
 
     @classmethod
-    def conservative(cls) -> 'CausalConfig':
+    def conservative(cls) -> CausalConfig:
         """Light debiasing — safe default for production with unknown catalog skew."""
         return cls(enabled=True, blend_lambda=0.3, clip_max=3.0)
 
     @classmethod
-    def aggressive(cls) -> 'CausalConfig':
+    def aggressive(cls) -> CausalConfig:
         """Strong debiasing — use when catalog has severe popularity concentration."""
         return cls(enabled=True, blend_lambda=0.8, clip_max=8.0)

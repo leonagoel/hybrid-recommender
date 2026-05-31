@@ -14,17 +14,17 @@ fill defaults) and leaves already-preprocessed columns untouched.
 Run with:
     PYTHONPATH=src/data python -m pytest tests/test_adapt_data.py -v
 """
-import sys
 import os
-import pytest
+import sys
+
 import pandas as pd
-import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'data'))
 
 from data_adapter import adapt_data
-from data_preprocessing import preprocess
 
+from data_preprocessing import preprocess
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 

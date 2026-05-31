@@ -3,6 +3,7 @@ Unit tests specifically for CausalConfig dataclass.
 Run with: pytest tests/ -v
 """
 import pytest
+
 from src.model.causal_config import CausalConfig
 
 

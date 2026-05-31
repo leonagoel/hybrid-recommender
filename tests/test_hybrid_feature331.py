@@ -1,4 +1,5 @@
 import pandas as pd
+
 from src.model.hybrid_model import HybridRecommender
 
 

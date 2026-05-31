@@ -1,4 +1,4 @@
-import sys, os
+import sys
 from pathlib import Path
 
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
@@ -6,13 +6,15 @@ sys.path.insert(0, str(_BASE_DIR))
 
 print("1. Loading dataset...")
 from src.data.dataset_manager import DatasetManager
+
 dm = DatasetManager()
 dm.load_csv(str(_BASE_DIR / 'datasets' / 'sample_products.csv'))
 interaction_df, item_df = dm.merge_all()
 print(f"   Items: {len(item_df)}, Interactions: {len(interaction_df)}")
 
 print("2. Running NLP sentiment...")
-from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from src.model.nlp_engine import aggregate_sentiment_by_item, batch_analyze
+
 interaction_df = batch_analyze(interaction_df, 'review_text')
 sa = aggregate_sentiment_by_item(interaction_df)
 item_df = item_df.merge(sa, on='title', how='left')
@@ -21,14 +23,17 @@ print(f"   Avg sentiment: {item_df['avg_sentiment'].mean():.4f}")
 
 print("3. Building content model...")
 from src.model.content_model import ContentRecommender
+
 cm = ContentRecommender(item_df)
 
 print("4. Building collaborative model (SVD)...")
 from src.model.collaborative_model import CollaborativeRecommender
+
 collab = CollaborativeRecommender(interaction_df)
 
 print("5. Building hybrid model...")
 from src.model.hybrid_model import HybridRecommender
+
 hm = HybridRecommender(cm, collab, item_df)
 
 print("6. Getting recommendations...")
@@ -40,6 +45,7 @@ for i, r in enumerate(recs):
 
 print("\n7. Testing LLM Explanations...")
 from src.model.llm_explainer import get_explainer
+
 explainer = get_explainer()
 print(f"   LLM client initialized: {explainer.client is not None}")
 

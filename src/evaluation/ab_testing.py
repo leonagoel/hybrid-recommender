@@ -7,10 +7,9 @@ variant weights while preserving the recommender's configured defaults.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping
-
 
 DEFAULT_EXPERIMENT_ID = "recommendation-ranking-v1"
 
@@ -50,7 +49,7 @@ DEFAULT_VARIANTS = (
 
 
 def _stable_bucket(experiment_id: str, user_key: str) -> int:
-    digest = hashlib.sha256(f"{experiment_id}:{user_key}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{experiment_id}:{user_key}".encode()).hexdigest()
     return int(digest[:12], 16)
 
 
@@ -105,7 +104,7 @@ def run_recommendation_experiment(
     explain: bool = False,
     experiment_id: str = DEFAULT_EXPERIMENT_ID,
     variants: Iterable[ExperimentVariant] = DEFAULT_VARIANTS,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """Return recommendations plus A/B metadata for an opt-in user request."""
     variant = assign_variant(user_key, experiment_id=experiment_id, variants=variants)
     recommendations = recommender.recommend(
@@ -127,14 +126,14 @@ def run_recommendation_experiment(
 def summarize_variant_metrics(
     events: Iterable[Mapping[str, object]],
     metric_name: str = "clicked",
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     """
     Aggregate simple binary/number metrics by experiment variant.
 
     Events are intentionally plain dictionaries so API, cron, or notebook code
     can reuse the same helper before wiring a permanent analytics store.
     """
-    aggregates: Dict[str, Dict[str, float]] = {}
+    aggregates: dict[str, dict[str, float]] = {}
     for event in events:
         variant = str(event.get("variant", "unknown"))
         value = float(event.get(metric_name, 0) or 0)

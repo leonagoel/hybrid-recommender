@@ -1,9 +1,9 @@
 """
 Unit tests for database Supabase client lazy singleton initialization.
 """
-import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 import src.data.db as db
 from src.data.db import get_supabase, get_supabase_admin

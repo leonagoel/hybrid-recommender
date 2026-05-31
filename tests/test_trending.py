@@ -385,11 +385,11 @@ def test_trending_rpc_result_is_cached(monkeypatch):
     # First call will populate cache because results are not empty
     first_response = client.get("/api/trending")
     assert first_response.status_code == 200
-    
+
     # Second call should use cache even if get_supabase raises error
     def failing_supabase():
         raise RuntimeError("Should not be called because of cache!")
-        
+
     monkeypatch.setattr(main, "get_supabase", failing_supabase)
     second_response = client.get("/api/trending")
     assert second_response.status_code == 200
@@ -399,7 +399,7 @@ def test_trending_rpc_result_is_cached(monkeypatch):
 def test_trending_negative_ratings(monkeypatch):
     # Reset cache
     main.TRENDING_CACHE = {"data": None, "timestamp": None}
-    
+
     mock_purchases = [
         {
             "product_id": 101,
@@ -427,7 +427,7 @@ def test_trending_negative_ratings(monkeypatch):
 def test_trending_missing_product_details(monkeypatch):
     # Reset cache
     main.TRENDING_CACHE = {"data": None, "timestamp": None}
-    
+
     mock_purchases = [
         {
             "product_id": 101,
