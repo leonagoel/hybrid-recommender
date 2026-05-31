@@ -562,3 +562,23 @@ def test_user_with_all_items_seen():
     model = CollaborativeRecommender(df)
     results = model.predict_for_user(1, top_n=10)
     assert len(results) == 0
+
+
+def test_predict_rating_unknown_entities():
+    df = sample_data()
+    model = CollaborativeRecommender(df)
+    assert model.predict_rating(999, "Naruto") is None
+    assert model.predict_rating(1, "Unknown Item") is None
+
+
+def test_collaborative_implicit_feedback():
+    df = pd.DataFrame({
+        "user_id": [1, 1, 2, 2, 3],
+        "title": ["Item A", "Item B", "Item B", "Item C", "Item A"],
+        "rating": [5, 4, 5, 3, 4],
+        "views": [10, 2, 0, 5, 1],
+        "purchases": [1, 0, 2, 0, 0]
+    })
+    model = CollaborativeRecommender(df, use_implicit=True)
+    results = model.recommend("Item A", top_n=2)
+    assert len(results) > 0
