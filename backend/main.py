@@ -73,6 +73,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
 from dotenv import load_dotenv
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 load_dotenv()
 
@@ -222,17 +223,6 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            return json.loads(cached)
-
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -240,45 +230,31 @@ def _set_cached_response(key: str, value: Any) -> None:
                 return json.loads(cached)
         except (RedisError, json.JSONDecodeError):
             pass
-
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-
-        _cache_hits += 1
-        return value
+    return _response_cache.get(key)
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    _response_cache.set(key, value)
+    if _redis_client is not None:
+        try:
+            _redis_client.set(key, json.dumps(value), ex=CACHE_TTL_SECONDS)
+        except (RedisError, TypeError):
+            pass
+
 
 def _clear_response_cache() -> None:
     _response_cache.clear()
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
-
+    if _redis_client is not None:
+        try:
+            _redis_client.flushdb()
+        except RedisError:
+            pass
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
     """Expose simple cache hit/miss metrics and configured TTL."""
     return {
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
-        "hits": int(_cache_hits),
-        "misses": int(_cache_misses),
         "current_items": len(_response_cache),
     }
 
@@ -515,6 +491,26 @@ def _get_feedback_storage_client():
     if client is None:
         raise HTTPException(status_code=500, detail="Feedback storage is unavailable.")
     return client
+
+# USER JWT AUTH 
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authorization header missing.")
+    token = credentials.credentials
+    try:
+        sb_admin = get_supabase_admin()
+        user_response = sb_admin.auth.get_user(token)
+        if not user_response or not user_response.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token.")
+        return user_response.user
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
 
 
 # CORS
@@ -2031,8 +2027,14 @@ def get_categories():
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
-    _validate_user_id(user_id)  # allowlist-validate before any DB call
+def get_user_purchases(
+    user_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    current_user=Depends(get_current_user),
+):
+    _validate_user_id(user_id)
+    if user_id != current_user.id:
+        raise HTTPException(403, "Forbidden")
     sb = get_supabase()
     result = (
         sb.table('purchases')
@@ -2048,7 +2050,7 @@ def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
 @app.post("/api/purchases")
 def create_purchase(
     data: PurchaseCreate,
-    _csrf: None = Depends(csrf_header_dep),
+    _csrf: None = Depends(csrf_header_dep),current_user=Depends(get_current_user),
 ):
     sb = get_supabase()
     result = sb.table('purchases').insert({
@@ -2279,7 +2281,7 @@ def submit_feedback(
     data: FeedbackCreate,
     request: Request,
     response: Response,
-    _csrf: None = Depends(csrf_header_dep),
+    _csrf: None = Depends(csrf_header_dep),current_user=Depends(get_current_user),
 ):
     limited_response = _apply_rate_limit(
         request,

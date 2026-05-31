@@ -459,18 +459,20 @@ const API = {
         return res.json();
     },
     async post(url, data) {
+        const authHeaders = await getAuthHeaders(); 
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders(), ...authHeaders,  },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
         return res.json();
     },
     async put(url, data) {
+        const authHeaders = await getAuthHeaders(); 
         const res = await fetch(url, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders(),...authHeaders,  },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -479,6 +481,19 @@ const API = {
 };
 
 // ── Auth ────────────────────────────────────────────────────────────
+
+async function getAuthHeaders() {
+    if (!sbClient) return {};
+    try {
+        const { data: { session } } = await sbClient.auth.getSession();
+        return session?.access_token
+            ? { 'Authorization': `Bearer ${session.access_token}` }
+            : {};
+    } catch {
+        return {};
+    }
+}
+
 async function initAuth() {
     if (!sbClient) {
         console.warn('Supabase client unavailable — auth disabled');
@@ -504,6 +519,19 @@ async function initAuth() {
         console.warn('Auth init failed:', err.message);
         els.authLabel.textContent = 'Sign In';
     }
+    sbClient.auth.onAuthStateChange((event, session) => {
+        if (event === 'TOKEN_REFRESHED') {
+            setUser(session.user);
+        }
+        if (event === 'SIGNED_IN') {
+            setUser(session.user);
+        }
+        if (event === 'SIGNED_OUT') {
+            state.user = null;
+            state.isGuest = true;
+            els.authLabel.textContent = 'Sign In';
+        }
+    });
 }
 
 function setUser(user) {
@@ -1332,11 +1360,12 @@ async function handleUpload(file) {
     form.append('file', file);
 
     try {
+        const authHeaders = await getAuthHeaders();
         // FormData POST — Content-Type is set automatically by the browser.
         // We only inject the CSRF header manually.
         const res = await fetch('/api/upload', {
             method: 'POST',
-            headers: { ..._csrfHeaders() },
+            headers: { ..._csrfHeaders(),...authHeaders, }
             body: form,
         });
         if (!res.ok) throw new Error('Upload failed');
