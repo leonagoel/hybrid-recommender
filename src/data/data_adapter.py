@@ -188,11 +188,15 @@ def validate_dataframe(df):
     """
 
     if df.empty:
-        raise ValueError("DataFrame is empty.")
+        raise ValueError(
+            "validate_dataframe failed: DataFrame is empty. "
+            "Ensure the CSV file loaded correctly and contains data."
+        )
 
     if len(df.columns) < 2:
         raise ValueError(
-            "DataFrame must have at least 2 columns."
+            f"validate_dataframe failed: Dataframe must have at least 2 columns, "
+            f"but only {len(df.columns)} column(s) found: {list(df.columns)}"
         )
 
     return True
@@ -217,8 +221,8 @@ def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=N
 
     if missing:
         raise ValueError(
-            "Interaction data is missing required column(s): "
-            + ", ".join(missing)
+            f"validate_recommender_inputs failed: missing required column(s): {', '.join(missing)}. "
+            f"Available columns are: {list(df.columns)}"
         )
 
     corrupted = []
@@ -235,8 +239,8 @@ def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=N
 
     if corrupted:
         raise ValueError(
-            "Interaction data contains invalid value(s) in: "
-            + ", ".join(dict.fromkeys(corrupted))
+            f"validate_recommender_inputs failed: invalid or blank value(s) found in column(s): "
+            f"{', '.join(dict.fromkeys(corrupted))}. Check for nulls, empty strings, or non-numeric ratings."
         )
 
     return True

@@ -234,7 +234,7 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
-    global _cache_misses, _cache_hits
+    global _cache_hits, _cache_misses
     return _response_cache.get(key)
 
 
@@ -273,11 +273,16 @@ def _set_cached_response(key: str, value: Any) -> None:
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    if _redis_client is not None:
-        try:
-            _redis_client.set(key, json.dumps(value))
-        except (RedisError, TypeError):
-            pass
+    try:
+        if _redis_client:
+            _redis_client.setex(
+                key,
+                CACHE_TTL_SECONDS,
+                json.dumps(value),
+            )
+    except (RedisError, TypeError):
+        pass
+
     with _cache_lock:
         _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
         _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
@@ -1234,6 +1239,8 @@ async def upload_dataset(
     admin=Depends(_require_admin_access),
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
+    import math
+
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
