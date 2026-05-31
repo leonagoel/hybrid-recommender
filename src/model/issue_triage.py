@@ -137,7 +137,7 @@ class IssueClassifier:
 
         # Difficulty Level indicators
         beginner_keywords = ["beginner", "easy", "simple", "typo", "doc", "documentation", "readme", "good first issue"]
-        if any(kw in text for kw in beginner_keywords):
+        if any(kw in text for kw in beginner_keywords) and "level" not in rules:
             rules["level"] = ("beginner", 0.9, f"Matched beginner keyword(s): {[kw for kw in beginner_keywords if kw in text]}")
             if "priority" not in rules:
                 rules["priority"] = ("low", 0.9, "Beginner tasks marked as low priority")
