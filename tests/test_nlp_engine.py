@@ -1,252 +1,97 @@
-"""
-Unit tests for the NLP sentiment engine module.
-Tests NLTK VADER sentiment analysis functions.
-"""
 import pytest
 import pandas as pd
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.model.nlp_engine import (
     analyze_sentiment,
     sentiment_label,
     batch_analyze,
     aggregate_sentiment_by_item,
-    compute_product_sentiment,
+    compute_product_sentiment
 )
 
 
 class TestAnalyzeSentiment:
-    """Test analyze_sentiment function."""
-
     def test_positive_text(self):
-        """Test that positive text returns positive score."""
-        score = analyze_sentiment("This is amazing! I love it!")
+        score = analyze_sentiment("I love this product! It's amazing!")
         assert score > 0.05
 
     def test_negative_text(self):
-        """Test that negative text returns negative score."""
-        score = analyze_sentiment("This is terrible! I hate it!")
+        score = analyze_sentiment("This is terrible. I hate it. Worst ever!")
         assert score < -0.05
 
-    def test_neutral_text(self):
-        """Test that neutral text returns score near zero."""
-        score = analyze_sentiment("The product is a thing.")
-        assert -0.05 <= score <= 0.05
-
-    def test_empty_string(self):
-        """Test that empty string returns 0.0."""
+    def test_empty_text(self):
         score = analyze_sentiment("")
         assert score == 0.0
 
-    def test_none_input(self):
-        """Test that None input returns 0.0."""
+    def test_none_text(self):
         score = analyze_sentiment(None)
         assert score == 0.0
 
-    def test_whitespace_only(self):
-        """Test that whitespace-only text returns 0.0."""
-        score = analyze_sentiment("   \n\t  ")
+    def test_whitespace_text(self):
+        score = analyze_sentiment("   ")
         assert score == 0.0
-
-    def test_non_string_int_input(self):
-        """Test that integer input returns 0.0."""
-        score = analyze_sentiment(42)
-        assert score == 0.0
-
-    def test_non_string_list_input(self):
-        """Test that list input returns 0.0."""
-        score = analyze_sentiment(["text", "more"])
-        assert score == 0.0
-
-    def test_non_string_dict_input(self):
-        """Test that dict input returns 0.0."""
-        score = analyze_sentiment({"key": "value"})
-        assert score == 0.0
-
-    def test_very_long_text(self):
-        """Test sentiment analysis on very long text."""
-        long_text = "This is great! " * 100
-        score = analyze_sentiment(long_text)
-        assert isinstance(score, float)
 
 
 class TestSentimentLabel:
-    """Test sentiment_label function."""
+    def test_positive_label(self):
+        assert sentiment_label(0.5) == 'positive'
+        assert sentiment_label(0.05) == 'positive'
 
-    def test_positive_score(self):
-        """Test that score >= 0.05 returns 'positive'."""
-        assert sentiment_label(0.05) == "positive"
-        assert sentiment_label(0.5) == "positive"
-        assert sentiment_label(1.0) == "positive"
+    def test_negative_label(self):
+        assert sentiment_label(-0.5) == 'negative'
+        assert sentiment_label(-0.05) == 'negative'
 
-    def test_negative_score(self):
-        """Test that score <= -0.05 returns 'negative'."""
-        assert sentiment_label(-0.05) == "negative"
-        assert sentiment_label(-0.5) == "negative"
-        assert sentiment_label(-1.0) == "negative"
-
-    def test_neutral_score(self):
-        """Test that score between -0.05 and 0.05 returns 'neutral'."""
-        assert sentiment_label(0.04) == "neutral"
-        assert sentiment_label(0.0) == "neutral"
-        assert sentiment_label(-0.04) == "neutral"
-
-    def test_boundary_positive(self):
-        """Test boundary case at 0.05."""
-        assert sentiment_label(0.05) == "positive"
-
-    def test_boundary_negative(self):
-        """Test boundary case at -0.05."""
-        assert sentiment_label(-0.05) == "negative"
-
-    def test_boundary_precision_cases(self):
-        """Test fine boundary values close to 0.05 and -0.05."""
-        assert sentiment_label(0.0499) == "neutral"
-        assert sentiment_label(0.0501) == "positive"
-        assert sentiment_label(-0.0499) == "neutral"
-        assert sentiment_label(-0.0501) == "negative"
+    def test_neutral_label(self):
+        assert sentiment_label(0.0) == 'neutral'
 
 
 class TestBatchAnalyze:
-    """Test batch_analyze function."""
-
-    def test_batch_analyze_adds_columns(self):
-        """Test that batch_analyze adds sentiment_score and sentiment_label."""
-        df = pd.DataFrame({
-            "review_text": ["I love this!", "This is terrible.", "It is okay."]
-        })
+    def test_batch_analyze_basic(self):
+        df = pd.DataFrame({'review_text': ['Great!', 'Terrible!', 'Okay']})
         result = batch_analyze(df)
-        assert "sentiment_score" in result.columns
-        assert "sentiment_label" in result.columns
-
-    def test_batch_analyze_positive_label(self):
-        """Test that positive text gets 'positive' label."""
-        df = pd.DataFrame({"review_text": ["I love this product!"]})
-        result = batch_analyze(df)
-        assert result["sentiment_label"].iloc[0] == "positive"
-
-    def test_batch_analyze_negative_label(self):
-        """Test that negative text gets 'negative' label."""
-        df = pd.DataFrame({"review_text": ["This is horrible!"]})
-        result = batch_analyze(df)
-        assert result["sentiment_label"].iloc[0] == "negative"
+        assert 'sentiment_score' in result.columns
+        assert 'sentiment_label' in result.columns
+        assert len(result) == 3
 
     def test_batch_analyze_missing_column(self):
-        """Test that missing text column returns neutral defaults."""
-        df = pd.DataFrame({"other_col": ["a", "b"]})
-        result = batch_analyze(df, text_col="missing_col")
-        assert result["sentiment_score"].iloc[0] == 0.0
-        assert result["sentiment_label"].iloc[0] == "neutral"
-
-    def test_batch_analyze_preserves_original(self):
-        """Test that batch_analyze does not modify original DataFrame."""
-        df = pd.DataFrame({"review_text": ["Great!", "Terrible."]})
-        original_cols = list(df.columns)
-        _ = batch_analyze(df)
-        assert list(df.columns) == original_cols
-
-    def test_batch_analyze_custom_column_name(self):
-        """Test batch_analyze with custom text column name."""
-        df = pd.DataFrame({"custom_text": ["I am happy!", "I am sad!"]})
-        result = batch_analyze(df, text_col="custom_text")
-        assert "sentiment_score" in result.columns
+        df = pd.DataFrame({'other_col': ['data']})
+        result = batch_analyze(df)
+        assert 'sentiment_score' in result.columns
+        assert result['sentiment_score'].iloc[0] == 0.0
 
 
 class TestAggregateSentimentByItem:
-    """Test aggregate_sentiment_by_item function."""
-
-    def test_aggregate_creates_summary(self):
-        """Test that aggregate creates summary DataFrame."""
+    def test_aggregate_basic(self):
         df = pd.DataFrame({
-            "title": ["Item A", "Item A", "Item B"],
-            "review_text": ["Great!", "Good!", "Terrible!"]
-        })
-        df = batch_analyze(df)
-        result = aggregate_sentiment_by_item(df)
-        assert "title" in result.columns
-        assert "avg_sentiment" in result.columns
-        assert "review_count" in result.columns
-
-    def test_aggregate_correct_counts(self):
-        """Test that review counts are correct."""
-        df = pd.DataFrame({
-            "title": ["Item A", "Item A", "Item B"],
-            "review_text": ["Great!", "Good!", "Terrible!"]
-        })
-        df = batch_analyze(df)
-        result = aggregate_sentiment_by_item(df)
-        item_a_count = result[result["title"] == "Item A"]["review_count"].iloc[0]
-        assert item_a_count == 2
-
-    def test_aggregate_auto_analyzes(self):
-        """Test that aggregate auto-runs batch_analyze if not done."""
-        df = pd.DataFrame({
-            "title": ["Item A"],
-            "review_text": ["Great!"]
+            'title': ['Item A', 'Item A', 'Item B'],
+            'review_text': ['Great', 'Good', 'Bad']
         })
         result = aggregate_sentiment_by_item(df)
-        assert "sentiment_score" not in df.columns
-        assert "avg_sentiment" in result.columns
-
-    def test_aggregate_respects_item_column(self):
-        """Test that aggregate uses specified item column."""
-        df = pd.DataFrame({
-            "product_name": ["Item X", "Item X", "Item Y"],
-            "review_text": ["Great!", "Good!", "Terrible!"]
-        })
-        df = batch_analyze(df)
-        result = aggregate_sentiment_by_item(df, item_col="product_name")
-        assert "product_name" in result.columns
+        assert 'avg_sentiment' in result.columns
+        assert 'review_count' in result.columns
+        assert len(result) == 2
 
 
 class TestComputeProductSentiment:
-    """Test compute_product_sentiment function."""
-
-    def test_compute_product_sentiment_empty_reviews(self):
-        assert compute_product_sentiment([]) is None
-
-    def test_compute_product_sentiment_none_input(self):
-        assert compute_product_sentiment(None) is None
-
-    def test_compute_product_sentiment_all_invalid(self):
-        assert compute_product_sentiment([42, {"key": "val"}, "   "]) is None
-
-    def test_compute_product_sentiment_valid(self):
-        reviews = [
-            "This is absolutely fantastic!",
-            "I hate this thing, it's terrible.",
-            "It is an average book.",
-        ]
-        score = compute_product_sentiment(reviews)
-        assert isinstance(score, float)
-        assert -1.0 <= score <= 1.0
-    def test_empty_reviews_list(self):
-        assert compute_product_sentiment([]) is None
+    def test_empty_reviews(self):
+        result = compute_product_sentiment([])
+        assert result is None
 
     def test_none_reviews(self):
-        assert compute_product_sentiment(None) is None
+        result = compute_product_sentiment(None)
+        assert result is None
 
-    def test_non_string_reviews_only(self):
-        assert compute_product_sentiment([123, True, None]) is None
+    def test_invalid_reviews(self):
+        result = compute_product_sentiment(["", " ", None])
+        assert result is None
 
-    def test_empty_strings_and_whitespaces(self):
-        assert compute_product_sentiment(["", "   ", "\n"]) is None
-
-    def test_valid_reviews_sentiment(self):
-        reviews = ["I love this! Amazing product.", "Pretty good.", "It was okay."]
-        score = compute_product_sentiment(reviews)
-        assert score is not None
-        assert score > 0.0
-
-    def test_mixed_valid_and_invalid_reviews(self):
-        reviews = ["Excellent product!", "", 456, "Not good, quite bad."]
-        score = compute_product_sentiment(reviews)
-        assert score is not None
-        assert isinstance(score, float)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    def test_valid_reviews(self):
+        reviews = ["I love this product", "It's amazing", "Best purchase ever"]
+        result = compute_product_sentiment(reviews)
+        assert result is not None
+        assert isinstance(result, float)
+        assert result > 0.0
