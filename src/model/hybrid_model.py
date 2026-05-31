@@ -336,7 +336,6 @@ class HybridRecommender:
         """
         # 1. Content-based scores
         content_recs = self.content_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-        all_titles = {r['title'] for r in content_recs}
 
         # 2. Collaborative scores
         collab_map = {}
@@ -347,21 +346,22 @@ class HybridRecommender:
                 all_titles.add(r['title'])
 
         # 3. Build unified candidates
-        candidates = {}
-        for r in content_recs:
-            candidates[r['title']] = {
+        all_titles = set(collab_map) | {r['title'] for r in content_recs}
+        candidates = {
+            r['title']: {
                 'title': r['title'],
                 'raw_content': r['content_score'],
                 'raw_collab': collab_map.get(r['title'], 0.0),
                 'raw_sentiment': self._sentiment_map.get(r['title'], 0.0),
             }
-
-        for t in collab_map:
+            for r in content_recs
+        }
+        for t, score in collab_map.items():
             if t not in candidates:
                 candidates[t] = {
                     'title': t,
                     'raw_content': 0.0,
-                    'raw_collab': collab_map[t],
+                    'raw_collab': score,
                     'raw_sentiment': self._sentiment_map.get(t, 0.0),
                 }
 
@@ -380,11 +380,9 @@ class HybridRecommender:
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
         kg_scores = []
-        t
         if self.kg_model:
-            l
             kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
-           
+
             kg_map = {
                 item['title']: item['kg_score']
                 for item in kg_recs
@@ -397,6 +395,7 @@ class HybridRecommender:
 
         else:
             kg_scores = [0.0] * len(items)
+
 
         
 
@@ -713,4 +712,3 @@ class HybridRecommender:
                 seen_categories.append(best.get('category', 'unknown'))
 
             return selected
-    
