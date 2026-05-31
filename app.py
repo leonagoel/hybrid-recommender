@@ -1,3 +1,7 @@
+"""
+Streamlit frontend for the Hybrid Recommender System.
+Upload a dataset, select an item, and get hybrid recommendations.
+"""
 import streamlit as st
 import pandas as pd
 from data_adapter import adapt_data
