@@ -6,15 +6,24 @@ import pytest
 import pandas as pd
 import sys
 import os
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# Get the src directory path (works on Windows, Mac, Linux)
+project_root = Path(__file__).parent.parent
+src_dir = project_root / 'src'
 
-from data_preprocessing import (
+# Add it to path if not already there
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+# sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'src'))
+
+from src.data.data_preprocessing import ( # type: ignore
     handle_missing_values,
     remove_duplicates,
     normalize_ratings,
     encode_categorical,
-    preprocess,
+    preprocess
 )
 
 

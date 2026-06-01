@@ -2,8 +2,46 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 import os
+def handle_missing_values(df):
+    return df.fillna("")
 
+def encode_categorical(df):
+    """
+    Encode categorical (object) columns using label encoding.
+    Creates new *_encoded columns without modifying original data.
+    """
+    from sklearn.preprocessing import LabelEncoder
 
+    df = df.copy()
+    le = LabelEncoder()
+
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col + "_encoded"] = le.fit_transform(df[col].astype(str))
+
+    return df
+
+def remove_duplicates(df: pd.DataFrame, subset=None):
+    """
+    Remove duplicate rows from dataset.
+    """
+    if subset:
+        return df.drop_duplicates(subset=subset)
+    return df.drop_duplicates()
+def normalize_ratings(df, column='rating'):
+    if column not in df.columns:
+        return df
+
+    min_val = df[column].min()
+    max_val = df[column].max()
+
+    if max_val == min_val:
+        df['rating_normalized'] = 0.0
+    else:
+        df['rating_normalized'] = (
+            (df[column] - min_val) / (max_val - min_val)
+        )
+
+    return df
 def preprocess_books_data(filepath="datasets/booksdata.csv"):
     """
     Preprocess the books dataset.
@@ -41,7 +79,11 @@ def preprocess_books_data(filepath="datasets/booksdata.csv"):
     # Encode categorical columns
     categorical_cols = ['authors', 'publisher']
 
-    le = LabelEncoder()
+    # le = LabelEncoder()
+    for col in df.select_dtypes(include=['object']).columns:
+         
+        le = LabelEncoder()
+        df[col + "_encoded"] = le.fit_transform(df[col].astype(str))
 
     for col in categorical_cols:
         if col in df.columns:
@@ -97,11 +139,16 @@ def preprocess_ratings_data(filepath="datasets/ratings.csv"):
         df[col] = df[col].fillna(df[col].median())
 
     # Normalize ratings
+    # Normalize ratings if present
     if 'rating' in df.columns:
-        scaler = MinMaxScaler()
+        min_val = df['rating'].min()
+        max_val = df['rating'].max()
 
-        df['rating_normalized'] = scaler.fit_transform(
-            df[['rating']]
+        if max_val == min_val:
+            df['rating_normalized'] = 0.0
+        else:
+            df['rating_normalized'] = (
+                (df['rating'] - min_val) / (max_val - min_val)
         )
 
     print(f"Final shape: {df.shape}")
@@ -194,3 +241,35 @@ if __name__ == "__main__":
     print(f"Books Dataset Shape: {books_df.shape}")
     print(f"Ratings Dataset Shape: {ratings_df.shape}")
     print(f"Sentiment Dataset Shape: {sentiment_df.shape}")
+
+def preprocess(df):
+    """
+    Master preprocessing function for a single dataframe.
+    Expected by tests.
+    """
+
+    df = df.copy()
+
+    # Remove duplicates
+    df = df.drop_duplicates()
+
+    # Handle missing values
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = df[col].fillna("Unknown")
+
+    for col in df.select_dtypes(include=['int64', 'float64']).columns:
+        df[col] = df[col].fillna(df[col].median())
+
+    # Normalize rating if exists
+    if 'rating' in df.columns:
+        min_val = df['rating'].min()
+        max_val = df['rating'].max()
+
+        if max_val == min_val:
+            df['rating_normalized'] = 0.0
+        else:
+            df['rating_normalized'] = (
+                (df['rating'] - min_val) / (max_val - min_val)
+            )
+
+    return df
