@@ -648,3 +648,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to get started — all skill levels welco
 </div>
 
 ---
+\n<!-- Fix for #894 -->\n
