@@ -5,21 +5,13 @@ Processes data in batches to handle large files (250k+ rows).
 Usage:
     python scripts/import_to_supabase.py
     python scripts/import_to_supabase.py --file datasets/Books.csv --batch-size 2000
-
-Optimized via Issue #490: Implements strict pathlib absolute context mappings 
-to prevent relative lookup path anomalies across multi-tier runtime environments.
 """
 import os
 import sys
 import argparse
-from pathlib import Path
+from typing import Iterator
 
-# --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---
-SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = SCRIPT_DIR.parent
-
-# Safely append project root to sys.path using absolute system reference strings
-sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import pandas as pd
 from tqdm import tqdm
@@ -27,56 +19,25 @@ from src.data.data_adapter import adapt_data
 from src.data.db import get_supabase_admin
 
 
-def chunked(df, size):
+def chunked(df: pd.DataFrame, size: int) -> Iterator[pd.DataFrame]:
+    """Yield successive chunks of a DataFrame."""
     for start in range(0, len(df), size):
         yield df.iloc[start:start + size]
 
 
-def _safe_float(value, default=0.0):
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    return number if pd.notna(number) else default
-
-
-def _safe_int(value, default=0):
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(number, default)
-
-
-def build_product_row(row):
-    """Normalize one adapted product row for the Supabase products table."""
-    return {
-        'title': str(row.get('title', 'Unknown'))[:500],
-        'description': str(row.get('description', ''))[:2000],
-        'category': str(row.get('category', ''))[:200],
-        'rating': _safe_float(row.get('rating', 0)),
-        'avg_sentiment': _safe_float(row.get('sentiment', 0)),
-        'review_count': _safe_int(row.get('review_count', 0)),
-        'metadata': {},
-    }
-
-
-def import_dataset(file_path, batch_size=1000, run_sentiment=False):
+def import_dataset(file_path: str, batch_size: int = 1000, run_sentiment: bool = False) -> int:
     """Import a single dataset file into the products table."""
-    # Ensure we use an absolute Path object for cross-platform naming resolution
-    file_path_obj = Path(file_path).resolve()
-    
     print(f"\n{'='*60}")
-    print(f"  Importing: {file_path_obj.name}")
+    print(f"  Importing: {os.path.basename(file_path)}")
     print(f"  Batch size: {batch_size}")
     print(f"{'='*60}\n")
 
-    # Read file format using verified pathlib extensions
-    ext = file_path_obj.suffix.lower()
+    # Read file
+    ext = os.path.splitext(file_path)[1].lower()
     if ext == '.json':
-        raw_df = pd.read_json(str(file_path_obj), lines=True)
+        raw_df = pd.read_json(file_path, lines=True)
     elif ext == '.csv':
-        raw_df = pd.read_csv(str(file_path_obj), on_bad_lines='skip', low_memory=False)
+        raw_df = pd.read_csv(file_path, on_bad_lines='skip', low_memory=False)
     else:
         print(f"Unsupported format: {ext}")
         return 0
@@ -125,44 +86,40 @@ def import_dataset(file_path, batch_size=1000, run_sentiment=False):
             if errors <= 3:
                 print(f"\n  ⚠ Batch error: {str(e)[:200]}")
 
-    print(f"\n  Code execution block finished. Imported {inserted:,} products ({errors} batch errors)")
+    print(f"\n  ✅ Imported {inserted:,} products ({errors} batch errors)")
     return inserted
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description='Import datasets into Supabase')
     parser.add_argument('--file', type=str, help='Specific file to import')
     parser.add_argument('--batch-size', type=int, default=1000, help='Rows per batch')
     parser.add_argument('--sentiment', action='store_true', help='Run sentiment analysis')
     args = parser.parse_args()
 
-    # FIX FOR ISSUE #490: Safely anchor data directory to root layout path
-    data_dir = PROJECT_ROOT / "datasets"
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datasets')
 
     if args.file:
-        files = [Path(args.file)]
+        files = [args.file]
     else:
         # Default: import all CSV/JSON files in datasets/
         files = []
-        if data_dir.exists():
-            for f in sorted(os.listdir(data_dir)):
-                if f.endswith(('.csv', '.json')):
-                    files.append(data_dir / f)
+        for f in sorted(os.listdir(data_dir)):
+            if f.endswith(('.csv', '.json')):
+                files.append(os.path.join(data_dir, f))
 
     if not files:
-        print(f"No dataset files found. Place CSV/JSON files in absolute target path: {data_dir}")
+        print("No dataset files found. Place CSV/JSON files in datasets/")
         return
 
     print(f"\nFound {len(files)} dataset file(s)")
     total = 0
     for f in files:
-        # Evaluate clean path context references regardless of execution boundaries
-        path_check = f if f.is_absolute() else data_dir / f.name
-        
-        if path_check.exists():
-            total += import_dataset(str(path_check), args.batch_size, args.sentiment)
+        path = f if os.path.isabs(f) else os.path.join(data_dir, f)
+        if os.path.exists(path):
+            total += import_dataset(path, args.batch_size, args.sentiment)
         else:
-            print(f"  ✗ File not found at target: {path_check}")
+            print(f"  ✗ File not found: {path}")
 
     print(f"\n{'='*60}")
     print(f"  Total products imported: {total:,}")

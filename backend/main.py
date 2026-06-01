@@ -709,12 +709,9 @@ class FederatedTrainRequest(BaseModel):
 @app.get("/api/health")
 def health_check():
     """
-    Low-overhead health check endpoint for component tracking.
+    Low‑overhead health check endpoint for component tracking.
     Checks database (Supabase), model readiness, and cache (Redis).
     """
-    import time
-    from db import get_supabase
-    
     result = {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -724,13 +721,10 @@ def health_check():
             "cache": {"status": "unknown", "details": None},
         },
     }
-    
+
     # 1. Database check (Supabase)
     try:
         sb = get_supabase()
-        # Perform a simple, cheap query to verify connectivity
-        # Using a lightweight RPC or select count from a small table
-        # Try to fetch first row from a known small table (e.g., products limit 1)
         response = sb.table("products").select("id").limit(1).execute()
         if response.data is not None:
             result["components"]["database"] = {"status": "healthy", "details": "connected"}
@@ -740,7 +734,7 @@ def health_check():
     except Exception as e:
         result["components"]["database"] = {"status": "unhealthy", "details": str(e)}
         result["status"] = "degraded"
-    
+
     # 2. Model readiness check
     try:
         if models.get("ready"):
@@ -751,15 +745,13 @@ def health_check():
     except Exception as e:
         result["components"]["model"] = {"status": "error", "details": str(e)}
         result["status"] = "degraded"
-    
-    # 3. Cache check (Redis)
+
+    # 3. Cache (Redis) check
     try:
-        from redis import Redis
-        from redis.exceptions import RedisError
         redis_url = os.environ.get("REDIS_URL", "")
         if redis_url:
+            from redis import Redis
             r = Redis.from_url(redis_url, decode_responses=True)
-            # Ping the Redis server
             if r.ping():
                 result["components"]["cache"] = {"status": "healthy", "details": "redis ping successful"}
             else:
@@ -770,9 +762,8 @@ def health_check():
     except Exception as e:
         result["components"]["cache"] = {"status": "error", "details": str(e)}
         result["status"] = "degraded"
-    
-    return result
 
+    return result
 
 # ── API Metrics ───────────────────────────────────────────────────────
 @app.get("/api/version")
