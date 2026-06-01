@@ -320,15 +320,30 @@ class HybridRecommender:
         """
         # 1. Content-based scores
         content_recs = self.content_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-        all_titles = {r['title'] for r in content_recs}
+        all_titles = set()
+
+        for r in content_recs:
+            if not isinstance(r, dict):
+                continue
+
+            title = r.get("title")
+            if title:
+                all_titles.add(title)
 
         # 2. Collaborative scores
         collab_map = {}
         if self.collab_model:
             collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
             for r in collab_recs:
-                collab_map[r['title']] = r['collab_score']
-                all_titles.add(r['title'])
+                if not isinstance(r, dict):
+                    continue
+
+                title = r.get("title")
+                if not title:
+                    continue
+
+                collab_map[title] = r.get("collab_score", 0.0)
+                all_titles.add(title)
 
         # 3. Build unified candidates
         candidates = {}
