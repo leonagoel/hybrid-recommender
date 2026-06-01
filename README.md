@@ -506,6 +506,39 @@ SUPABASE_SERVICE_KEY=your_service_key
 
 ## 11 — Setup Verification
 
+### Unified Project Diagnostics
+
+Run the project doctor for a consolidated setup report covering Python version,
+installed dependencies, environment configuration, repository structure,
+datasets, backend availability, and Redis connectivity:
+
+```bash
+python scripts/project_doctor.py
+```
+
+Use `--skip-services` when you only want local file, environment, and dependency
+checks without requiring the backend or Redis to be running:
+
+```bash
+python scripts/project_doctor.py --skip-services
+```
+
+Example output:
+
+```text
+Running Hybrid Recommender Diagnostics...
+
+[PASS] Python: Python 3.10.12 is supported
+[PASS] Dependencies: All packages from requirements.txt are installed
+[PASS] Environment: .env contains the required Supabase variables
+[PASS] Repository: Required project files and directories are present
+[PASS] Datasets: Found 6 dataset file(s) in datasets
+[WARN] Backend: Backend is not reachable at http://localhost:8000/api/status
+       Suggested fix: Start the API with python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000.
+
+Result: 5 Passed | 1 Warning(s) | 0 Failed
+```
+
 ```bash
 # Backend
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
