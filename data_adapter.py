@@ -250,7 +250,13 @@ def adapt_data(df):
 
     desc_col = detect_column(
         columns,
-        ['desc', 'summary', 'overview', 'about']
+        [
+            'description',
+            'desc',
+            'summary',
+            'overview',
+            'about'
+        ]
     )
 
     user_col = detect_column(
