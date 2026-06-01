@@ -88,4 +88,4 @@ Third-party services and dependencies follow their own security policies.
 
 ## Acknowledgements
 
-We appreciate the efforts of security researchers and contributors who help keep this project secure through responsible disclosure.
+We appreciate the efforts of security researchers and contributors who help keep this project secure through responsible disclosure.\n<!-- Fix for #895 -->\n
