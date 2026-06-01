@@ -52,13 +52,20 @@ def test_prediction_output_format():
 
 
 def test_cold_start_user():
+    """Unknown users receive a popularity-based fallback, not an empty list."""
     df = sample_data()
 
     model = CollaborativeRecommender(df)
 
     results = model.predict_for_user(999)
 
-    assert results == []
+    # Cold-start now returns Bayesian popularity fallback — must be a non-empty list
+    assert isinstance(results, list)
+    assert len(results) > 0
+    # Each item must have the standard keys
+    for item in results:
+        assert "title" in item
+        assert "predicted_score" in item
 
 
 def test_extreme_sparse_matrix():
