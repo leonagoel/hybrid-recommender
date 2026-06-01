@@ -1242,34 +1242,13 @@ def build_models(
     rate_limited = _apply_rate_limit(
         request, response, "build",
         "BUILD_RATE_LIMIT", 1,
-    global STAGING_MODEL_VERSION
-    sb = get_supabase_admin()
-    if sb is None:
-        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
-    all_products = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
-        batch = result.data or []
-        all_products.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-    if not all_products:
-        raise HTTPException(400, "No products in database. Upload data first.")
-    import pandas as pd
-    item_df = pd.DataFrame(all_products)
-    item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
     )
     if rate_limited is not None:
         return rate_limited
 
     if not _build_lock.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="A model build is already in progress.")
+    
     global STAGING_MODEL_VERSION
     sb = get_supabase_admin()
     if sb is None:
@@ -1348,8 +1327,11 @@ def build_models(
         models["ready"] = True
         models["build_time"] = build_time
         models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+        
         _clear_response_cache()
+        _clear_trending_cache()
         precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
+        
         return {
             "message": "Models built successfully!",
             "model_version": version,
@@ -1361,36 +1343,6 @@ def build_models(
         }
     finally:
         _build_lock.release()
-        },
-        "status": "staging",
-        "metrics": {
-            "ndcg": 0.0,
-            "latency_ms": 0.0,
-            "error_rate": 0.0,
-        },
-    }
-
-    STAGING_MODEL_VERSION = version
-    
-    models["content"] = content_model
-    models["collab"] = collab_model
-    models["hybrid"] = hybrid_model
-    models["item_df"] = item_df
-    models["ready"] = True
-    models["build_time"] = build_time
-    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
-    _clear_response_cache()
-    _clear_trending_cache()
-    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
-    return {
-        "message": "Models built successfully!",
-        "model_version": version,
-        "status": "staging",
-        "items": len(item_df),
-        "has_collaborative": collab_model is not None,
-        "build_time_seconds": build_time,
-        "precomputed_recommendations": precomputed_count,
-    }
 
 @app.post("/api/train/federated")
 def train_federated(
