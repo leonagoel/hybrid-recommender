@@ -205,35 +205,6 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    
-    try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            return json.loads(cached)
-
-    if _redis_client is not None:
-        try:
-            cached = _redis_client.get(key)
-            if cached is not None:
-                return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
-            pass
-
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
     cached = _response_cache.get(key)
     if cached is None:
         _cache_misses += 1
