@@ -1,16 +1,32 @@
-## Description
-Please include a summary of the change and which issue is fixed.
+## What changed
+<!-- Describe what you added, fixed, or changed -->
 
-Fixes #516
+## Why
+<!-- Explain the problem this solves or the feature this adds -->
 
-## Type of Change
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [x] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature that would cause existing functionality to not work as expected)
-- [ ] Documentation update
+## How to test
+<!-- Step-by-step instructions to test your changes locally -->
+```bash
+# Example:
+pip install -r requirements.txt
+python test_pipeline.py
+```
 
-## Checklist:
-- [x] My code follows the style guidelines of this project
-- [x] I have performed a self-review of my own code
-- [x] I have commented my code, particularly in hard-to-understand areas
-- [x] My changes generate no new warnings
+## Screenshots (if UI change)
+<!-- Add before/after screenshots or a screen recording -->
+
+## Checklist
+- [ ] I have read the [CONTRIBUTING.md](CONTRIBUTING.md)
+- [ ] My code follows PEP8 style (`flake8 .`)
+- [ ] I have tested my changes locally
+- [ ] I have added/updated tests where applicable
+- [ ] I can explain every line of code I've written
+- [ ] I have NOT used AI-generated code without understanding and attributing it
+
+## Related issue
+Closes #<!-- issue number -->
+
+## AI assistance disclosure
+<!-- If you used AI tools (Copilot, ChatGPT, etc.), describe how below. Concealment = disqualification. -->
+- [ ] I did not use AI assistance for this PR
+- [ ] I used AI assistance for: <!-- describe what -->
