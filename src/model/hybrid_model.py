@@ -270,8 +270,8 @@ class HybridRecommender:
                     key = f'category:{top_cat}'
                     if key in self.weight_matrix:
                         a, b, g = self.weight_matrix[key]
-            except Exception as e:
-                logger.warning(f"Weight resolution failed for category signal: {e}")    
+        except Exception as e:
+            logger.warning(f"Weight resolution failed for category signal: {e}")    
 
         # user signals
         if user_id and self.collab_model and hasattr(self.collab_model, 'df'):
