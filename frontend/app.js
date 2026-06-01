@@ -2079,6 +2079,7 @@ function toggleLanguage() {
 }
 
 // -- Filter Chips ----------------------------------------------------
+// Solved Issue #242: Filter chips implementation
 function initFilterChips() {
     const chipsContainer = document.getElementById('filter-chips');
     if (!chipsContainer) return;
