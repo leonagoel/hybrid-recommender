@@ -16,7 +16,8 @@ import numpy as np
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
-
+import logging
+logger = logging.getLogger(__name__)
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
@@ -269,8 +270,8 @@ class HybridRecommender:
                     key = f'category:{top_cat}'
                     if key in self.weight_matrix:
                         a, b, g = self.weight_matrix[key]
-        except Exception:
-            pass
+            except Exception as e:
+                logger.warning(f"Weight resolution failed for category signal: {e}")    
 
         # user signals
         if user_id and self.collab_model and hasattr(self.collab_model, 'df'):
@@ -280,8 +281,9 @@ class HybridRecommender:
                     a, b, g = self.weight_matrix['warm_user']
                 if 'cold_user' in self.weight_matrix and user_interacts < 3:
                     a, b, g = self.weight_matrix['cold_user']
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Weight resolution failed for user signal: {e}")
+
 
         # feature absence overrides
         if self.collab_model is None and 'no_collab' in self.weight_matrix:
