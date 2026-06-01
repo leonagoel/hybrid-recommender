@@ -31,10 +31,11 @@ def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
 
 class HybridRecommender:
     def __init__(self, content_model, collab_model=None, item_df=None,
-                 alpha=0.4, beta=0.35, gamma=0.25,
-                 normalization='minmax', weight_matrix=None,
-                 use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None):
+             alpha=0.4, beta=0.35, gamma=0.25,
+             normalization='minmax', weight_matrix=None,
+             model_kwargs=None,
+             use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
+             causal_config=None):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -58,6 +59,10 @@ class HybridRecommender:
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        self.fairness_enabled = False
+        self.fairness_key = "category"
+        self.fairness_max_share = 1.0
+
 
         # Expose model kwargs explicitly as structural configuration dictionaries
         self.model_kwargs = model_kwargs or {}
