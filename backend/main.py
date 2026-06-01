@@ -2167,6 +2167,10 @@ async def github_webhook(request: Request, response: Response):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
         
+    # Guard against null objects, arrays, or strings passed as JSON
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload must be a JSON object.")
+        
     event = request.headers.get("X-GitHub-Event")
     action = payload.get("action")
     
@@ -2177,24 +2181,35 @@ async def github_webhook(request: Request, response: Response):
     should_triage = False
     
     if event == "issues" and action == "opened":
-        issue = payload.get("issue", {})
-        issue_number = issue.get("number")
-        title = issue.get("title", "")
-        body = issue.get("body", "")
-        repo_full_name = payload.get("repository", {}).get("full_name")
-        should_triage = True
-        
-    elif event == "issue_comment" and action == "created":
-        comment = payload.get("comment", {})
-        comment_body = comment.get("body", "").strip()
-        if comment_body.startswith("!retriage"):
-            issue = payload.get("issue", {})
+        issue = payload.get("issue")
+        if isinstance(issue, dict):
             issue_number = issue.get("number")
             title = issue.get("title", "")
             body = issue.get("body", "")
-            repo_full_name = payload.get("repository", {}).get("full_name")
-            should_triage = True
             
+        repo = payload.get("repository")
+        if isinstance(repo, dict):
+            repo_full_name = repo.get("full_name")
+            
+        should_triage = True
+        
+    elif event == "issue_comment" and action == "created":
+        comment = payload.get("comment")
+        if isinstance(comment, dict):
+            comment_body = str(comment.get("body", "")).strip()
+            if comment_body.startswith("!retriage"):
+                issue = payload.get("issue")
+                if isinstance(issue, dict):
+                    issue_number = issue.get("number")
+                    title = issue.get("title", "")
+                    body = issue.get("body", "")
+                    
+                repo = payload.get("repository")
+                if isinstance(repo, dict):
+                    repo_full_name = repo.get("full_name")
+                    
+                should_triage = True
+                
     if should_triage and issue_number and repo_full_name:
         token = os.environ.get("GITHUB_TOKEN", "").strip()
         triage_res = await triage_issue(

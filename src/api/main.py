@@ -62,9 +62,12 @@ class RecommendationRequest(BaseModel):
 _content_model: Optional[ContentRecommender] = None
 _collab_model: Optional[CollaborativeRecommender] = None
 _item_df = None
+<<<<<<< HEAD
 fairness: Optional[bool] = None
 fairness_key: Optional[str] = None
 fairness_max_share: Optional[float] = None
+=======
+>>>>>>> fea1db0 (fix: safeguard github webhook against null payloads and fix api indentation)
 
 
 @app.on_event("startup")
@@ -121,6 +124,7 @@ def get_recommendations(req: RecommendationRequest):
             causal_config=causal_cfg,
         )
 
+<<<<<<< HEAD
         recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
         return {
             "recommendations": recs,
@@ -169,3 +173,10 @@ def get_recommendations(req: RecommendationRequest):
         except Exception as fallback_exc:
             logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
             raise HTTPException(status_code=500, detail="Recommendation engine completely offline.")
+=======
+    recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
+    return {
+        "recommendations": recs,
+        "causal_debiasing_applied": req.use_causal,
+    }
+>>>>>>> fea1db0 (fix: safeguard github webhook against null payloads and fix api indentation)
