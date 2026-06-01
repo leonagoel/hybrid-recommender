@@ -201,6 +201,10 @@ def _clear_response_cache() -> None:
     _cache_hits = 0
     _cache_misses = 0
 
+def _clear_trending_cache() -> None:
+    global TRENDING_CACHE
+    TRENDING_CACHE = {"data": None, "timestamp": None}
+
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
@@ -1211,6 +1215,7 @@ async def upload_dataset(
                 errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
         models["ready"] = False
         _clear_response_cache()
+        _clear_trending_cache()
         result = {
             "message": f"Imported {imported:,} products from {filename}",
             "imported": imported, "total_rows": total,
@@ -1356,6 +1361,36 @@ def build_models(
         }
     finally:
         _build_lock.release()
+        },
+        "status": "staging",
+        "metrics": {
+            "ndcg": 0.0,
+            "latency_ms": 0.0,
+            "error_rate": 0.0,
+        },
+    }
+
+    STAGING_MODEL_VERSION = version
+    
+    models["content"] = content_model
+    models["collab"] = collab_model
+    models["hybrid"] = hybrid_model
+    models["item_df"] = item_df
+    models["ready"] = True
+    models["build_time"] = build_time
+    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+    _clear_response_cache()
+    _clear_trending_cache()
+    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
+    return {
+        "message": "Models built successfully!",
+        "model_version": version,
+        "status": "staging",
+        "items": len(item_df),
+        "has_collaborative": collab_model is not None,
+        "build_time_seconds": build_time,
+        "precomputed_recommendations": precomputed_count,
+    }
 
 @app.post("/api/train/federated")
 def train_federated(
@@ -1435,6 +1470,7 @@ def train_federated(
     models["build_time"] = build_time
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
     _clear_response_cache()
+    _clear_trending_cache()
 
     return {
         "message": "Federated collaborative model trained successfully!",
@@ -1968,6 +2004,22 @@ def _fetch_categories_from_db(sb) -> list:
 
     # Tier 2: legacy RPC — kept for backwards compatibility.
     try:
+    try:
+        result = sb.rpc("get_distinct_categories", {}).execute()
+        if result.data is not None:
+            cats = [
+                row["category"] if isinstance(row, dict) else str(row)
+                for row in result.data
+                if (row["category"] if isinstance(row, dict) else str(row))
+            ]
+            if cats:
+                cats.sort()
+                return cats
+    except Exception:
+        pass
+
+    # Tier 2: legacy RPC — kept for backwards compatibility.
+    try:
         result = sb.rpc("get_categories", {}).execute()
         if result.data:
             cats = [c for c in result.data if c]
@@ -2034,6 +2086,7 @@ def create_purchase(
         'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
     }).execute()
     _clear_response_cache()
+    _clear_trending_cache()
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 
@@ -2177,6 +2230,73 @@ def get_trending_products(
     sb = get_supabase()
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=days)).isoformat()
+
+    # Attempt database-side aggregation via RPC first.  The RPC returns one
+    # row per product (purchase_count + avg_rating), so only ~limit*3 rows
+    # cross the network instead of every raw purchase row.
+    rows = None
+    try:
+        rpc_result = sb.rpc(
+            "get_trending_products",
+            {"cutoff_date": cutoff_date, "limit_n": limit * 3},
+        ).execute()
+        if rpc_result.data is not None:
+            rows = rpc_result.data
+    except Exception:
+        rows = None
+
+    if rows is not None:
+        # RPC already aggregated; build a stats dict from the pre-summed rows.
+        stats: dict = {}
+        for r in rows:
+            pid = r.get("product_id")
+            if pid is None:
+                continue
+            stats[pid] = {
+                "count": int(r.get("purchase_count", 0)),
+                "ratings": [float(r.get("avg_rating", 0))] * max(int(r.get("purchase_count", 1)), 1),
+                "product": {
+                    "id": pid,
+                    "title": r.get("title", ""),
+                    "category": r.get("category", ""),
+                    "rating": r.get("rating", 0),
+                    "avg_sentiment": r.get("avg_sentiment", 0),
+                    "review_count": r.get("review_count", 0),
+                },
+            }
+    else:
+        # Fallback: fetch raw purchase rows with a hard row cap to prevent OOM.
+        # The cap (TRENDING_FETCH_LIMIT) bounds memory usage to a known maximum
+        # even when the RPC function has not been deployed yet.
+        try:
+            fallback_result = (
+                sb.table("purchases")
+                .select(
+                    "product_id, rating, purchased_at, "
+                    "products(id, title, category, rating, avg_sentiment, review_count)"
+                )
+                .gte("purchased_at", cutoff_date)
+                .limit(TRENDING_FETCH_LIMIT)
+                .execute()
+            )
+            raw_rows = fallback_result.data or []
+        except Exception as exc:
+            logger.error("Trending fallback query failed: %s", exc)
+            raw_rows = []
+
+        stats = _aggregate_purchase_rows(raw_rows)
+
+    if not stats:
+        response: dict = {"results": [], "days": days, "limit": limit}
+        _set_cached_response(cache_key, response)
+        return response
+    if isinstance(TRENDING_CACHE, dict):
+        TRENDING_CACHE.pop("data", None)
+        TRENDING_CACHE.pop("timestamp", None)
+        TRENDING_CACHE[cache_key] = (now, response)
+    else:
+        TRENDING_CACHE = {cache_key: (now, response)}
+
 
     # Attempt database-side aggregation via RPC first.  The RPC returns one
     # row per product (purchase_count + avg_rating), so only ~limit*3 rows
