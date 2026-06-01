@@ -113,6 +113,9 @@ _rate_limit_lock = Lock()
 _cache_lock = Lock()
 _build_lock = Lock()
 
+_response_cache = OrderedDict()
+_redis_client = None
+
 MOCK_PRODUCTS = [
     {
         "id": 1,
