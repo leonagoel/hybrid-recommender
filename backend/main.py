@@ -1949,22 +1949,7 @@ def _fetch_categories_from_db(sb) -> list:
         pass
 
     # Tier 2: legacy RPC — kept for backwards compatibility.
-    try:
-    try:
-        result = sb.rpc("get_distinct_categories", {}).execute()
-        if result.data is not None:
-            cats = [
-                row["category"] if isinstance(row, dict) else str(row)
-                for row in result.data
-                if (row["category"] if isinstance(row, dict) else str(row))
-            ]
-            if cats:
-                cats.sort()
-                return cats
-    except Exception:
-        pass
 
-    # Tier 2: legacy RPC — kept for backwards compatibility.
     try:
         result = sb.rpc("get_categories", {}).execute()
         if result.data:
