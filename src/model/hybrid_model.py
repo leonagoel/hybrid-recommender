@@ -10,9 +10,13 @@ Improvements:
 - Better weight redistribution
 - Optional causal debiasing via Inverse Propensity Scoring (IPS)
 """
+import logging
 import math
+from collections import Counter
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
@@ -288,8 +292,8 @@ class HybridRecommender:
                     key = f'category:{top_cat}'
                     if key in self.weight_matrix:
                         a, b, g = self.weight_matrix[key]
-        except Exception as e:
-            logger.warning(f"Weight resolution failed for category signal: {e}")    
+        except Exception:
+            logger.warning("Failed to apply weight_matrix category override", exc_info=True)
 
         # user signals
         if user_id and self.collab_model and hasattr(self.collab_model, 'df'):
@@ -299,9 +303,8 @@ class HybridRecommender:
                     a, b, g = self.weight_matrix['warm_user']
                 if 'cold_user' in self.weight_matrix and user_interacts < 3:
                     a, b, g = self.weight_matrix['cold_user']
-            except Exception as e:
-                logger.warning(f"Weight resolution failed for user signal: {e}")
-
+            except Exception:
+                logger.warning("Failed to check user interaction count for weight matrix", exc_info=True)
 
         # feature absence overrides
         if self.collab_model is None and 'no_collab' in self.weight_matrix:
