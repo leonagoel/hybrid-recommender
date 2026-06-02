@@ -36,6 +36,12 @@ FIRST_NAMES = [
     "Lane", "Silver", "Storm", "River", "Wren", "Aspen", "Cedar", "Indigo",
 ]
 
+def generate_mock_password(length: int = 12) -> str:
+    """Generate a secure random password for mock users."""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
 REVIEW_TEMPLATES = [
     "Great product, really enjoyed it!",
     "Not what I expected, but decent.",
