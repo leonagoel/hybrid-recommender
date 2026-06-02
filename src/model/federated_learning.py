@@ -6,8 +6,6 @@ across decentralized client nodes without centralizing raw user interactions.
 
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix
-from sklearn.decomposition import TruncatedSVD
 from src.model.collaborative_model import CollaborativeRecommender
 
 
