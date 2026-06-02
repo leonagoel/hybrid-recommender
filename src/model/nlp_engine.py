@@ -4,7 +4,6 @@ Uses NLTK VADER for lightweight sentiment analysis on user review text.
 """
 import nltk
 import pandas as pd
-import numpy as np
 
 # Download VADER lexicon (only on first run)
 try:
