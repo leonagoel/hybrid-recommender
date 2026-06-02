@@ -95,7 +95,8 @@ class CSRFMiddleware:
             await self._app(scope, receive, send)
             return
 
-        request = Request(scope, receive)
+        # Pass only scope to prevent capturing/starving the downstream receive channel
+        request = Request(scope)
 
         # 1. Skip safe methods
         if request.method.upper() not in _PROTECTED_METHODS:
