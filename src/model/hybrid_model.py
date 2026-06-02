@@ -661,7 +661,7 @@ class HybridRecommender:
 
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
-            global_avg = df['rating'].mean() if len(df) > 0 else 3.0
+            global_avg = df['rating'].mean()
             df['_bayesian'] = df.apply(
                 lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1
             )
