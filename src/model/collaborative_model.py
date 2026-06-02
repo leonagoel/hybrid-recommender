@@ -183,14 +183,14 @@ class CollaborativeRecommender:
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
     
     def _popularity_fallback(self, top_n=10):
-    #Fallback for cold-start users — top-N by interaction count (popularity)
+        # Fallback for cold-start users — top-N by interaction count (popularity)
         import logging
         logger = logging.getLogger(__name__)
         logger.info("Using popularity-based fallback for cold-start user.")
     
         item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
     
-       # Bayesian rating
+        # Bayesian rating
         global_avg = item_counts['mean'].mean()
         m = 5
         item_counts['bayesian'] = (
