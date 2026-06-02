@@ -1,11 +1,11 @@
-"""Quick smoke test for the full pipeline."""
+import sys, os
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 
-def main() -> None:
+    from src.data.dataset_manager import DatasetManager
     print("1. Loading dataset...")
     from dataset_manager import DatasetManager
     dm = DatasetManager()
@@ -14,7 +14,7 @@ def main() -> None:
     print(f"   Items: {len(item_df)}, Interactions: {len(interaction_df)}")
 
     print("2. Running NLP sentiment...")
-    from nlp_engine import batch_analyze, aggregate_sentiment_by_item
+    from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
     interaction_df = batch_analyze(interaction_df, 'review_text')
     sa = aggregate_sentiment_by_item(interaction_df)
     item_df = item_df.merge(sa, on='title', how='left')
@@ -22,15 +22,15 @@ def main() -> None:
     print(f"   Avg sentiment: {item_df['avg_sentiment'].mean():.4f}")
 
     print("3. Building content model...")
-    from content_model import ContentRecommender
+    from src.model.content_model import ContentRecommender
     cm = ContentRecommender(item_df)
 
     print("4. Building collaborative model (SVD)...")
     from collaborative_model import CollaborativeRecommender
-    collab = CollaborativeRecommender(interaction_df)
+    from src.model.collaborative_model import CollaborativeRecommender
 
     print("5. Building hybrid model...")
-    from hybrid_model import HybridRecommender
+    from src.model.hybrid_model import HybridRecommender
     hm = HybridRecommender(cm, collab, item_df)
 
     print("6. Getting recommendations...")
