@@ -1734,7 +1734,7 @@ def get_trending_products(
     if (
         TRENDING_CACHE["data"] is not None and
         TRENDING_CACHE["timestamp"] is not None and
-        (now - TRENDING_CACHE["timestamp"]).seconds < 3600
+        (now - TRENDING_CACHE["timestamp"]).total_seconds() < 3600
     ):
         return TRENDING_CACHE["data"]
 
