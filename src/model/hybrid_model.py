@@ -145,6 +145,9 @@ class HybridRecommender:
                             row['review_count'] / max_reviews
                         )
 
+            # Optional runtime hook for online updates (attachable)
+            self.online_updater = None
+
     def set_weights(self, alpha, beta, gamma):
         """Update the scoring weights. Normalized to sum to 1."""
         if any(math.isnan(w) for w in [alpha, beta, gamma]):
@@ -575,6 +578,90 @@ class HybridRecommender:
         if score < -0.2:
             return 'negative'
         return 'neutral'
+
+    def set_online_updater(self, updater):
+        """Attach an optional OnlineUpdater-like object exposing `ingest(...)`.
+
+        This method only stores the reference; behaviour remains unchanged
+        unless `apply_interaction` is called by the application.
+        """
+        self.online_updater = updater
+
+    def apply_interaction(self, user_id, item_title, rating=None, sentiment=None, timestamp=None):
+        """Best-effort incremental update of internal signals for a single interaction.
+
+        - Delegates to attached `online_updater.ingest(...)` when present; otherwise
+          performs lightweight local updates to review counts, popularity,
+          rating and sentiment aggregates, and appends to `collab_model.df` if available.
+        - Returns True on success, False on error.
+        """
+        # Delegate to external updater if provided
+        if self.online_updater is not None:
+            try:
+                self.online_updater.ingest(
+                    user_id=user_id,
+                    item_title=item_title,
+                    rating=rating,
+                    sentiment=sentiment,
+                    timestamp=timestamp,
+                    recommender=self,
+                )
+                return True
+            except Exception:
+                # fallback to local best-effort updates
+                pass
+
+        try:
+            prev = int(self._review_count_map.get(item_title, 0))
+            new_count = prev + 1
+            self._review_count_map[item_title] = new_count
+
+            # popularity update relative to tracked max
+            try:
+                max_reviews = max(self._review_count_map.values()) if self._review_count_map else new_count
+            except Exception:
+                max_reviews = new_count
+            self._popularity_map[item_title] = (new_count / max_reviews) if max_reviews > 0 else 0.0
+
+            if rating is not None:
+                try:
+                    prev_rating = float(self._rating_map.get(item_title, 0.0))
+                    prev_n = prev if prev > 0 else 0
+                    raw_avg = (prev_rating * prev_n + float(rating)) / (prev_n + 1) if (prev_n + 1) > 0 else float(rating)
+                    try:
+                        global_avg = float(np.mean(list(self._rating_map.values()))) if self._rating_map else 3.0
+                    except Exception:
+                        global_avg = 3.0
+                    self._rating_map[item_title] = bayesian_rating(raw_avg, new_count, global_avg=global_avg)
+                except Exception:
+                    pass
+
+            if sentiment is not None:
+                try:
+                    prev_sent = self._sentiment_map.get(item_title)
+                    if prev_sent is None:
+                        self._sentiment_map[item_title] = float(sentiment)
+                    else:
+                        self._sentiment_map[item_title] = (float(prev_sent) * prev + float(sentiment)) / (prev + 1)
+                except Exception:
+                    pass
+
+            # append to collab_model.df if available
+            try:
+                if self.collab_model is not None and hasattr(self.collab_model, 'df'):
+                    import pandas as pd
+                    row = {'user_id': user_id, 'title': item_title}
+                    if rating is not None:
+                        row['rating'] = float(rating)
+                    if timestamp is not None:
+                        row['timestamp'] = timestamp
+                    self.collab_model.df = pd.concat([self.collab_model.df, pd.DataFrame([row])], ignore_index=True)
+            except Exception:
+                pass
+
+            return True
+        except Exception:
+            return False
 
     def _cold_start_fallback(self, title, top_n, target_catalog=None):
         """
