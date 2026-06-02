@@ -120,9 +120,6 @@ async def csrf_header_dep(
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
-# ── App ──────────────────────────────────────────────────────────────
-app = FastAPI(title="Hybrid Recommender API", version="3.0")
-
 @app.on_event("startup")
 def download_nltk_assets():
     """
