@@ -28,6 +28,10 @@ CSRF_COOKIE_NAME = "__Host-csrftoken"
 # Loaded securely from configuration context
 CSRF_SECRET_KEY = os.environ.get("CSRF_SECRET_KEY", "dev-fallback-key").encode("utf-8")
 
+# Parse allowed origins comma-separated string from environments
+_ALLOWED_ORIGINS_RAW = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+ALLOWED_ORIGINS = {origin.strip() for origin in _ALLOWED_ORIGINS_RAW.split(",") if origin.strip()}
+
 
 # ── Response schema ───────────────────────────────────────────────────────────
 
@@ -103,10 +107,36 @@ class CSRFMiddleware:
             await self._app(scope, receive, send)
             return
 
+        # 2.5 Strict Origin/Referer validation for secure contexts (OWASP defense-in-depth)
+        if _is_secure_context():
+            # Extract the source domain via Origin header, fallback to Referer if absent
+            source_origin = request.headers.get("origin")
+            if not source_origin and request.headers.get("referer"):
+                # Basic parsing to extract origin protocol + host from full referer string
+                from starlette.datastructures import URL as StarletteURL
+                ref = request.headers.get("referer", "")
+                try:
+                    parsed_ref = StarletteURL(ref)
+                    source_origin = f"{parsed_ref.scheme}://{parsed_ref.netloc}"
+                except Exception:
+                    source_origin = None
+
+            if not source_origin or source_origin not in ALLOWED_ORIGINS:
+                logger.warning(
+                    "CSRF validation failed (Origin mismatch/unauthorized source: %s) path=%s method=%s",
+                    source_origin, request.url.path, request.method
+                )
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF validation failed: origin unauthorized."},
+                )
+                await response(scope, receive, send)
+                return
+
        # 3. Read raw data values securely (Strict enforcement based on context)
         secure_ctx = _is_secure_context()
         expected_cookie_name = CSRF_COOKIE_NAME if secure_ctx else "csrftoken"
-        
+
         cookie_value = request.cookies.get(expected_cookie_name, "")
         header_token = request.headers.get(CSRF_HEADER_NAME, "")
 
