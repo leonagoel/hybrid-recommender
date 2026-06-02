@@ -125,6 +125,7 @@ async def csrf_header_dep(
     # The middleware has already validated the token before this runs.
     # This function exists solely to make the header visible in Swagger UI.
 
+# ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
