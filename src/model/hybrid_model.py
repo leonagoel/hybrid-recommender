@@ -11,6 +11,7 @@ Improvements:
 - Optional causal debiasing via Inverse Propensity Scoring (IPS)
 """
 import math
+from collections import Counter
 
 import numpy as np
 
@@ -283,7 +284,6 @@ class HybridRecommender:
                 cats = self.item_df[self.item_df['title'].isin(candidate_titles)]['category'].dropna().tolist()
                 if cats:
                     # use the modal category
-                    from collections import Counter
                     top_cat = Counter(cats).most_common(1)[0][0]
                     key = f'category:{top_cat}'
                     if key in self.weight_matrix:
