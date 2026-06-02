@@ -658,10 +658,10 @@ class HybridRecommender:
         df = df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-
+            global_avg = 3.0
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
-            global_avg = df['rating'].mean()
+            df['_bayesian'] = df.apply(lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1)
             df['_bayesian'] = df.apply(
                 lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1
             )
@@ -688,51 +688,3 @@ class HybridRecommender:
                 'top_reviews': [],
             })
         return results
-    def _diversity_rerank(self, results, top_n, diversity=0.0, serendipity=0.0):
-            """
-            Re-ranks results to reduce filter bubbles.
-
-            Args:
-                results: list of recommendation dicts sorted by hybrid_score
-                top_n: number of final results to return
-                diversity: 0.0 = no diversity, 1.0 = max category variety
-                serendipity: 0.0 = no surprises, 1.0 = more random/unexpected items
-
-            Returns:
-                Re-ranked list of recommendations
-            """
-            if not results:
-                return results
-
-            if diversity == 0.0 and serendipity == 0.0:
-                return results[:top_n]
-
-            selected = []
-            remaining = results.copy()
-            seen_categories = []
-
-            while len(selected) < top_n and remaining:
-                best = None
-                best_score = -1
-
-                for item in remaining:
-                    score = item['hybrid_score']
-                    category = item.get('category', 'unknown')
-
-                    times_seen = seen_categories.count(category)
-                    diversity_penalty = diversity * times_seen * 0.2
-                    score = score - diversity_penalty
-
-                    surprise_bonus = serendipity * np.random.uniform(0, 0.3)
-                    score = score + surprise_bonus
-
-                    if score > best_score:
-                        best_score = score
-                        best = item
-
-                selected.append(best)
-                remaining.remove(best)
-                seen_categories.append(best.get('category', 'unknown'))
-
-            return selected
-    
