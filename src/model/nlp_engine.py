@@ -7,6 +7,13 @@ import nltk
 import numpy as np
 import pandas as pd
 
+__all__ = [
+    "analyze_sentiment",
+    "sentiment_label",
+    "batch_analyze",
+    "aggregate_sentiment_by_item",
+]
+
 # Download VADER lexicon (only on first run)
 try:
     nltk.data.find("sentiment/vader_lexicon.zip")

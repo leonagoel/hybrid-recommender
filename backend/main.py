@@ -53,9 +53,9 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -748,6 +748,8 @@ def get_api_metrics():
 # ── Config ────────────────────────────────────────────────────────────
 @app.get("/api/config")
 def get_config():
+def get_config() -> dict:
+    """Serve Supabase public config to the frontend. Only exposes the anon key (safe for public use)."""
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
     }
@@ -755,7 +757,10 @@ def get_config():
 
 # ── Status ────────────────────────────────────────────────────────────
 @app.get("/api/status")
-def status():
+def status() -> dict:
+    sb = get_supabase()
+    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+    product_count = count_result.count or 0
     return {
         "status": "healthy",
         "model_ready": models["ready"],
@@ -1317,6 +1322,11 @@ def build_models(
     sb = get_supabase_admin()
     if sb is None:
         raise HTTPException(status_code=500, detail="Admin credentials not configured.")
+def build_models() -> dict:
+    """Build recommendation models from Supabase data."""
+    sb = get_supabase()
+
+    # Fetch products
     all_products = []
     page_size = 1000
     offset = 0
@@ -1616,6 +1626,11 @@ def get_recommendations(
         if cold_recs:
             recs = cold_recs
 
+def get_recommendations(item_title: str, top_n: int = 10) -> dict:
+    """Get hybrid recommendations for an item."""
+    if not models["ready"]:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
+    recs = models["hybrid"].recommend(item_title, top_n=top_n)
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
 
@@ -1982,6 +1997,7 @@ def move_model_to_shadow(
 
 @app.get("/api/weights")
 def get_weights(_admin: None = Depends(_admin_access_dep)):
+def get_weights() -> dict:
     if not models["ready"]:
         return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2}
     return models["hybrid"].get_weights()
@@ -1993,6 +2009,7 @@ def update_weights(
     _csrf: None = Depends(csrf_header_dep),
     _admin: None = Depends(_admin_access_dep),
 ):
+def update_weights(w: WeightsUpdate) -> dict:
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
     models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
@@ -2002,7 +2019,8 @@ def update_weights(
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = 1, per_page: int = 50) -> dict:
+    """List products from Supabase with pagination."""
     sb = get_supabase()
     offset = (page - 1) * limit
     result = sb.table('products') \
