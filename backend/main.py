@@ -1729,7 +1729,7 @@ def get_trending_products(
     """
 
     # Cache for 1 hour
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     if (
         TRENDING_CACHE["data"] is not None and
