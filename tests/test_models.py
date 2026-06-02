@@ -191,6 +191,31 @@ class TestHybridRecommender:
         recs = hybrid_model.recommend('Product A', top_n=3)
         assert isinstance(recs, list)
 
+    def test_recommend_merges_collaborative_only_candidates(self, sample_item_df):
+        """Collaborative-only candidates should be merged without all_titles errors."""
+        class ContentStub:
+            def __init__(self, df):
+                self.df = df
+
+            def recommend(self, title, top_n=10, target_catalog=None):
+                return [{'title': 'Product B', 'content_score': 0.9}]
+
+        class CollaborativeStub:
+            def recommend(self, title, top_n=10, target_catalog=None):
+                return [{'title': 'Product C', 'collab_score': 0.8}]
+
+        recommender = HybridRecommender(
+            ContentStub(sample_item_df),
+            CollaborativeStub(),
+            sample_item_df,
+        )
+
+        recs = recommender.recommend('Product A', top_n=5)
+        titles = {rec['title'] for rec in recs}
+
+        assert 'Product B' in titles
+        assert 'Product C' in titles
+
     def test_recommend_has_required_keys(self, hybrid_model):
         recs = hybrid_model.recommend('Product A', top_n=2)
         required = {'title', 'hybrid_score', 'content_score', 'collab_score', 'sentiment_score'}

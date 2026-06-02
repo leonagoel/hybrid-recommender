@@ -15,3 +15,18 @@ celery>=5.3.6
 redis>=5.0.1
 python-dotenv>=1.0.1
 hnswlib>=0.8.0
+# Data processing
+pandas
+numpy
+scipy
+# Machine learning
+scikit-learn
+nltk
+tqdm
+# Web framework
+fastapi
+uvicorn[standard]
+python-multipart
+# Database & auth
+supabase
+python-dotenv

@@ -183,3 +183,7 @@ class ContentRecommender:
 
         return results
 
+            if len(results) >= top_n:
+                break
+
+        return results

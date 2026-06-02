@@ -1641,7 +1641,6 @@ main {
 
 /* ==========================
 RECOMMENDATION CARD IMPROVEMENTS
-========================== */
 
 .rec-card{
     border-radius:20px;
@@ -1687,7 +1686,6 @@ RECOMMENDATION CARD IMPROVEMENTS
 
 /* ==========================
 RESPONSIVE FIX
-========================== */
 
 .recs-strip{
     display:grid;
@@ -1866,4 +1864,15 @@ RESPONSIVE FIX
 @keyframes loadingMove {
     0% { background-position: 100%; }
     100% { background-position: -100%; }
+}
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }

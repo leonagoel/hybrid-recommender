@@ -36,6 +36,7 @@ class HybridRecommender:
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
                  causal_config=None, model_kwargs=None,
                  kg_model=None, delta=0.1):
+                 kg_model=None, delta=0.0):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -78,7 +79,7 @@ class HybridRecommender:
             if use_implicit is not None and hasattr(self.collab_model, 'use_implicit'):
                 self.collab_model.use_implicit = use_implicit
 
-        # # normalization: 'minmax' or 'zscore'
+        # normalization: 'minmax' or 'zscore'
         self.normalization = normalization
         # dynamic weighting matrix (dict of context -> (alpha,beta,gamma))
         self.weight_matrix = weight_matrix or {}
@@ -405,6 +406,22 @@ class HybridRecommender:
             user_id=user_id,
             candidate_titles=all_titles,
         )
+        # 5. Resolve active weights for this request
+        if weights is not None:
+            a = weights.get("alpha", self.alpha)
+            b = weights.get("beta", self.beta)
+            g = weights.get("gamma", self.gamma)
+            # normalize provided weights
+            tot = a + b + g
+            if tot > 0:
+                a, b, g = a / tot, b / tot, g / tot
+        else:
+            candidate_titles = [it['title'] for it in items]
+            a, b, g = self._get_active_weights(
+                self.alpha, self.beta, self.gamma, 
+                user_id=user_id, 
+                candidate_titles=candidate_titles
+            )
 
         # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
@@ -485,6 +502,7 @@ class HybridRecommender:
                 serendipity=serendipity
             )
 
+        
         apply_fairness = self.fairness_enabled if fairness is None else bool(fairness)
         if apply_fairness:
             key = fairness_key or self.fairness_key

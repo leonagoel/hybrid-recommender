@@ -15,7 +15,12 @@ import secrets
 from collections import deque, Counter, OrderedDict
 import re
 import json
-from redis.exceptions import RedisError
+try:
+    from redis import Redis
+    from redis.exceptions import RedisError
+except ImportError:
+    Redis = None
+    RedisError = Exception
 
 try:
     import bleach
@@ -53,9 +58,9 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -116,12 +121,15 @@ _cache_lock = Lock()
 _build_lock = Lock()
 
 try:
-    _redis_client = Redis.from_url(
-        os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-        socket_connect_timeout=1,
-        socket_timeout=1,
-    )
-    _redis_client.ping()
+    if Redis is not None:
+        _redis_client = Redis.from_url(
+            os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+            socket_connect_timeout=1,
+            socket_timeout=1,
+        )
+        _redis_client.ping()
+    else:
+        _redis_client = None
 except Exception:
     _redis_client = None
 
@@ -220,39 +228,20 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    # Prefer Redis when available for shared caching
-    try:
-        if _redis_client is not None:
+    if _redis_client is not None:
+        try:
             cached = _redis_client.get(key)
             if cached is not None:
                 return json.loads(cached)
-    except (RedisError, json.JSONDecodeError):
-        # Ignore Redis/network/json errors and fall back to in-memory cache
-        pass
+        except (RedisError, json.JSONDecodeError):
+            pass
 
-    # Fall back to local in-memory TTL cache
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-        _cache_hits += 1
-        return value
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-        _cache_hits += 1
-        return value
+    value = _response_cache.get(key)
+    if value is None:
+        _cache_misses += 1
+        return None
+    _cache_hits += 1
+    return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
@@ -263,13 +252,6 @@ def _set_cached_response(key: str, value: Any) -> None:
             pass
 
     _response_cache.set(key, value)
-
-def _clear_response_cache() -> None:
-    global _cache_hits, _cache_misses
-    _response_cache.clear()
-    global _cache_hits, _cache_misses
-    _cache_hits = 0
-    _cache_misses = 0
 
 def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
@@ -649,6 +631,18 @@ STAGING_MODEL_VERSION = None
 
 SHADOW_LOGS = []
 
+MODEL_DATASET_IMPORTANT_COLUMNS = (
+    "id",
+    "title",
+    "description",
+    "category",
+    "rating",
+    "review_count",
+    "avg_sentiment",
+    "combined",
+)
+
+
 def generate_model_version():
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"1.0.0-{timestamp}"
@@ -764,7 +758,8 @@ def get_api_metrics():
 
 # ── Config ────────────────────────────────────────────────────────────
 @app.get("/api/config")
-def get_config():
+def get_config() -> dict:
+    """Serve Supabase public config to the frontend. Only exposes the anon key (safe for public use)."""
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
     }
@@ -772,7 +767,10 @@ def get_config():
 
 # ── Status ────────────────────────────────────────────────────────────
 @app.get("/api/status")
-def status():
+def status() -> dict:
+    sb = get_supabase()
+    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+    product_count = count_result.count or 0
     return {
         "status": "healthy",
         "model_ready": models["ready"],
@@ -780,7 +778,128 @@ def status():
     }
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────
+# Model readiness diagnostics
+def _get_component_readiness():
+    return {
+        "content": models.get("content") is not None,
+        "collab": models.get("collab") is not None,
+        "hybrid": models.get("hybrid") is not None,
+        "item_df": models.get("item_df") is not None,
+    }
+
+
+def _get_dataset_readiness(item_df):
+    diagnostics = {
+        "available": item_df is not None,
+        "shape": {"rows": 0, "columns": 0},
+        "columns": [],
+        "important_columns": {
+            column: False for column in MODEL_DATASET_IMPORTANT_COLUMNS
+        },
+    }
+
+    if item_df is None:
+        return diagnostics
+
+    try:
+        rows, columns_count = item_df.shape
+        diagnostics["shape"] = {
+            "rows": int(rows),
+            "columns": int(columns_count),
+        }
+    except (AttributeError, TypeError, ValueError):
+        diagnostics["available"] = False
+        return diagnostics
+
+    try:
+        columns = [str(column) for column in item_df.columns]
+    except AttributeError:
+        diagnostics["available"] = False
+        return diagnostics
+
+    available_columns = set(columns)
+    diagnostics["columns"] = columns
+    diagnostics["important_columns"] = {
+        column: column in available_columns
+        for column in MODEL_DATASET_IMPORTANT_COLUMNS
+    }
+    return diagnostics
+
+
+def _get_hybrid_weights(hybrid_model, warnings):
+    if hybrid_model is None:
+        return None
+
+    if not hasattr(hybrid_model, "get_weights"):
+        warnings.append("Hybrid model is loaded but does not expose weights.")
+        return None
+
+    try:
+        weights = hybrid_model.get_weights()
+        return dict(weights) if weights is not None else None
+    except Exception as exc:
+        logger.warning("Unable to read hybrid model weights: %s", exc)
+        warnings.append("Hybrid model weights could not be read.")
+        return None
+
+
+def _get_model_readiness_warnings(is_ready, components, dataset):
+    warnings = []
+
+    if not is_ready:
+        warnings.append("Models have not been built yet.")
+
+    missing_components = [
+        name for name, available in components.items() if not available
+    ]
+    if is_ready and missing_components:
+        warnings.append(
+            "Model state is marked ready but missing components: "
+            + ", ".join(missing_components)
+            + "."
+        )
+    elif any(components.values()) and missing_components:
+        warnings.append(
+            "Partial model readiness detected; missing components: "
+            + ", ".join(missing_components)
+            + "."
+        )
+
+    missing_columns = [
+        column
+        for column, present in dataset["important_columns"].items()
+        if not present
+    ]
+    if components["item_df"] and missing_columns:
+        warnings.append(
+            "Item dataset is missing important columns: "
+            + ", ".join(missing_columns)
+            + "."
+        )
+
+    return warnings
+
+
+@app.get("/api/model-readiness")
+def model_readiness():
+    components = _get_component_readiness()
+    dataset = _get_dataset_readiness(models.get("item_df"))
+    is_ready = bool(models.get("ready"))
+    warnings = _get_model_readiness_warnings(is_ready, components, dataset)
+    weights = _get_hybrid_weights(models.get("hybrid"), warnings)
+
+    return {
+        "ready": is_ready,
+        "active_model_version": ACTIVE_MODEL_VERSION,
+        "last_trained_at": models.get("last_trained_at"),
+        "components": components,
+        "dataset": dataset,
+        "weights": weights,
+        "warnings": warnings,
+    }
+
+
+# Dashboard
 @app.get("/api/dashboard")
 def dashboard(request: Request):
     _require_admin_access(request)
@@ -964,17 +1083,6 @@ def search_items(
 
     if query:
         query_lower = query.lower()
-
-        products = [
-            p for p in products
-            if query_lower in str(p.get('title', '')).lower()
-            or query_lower in str(p.get('description', '')).lower()
-            or query_lower in str(p.get('category', '')).lower()
-        ]
-
-        for p in products:
-            p['rank'] = 0.0
-
 
         products = [
             p for p in products
@@ -1330,29 +1438,6 @@ def build_models(
         request, response, "build",
         "BUILD_RATE_LIMIT", 1,
     )
-    global STAGING_MODEL_VERSION
-    sb = get_supabase_admin()
-    if sb is None:
-        raise HTTPException(status_code=500, detail="Admin credentials not configured.")
-    all_products = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
-        batch = result.data or []
-        all_products.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-    if not all_products:
-        raise HTTPException(400, "No products in database. Upload data first.")
-    import pandas as pd
-    item_df = pd.DataFrame(all_products)
-    item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
-    )
     if rate_limited is not None:
         return rate_limited
 
@@ -1454,29 +1539,14 @@ def build_models(
 
 @app.post("/api/train/federated")
 def train_federated(
+    request: Request,
+    response: Response,
     req: FederatedTrainRequest,
     _admin: None = Depends(_admin_access_dep),
 ):
-    sb = get_supabase()
-    all_products = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
-        batch = result.data or []
-        all_products.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-    if not all_products:
-        raise HTTPException(400, "No products in database. Upload data first.")
-
-    import pandas as pd
-    item_df = pd.DataFrame(all_products)
-    item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
+    rate_limited = _apply_rate_limit(
+        request, response, "federated",
+        "FEDERATED_RATE_LIMIT", 1,
     )
     if rate_limited is not None:
         return rate_limited
@@ -1649,7 +1719,6 @@ def get_recommendations(
         cold_recs = cold_start_recommendation(combined_text, top_n=top_n, target_catalog=target_catalog)
         if cold_recs:
             recs = cold_recs
-
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
 
@@ -2039,12 +2108,6 @@ def update_weights(
 def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
     sb = get_supabase()
     offset = (page - 1) * limit
-    result = sb.table('products') \
-        .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
-        .order('rating', desc=True) \
-        .range(offset, offset + limit - 1) \
-        .execute()
-
     result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).range(offset, offset + limit - 1).execute()
     count_result = sb.table('products').select('id', count='exact').limit(0).execute()
     total = count_result.count or 0
@@ -2372,79 +2435,6 @@ def get_trending_products(
         response: dict = {"results": [], "days": days, "limit": limit}
         _set_cached_response(cache_key, response)
         return response
-    if isinstance(TRENDING_CACHE, dict):
-        TRENDING_CACHE.pop("data", None)
-        TRENDING_CACHE.pop("timestamp", None)
-        TRENDING_CACHE[cache_key] = (now, response)
-    else:
-        TRENDING_CACHE = {cache_key: (now, response)}
-
-
-    # Attempt database-side aggregation via RPC first.  The RPC returns one
-    # row per product (purchase_count + avg_rating), so only ~limit*3 rows
-    # cross the network instead of every raw purchase row.
-    rows = None
-    try:
-        rpc_result = sb.rpc(
-            "get_trending_products",
-            {"cutoff_date": cutoff_date, "limit_n": limit * 3},
-        ).execute()
-        if rpc_result.data is not None:
-            rows = rpc_result.data
-    except Exception:
-        rows = None
-
-    if rows is not None:
-        # RPC already aggregated; build a stats dict from the pre-summed rows.
-        stats: dict = {}
-        for r in rows:
-            pid = r.get("product_id")
-            if pid is None:
-                continue
-            stats[pid] = {
-                "count": int(r.get("purchase_count", 0)),
-                "ratings": [float(r.get("avg_rating", 0))] * max(int(r.get("purchase_count", 1)), 1),
-                "product": {
-                    "id": pid,
-                    "title": r.get("title", ""),
-                    "category": r.get("category", ""),
-                    "rating": r.get("rating", 0),
-                    "avg_sentiment": r.get("avg_sentiment", 0),
-                    "review_count": r.get("review_count", 0),
-                },
-            }
-    else:
-        # Fallback: fetch raw purchase rows with a hard row cap to prevent OOM.
-        # The cap (TRENDING_FETCH_LIMIT) bounds memory usage to a known maximum
-        # even when the RPC function has not been deployed yet.
-        try:
-            fallback_result = (
-                sb.table("purchases")
-                .select(
-                    "product_id, rating, purchased_at, "
-                    "products(id, title, category, rating, avg_sentiment, review_count)"
-                )
-                .gte("purchased_at", cutoff_date)
-                .limit(TRENDING_FETCH_LIMIT)
-                .execute()
-            )
-            raw_rows = fallback_result.data or []
-        except Exception as exc:
-            logger.error("Trending fallback query failed: %s", exc)
-            raw_rows = []
-
-        stats = _aggregate_purchase_rows(raw_rows)
-
-    if not stats:
-        response: dict = {"results": [], "days": days, "limit": limit}
-        _set_cached_response(cache_key, response)
-        return response
-    if isinstance(TRENDING_CACHE, dict):
-        TRENDING_CACHE.pop("data", None)
-        TRENDING_CACHE.pop("timestamp", None)
-        TRENDING_CACHE[cache_key] = (now, response)
-    else:
-        TRENDING_CACHE = {cache_key: (now, response)}
 
     ranked = _bayesian_rank(stats, limit)
     response = {"results": ranked, "days": days, "limit": limit}

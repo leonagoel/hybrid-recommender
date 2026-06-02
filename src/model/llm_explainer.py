@@ -30,6 +30,42 @@ class LLMExplainer:
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
         self.client = None
         if genai and self.api_key:
+# API key must be supplied via the GOOGLE_API_KEY environment variable.
+# Never hardcode credentials in source code.
+
+class LLMExplainer:
+    def __init__(self, model_name: str = "gemini-pro", api_key: Optional[str] = None):
+        self.model_name = model_name
+        # Resolve key: explicit argument takes priority, then env var, then None.
+        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or None
+
+        if genai is None:
+            logger.warning(
+                "google-generativeai not installed. Falling back to text-based explanations."
+            )
+            self.client = None
+            return
+
+        if not self.api_key:
+            logger.warning(
+                "GOOGLE_API_KEY not found. Set it as an environment variable to enable LLM explanations."
+            )
+            self.client = None
+        else:
+            try:
+                genai.configure(api_key=self.api_key)
+                self.client = genai.GenerativeModel(model_name)
+            except Exception as e:
+                logger.error(f"Failed to initialize Google Generative AI: {e}")
+                self.client = None
+            return
+
+        if not self.api_key or self.api_key == "Your_API_KEY":
+            logger.warning(
+                "GOOGLE_API_KEY not found. Set it as an environment variable to enable LLM explanations."
+            )
+            self.client = None
+        else:
             try:
                 genai.configure(api_key=self.api_key)
                 # Keep client as None if runtime API differs; guard usage later.
