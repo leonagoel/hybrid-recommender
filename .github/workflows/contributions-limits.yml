@@ -1,0 +1,102 @@
+name: Contribution Limits Check
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  check-limits:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Check issue limit and comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sender = context.payload.sender.login;
+            const issueNumber = context.payload.issue.number;
+
+            // Get all open issues by this user
+            const allIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: 'open',
+              creator: sender,
+              per_page: 100
+            });
+
+            const userOpenIssues = allIssues.filter(i => !i.pull_request);
+            const openCount = userOpenIssues.length;
+
+            // Get all open PRs by this user
+            const allPRs = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100
+            });
+
+            const userOpenPRs = allPRs.filter(pr => pr.user.login === sender);
+            const prCount = userOpenPRs.length;
+
+            // Get total open PRs in repo
+            const totalOpenPRs = allPRs.length;
+
+            const ISSUE_LIMIT = 3;
+            const PR_LIMIT = 3;
+            const REPO_PR_LIMIT = 30;
+
+            const overIssueLimit = openCount > ISSUE_LIMIT;
+            const overPRLimit = prCount > PR_LIMIT;
+
+            let warningBlock = '';
+
+            if (overIssueLimit || overPRLimit) {
+              let warnings = [];
+              if (overIssueLimit) {
+                warnings.push(`⚠️ **You have ${openCount} open issues** (limit is ${ISSUE_LIMIT}). Please close or complete existing work before opening new ones.`);
+              }
+              if (overPRLimit) {
+                warnings.push(`⚠️ **You have ${prCount} open PRs** (limit is ${PR_LIMIT}). Please get existing PRs merged before opening new ones.`);
+              }
+              warningBlock = warnings.join('\n') + '\n';
+            }
+
+            const body = [
+              `📌 **Contribution Guidelines Reminder**`,
+              ``,
+              `👋 Thanks for contributing to ${repo}!`,
+              ``,
+              `We maintain contribution limits to ensure quality and fair visibility:`,
+              `• **Per-person limit:** Max ${ISSUE_LIMIT} open Issues & ${PR_LIMIT} open PRs`,
+              `• **Repository limit:** Max ${REPO_PR_LIMIT} open PRs total`,
+              ``,
+              `**Your current activity:**`,
+              ``,
+              `• Your Open Issues: ${openCount}`,
+              `• Your Open PRs: ${prCount}`,
+              `• Repository Total Open PRs: ${totalOpenPRs}`,
+              ``,
+              warningBlock,
+              `✅ **Tips for quality contributions:**`,
+              `✅ Test thoroughly before submitting`,
+              `✅ Add documentation when needed`,
+              `✅ Respond to reviews promptly`,
+              `✅ Focus on one issue/PR at a time`,
+              ``,
+              `📋 See our [Contribution Guidelines](../blob/main/CONTRIBUTING.md) and [Discussion Board](../../discussions) for more info.`,
+              ``,
+              `Thanks for being a great contributor! 🎉`
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              body
+            });
