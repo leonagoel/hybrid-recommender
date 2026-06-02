@@ -220,35 +220,17 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    if _redis_client is not None:
-        try:
-            cached = _redis_client.get(key)
-
-            if cached is not None:
-                return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
-            pass
+    # Prefer Redis when available for shared caching
     try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            return json.loads(cached)
-
-    if _redis_client is not None:
-        try:
+        if _redis_client is not None:
             cached = _redis_client.get(key)
             if cached is not None:
                 return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
-            pass
+    except (RedisError, json.JSONDecodeError):
+        # Ignore Redis/network/json errors and fall back to in-memory cache
+        pass
 
-    value = _response_cache.get(key)
-    if value is None:
-        _cache_misses += 1
-        return None
-
-    _cache_hits += 1
-    return value
+    # Fall back to local in-memory TTL cache
     with _cache_lock:
         cached = _response_cache.get(key)
 
@@ -257,6 +239,13 @@ def _get_cached_response(key: str):
             return None
 
         expires_at, value = cached
+
+        if expires_at <= time.time():
+            _response_cache.pop(key, None)
+            _cache_misses += 1
+            return None
+        _cache_hits += 1
+        return value
 
         if expires_at <= time.time():
             _response_cache.pop(key, None)
@@ -1461,46 +1450,7 @@ def build_models(
     finally:
         _build_lock.release()
 
-@app.post("/api/train/federated")
-def train_federated(
-    request: Request,
-    response: Response,
-    req: FederatedTrainRequest,
-    _admin: None = Depends(_admin_access_dep),
-):
-    rate_limited = _apply_rate_limit(
-        request, response, "federated",
-        "FEDERATED_RATE_LIMIT", 1,
-        },
-        "status": "staging",
-        "metrics": {
-            "ndcg": 0.0,
-            "latency_ms": 0.0,
-            "error_rate": 0.0,
-        },
-    }
 
-    STAGING_MODEL_VERSION = version
-    
-    models["content"] = content_model
-    models["collab"] = collab_model
-    models["hybrid"] = hybrid_model
-    models["item_df"] = item_df
-    models["ready"] = True
-    models["build_time"] = build_time
-    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
-    _clear_response_cache()
-    _clear_trending_cache()
-    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
-    return {
-        "message": "Models built successfully!",
-        "model_version": version,
-        "status": "staging",
-        "items": len(item_df),
-        "has_collaborative": collab_model is not None,
-        "build_time_seconds": build_time,
-        "precomputed_recommendations": precomputed_count,
-    }
 
 @app.post("/api/train/federated")
 def train_federated(
@@ -1611,15 +1561,7 @@ def train_federated(
         models["build_time"] = build_time
         models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
         _clear_response_cache()
-    models["content"] = content_model
-    models["collab"] = collab_model
-    models["hybrid"] = hybrid_model
-    models["item_df"] = item_df
-    models["ready"] = True
-    models["build_time"] = build_time
-    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
-    _clear_response_cache()
-    _clear_trending_cache()
+    
 
         return {
             "message": "Federated collaborative model trained successfully!",
@@ -2139,22 +2081,6 @@ def _fetch_categories_from_db(sb) -> list:
     Returns a sorted list of non-empty category strings.
     """
     # Tier 1: preferred RPC — SELECT DISTINCT category in PostgreSQL.
-    try:
-        result = sb.rpc("get_distinct_categories", {}).execute()
-        if result.data is not None:
-            cats = [
-                row["category"] if isinstance(row, dict) else str(row)
-                for row in result.data
-                if (row["category"] if isinstance(row, dict) else str(row))
-            ]
-            if cats:
-                cats.sort()
-                return cats
-    except Exception:
-        pass
-
-    # Tier 2: legacy RPC — kept for backwards compatibility.
-    try:
     try:
         result = sb.rpc("get_distinct_categories", {}).execute()
         if result.data is not None:
