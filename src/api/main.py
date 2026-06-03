@@ -62,12 +62,6 @@ class RecommendationRequest(BaseModel):
 _content_model: Optional[ContentRecommender] = None
 _collab_model: Optional[CollaborativeRecommender] = None
 _item_df = None
-<<<<<<< HEAD
-fairness: Optional[bool] = None
-fairness_key: Optional[str] = None
-fairness_max_share: Optional[float] = None
-=======
->>>>>>> fea1db0 (fix: safeguard github webhook against null payloads and fix api indentation)
 
 
 @app.on_event("startup")
