@@ -76,3 +76,4 @@ class TestCausalConfigSpec:
     def test_from_dict_validation_error(self):
         with pytest.raises(ValueError):
             CausalConfig.from_dict({'blend_lambda': -5.0})
+
