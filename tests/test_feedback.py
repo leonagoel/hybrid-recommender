@@ -120,3 +120,4 @@ def test_submit_feedback_fails_when_storage_unavailable(monkeypatch):
     )
     assert response.status_code == 500
     assert response.json()["detail"] == "Feedback storage is unavailable."
+
