@@ -87,3 +87,4 @@ def test_similar_items_endpoint_requires_built_models(api_client):
 
     assert response.status_code == 400
     assert "Models not built" in response.json()["detail"]
+
