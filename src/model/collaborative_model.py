@@ -211,3 +211,4 @@ class CollaborativeRecommender:
         }
         for _, row in top_items.iterrows()
         ]
+
