@@ -311,3 +311,4 @@ def test_set_csrf_cookie_writes_correct_attributes():
 
     # Cache-Control: no-store must be set on the response
     assert resp.headers.get("cache-control") == "no-store"
+
