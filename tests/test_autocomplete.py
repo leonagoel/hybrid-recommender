@@ -78,3 +78,4 @@ def test_autocomplete_db_failure_returns_500(monkeypatch):
 
     response = client.get("/api/autocomplete?q=naruto")
     assert response.status_code == 500
+
