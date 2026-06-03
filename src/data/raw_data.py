@@ -1,22 +1,24 @@
 import pandas as pd
 
-# Load datasets
-books = pd.read_csv("books.csv")
-ratings = pd.read_csv("ratings.csv")
 
-# Merge
-df = pd.merge(ratings, books, on="book_id")
+if __name__ == '__main__':
+    # Load datasets
+    books = pd.read_csv("books.csv")
+    ratings = pd.read_csv("ratings.csv")
 
-# Keep useful columns
-df = df[['user_id', 'book_id', 'rating', 'title', 'authors']]
+    # Merge
+    df = pd.merge(ratings, books, on="book_id")
 
-# Create description
-df['description'] = df['title'] + " " + df['authors']
+    # Keep useful columns
+    df = df[['user_id', 'book_id', 'rating', 'title', 'authors']]
 
-# Reduce size (for speed)
-df = df.head(5000)
+    # Create description
+    df['description'] = df['title'] + " " + df['authors']
 
-# Save with YOUR name
-df.to_csv("booksdata.csv", index=False)
+    # Reduce size (for speed)
+    df = df.head(5000)
 
-print("Dataset prepared successfully!")
+    # Save with YOUR name
+    df.to_csv("booksdata.csv", index=False)
+
+    print("Dataset prepared successfully!")

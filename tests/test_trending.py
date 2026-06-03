@@ -146,3 +146,58 @@ def test_trending_cache_hits(monkeypatch):
     second_response = client.get("/api/trending")
     assert second_response.status_code == 200
     assert second_response.json() == first_response.json()
+
+
+def test_trending_negative_ratings(monkeypatch):
+    # Reset cache
+    main.TRENDING_CACHE = {"data": None, "timestamp": None}
+    
+    mock_purchases = [
+        {
+            "product_id": 101,
+            "rating": -1.0,
+            "products": {
+                "id": 101,
+                "title": "Book A",
+                "category": "Books",
+                "rating": 4.5,
+                "avg_sentiment": 0.8,
+                "review_count": 10
+            }
+        }
+    ]
+    query_mock = FakeQuery(mock_purchases)
+    monkeypatch.setattr(main, "get_supabase", lambda: FakeSupabase(query_mock))
+
+    response = client.get("/api/trending")
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert len(results) > 0
+    assert results[0]["bayesian_rating"] < 3.0
+
+
+def test_trending_missing_product_details(monkeypatch):
+    # Reset cache
+    main.TRENDING_CACHE = {"data": None, "timestamp": None}
+    
+    mock_purchases = [
+        {
+            "product_id": 101,
+            "rating": 4.0,
+            "products": {
+                "id": 101,
+                "title": "Book A"
+                # Missing category, rating, sentiment, count
+            }
+        }
+    ]
+    query_mock = FakeQuery(mock_purchases)
+    monkeypatch.setattr(main, "get_supabase", lambda: FakeSupabase(query_mock))
+
+    response = client.get("/api/trending")
+    assert response.status_code == 200
+    results = response.json()["results"]
+    assert len(results) > 0
+    assert results[0]["category"] == ""
+    assert results[0]["rating"] == 0
+

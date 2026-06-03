@@ -128,6 +128,30 @@ class TestNDCGAtK:
         result = _ndcg_at_k(recommended, relevant, 3)
         assert 0 < result < 1
 
+    def test_precision_at_k_k_greater_than_recommended(self):
+        recommended = ["a", "b"]
+        relevant = {"a"}
+        result = _precision_at_k(recommended, relevant, 10)
+        assert result == 0.1
+
+    def test_recall_at_k_large_k(self):
+        recommended = ["a", "b"]
+        relevant = {"a", "c"}
+        result = _recall_at_k(recommended, relevant, 100)
+        assert result == 0.5
+
+    def test_dcg_at_k_duplicate_relevant(self):
+        recommended = ["a", "b"]
+        relevant = {"a", "c", "d"}
+        result = _dcg_at_k(recommended, relevant, 2)
+        assert result > 0
+
+    def test_ndcg_at_k_zero_relevance(self):
+        recommended = ["a", "b"]
+        relevant = set()
+        result = _ndcg_at_k(recommended, relevant, 2)
+        assert result == 0.0
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

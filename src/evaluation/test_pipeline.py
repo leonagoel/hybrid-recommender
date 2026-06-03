@@ -8,6 +8,16 @@ sys.path.insert(0, os.path.dirname(__file__))
     from src.data.dataset_manager import DatasetManager
     print("1. Loading dataset...")
     from dataset_manager import DatasetManager
+"""Quick smoke test for the full pipeline."""
+import os
+import sys
+
+
+def main():
+    sys.path.insert(0, os.path.dirname(__file__))
+
+    print("1. Loading dataset...")
+    from src.data.dataset_manager import DatasetManager
     dm = DatasetManager()
     dm.load_csv('datasets/sample_products.csv')
     interaction_df, item_df = dm.merge_all()
@@ -28,6 +38,8 @@ sys.path.insert(0, os.path.dirname(__file__))
     print("4. Building collaborative model (SVD)...")
     from collaborative_model import CollaborativeRecommender
     from src.model.collaborative_model import CollaborativeRecommender
+    from src.model.collaborative_model import CollaborativeRecommender
+    collab = CollaborativeRecommender(interaction_df)
 
     print("5. Building hybrid model...")
     from src.model.hybrid_model import HybridRecommender
@@ -41,6 +53,21 @@ sys.path.insert(0, os.path.dirname(__file__))
         print(f"   #{i+1} {r['title']} — Hybrid: {r['hybrid_score']:.4f}")
 
     print("\n7. Testing search...")
+    print("\n7. Testing LLM Explanations...")
+    from src.model.llm_explainer import get_explainer
+    explainer = get_explainer()
+    print(f"   LLM client initialized: {explainer.client is not None}")
+
+    # Generate explanations for first 3 recommendations
+    explained_recs = explainer.explain_multiple(recs[:3], title)
+    for i, rec in enumerate(explained_recs, start=1):
+        explanation = rec.get("llm_explanation", "No explanation")
+        # Truncate for display
+        explanation_short = (explanation[:80] + "...") if len(explanation) > 80 else explanation
+        print(f"   #{i} {rec['title']}")
+        print(f"      → {explanation_short}")
+
+    print("\n8. Testing search...")
     results = cm.search("Premium", top_n=3)
     for r in results:
         print(f"   Found: {r['title']} (score: {r['score']:.4f})")
@@ -49,4 +76,5 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 
 if __name__ == '__main__':
+    main()
     main()

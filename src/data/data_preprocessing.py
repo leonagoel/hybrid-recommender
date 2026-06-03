@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
@@ -41,10 +40,9 @@ def encode_categorical(
         add_suffix = True
     else:
         add_suffix = False
-    le = LabelEncoder()
     for col in columns:
         if col in df.columns:
-            encoded_val = le.fit_transform(df[col].astype(str))
+            encoded_val = LabelEncoder().fit_transform(df[col].astype(str))
             if add_suffix:
                 df[f'{col}_encoded'] = encoded_val
             else:
