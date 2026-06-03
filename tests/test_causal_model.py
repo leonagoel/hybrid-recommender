@@ -478,3 +478,4 @@ class TestHybridCausalIntegration:
         w = d.get_ips_weight('Rare E')
         assert w <= 100.0
 
+
