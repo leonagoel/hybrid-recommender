@@ -236,3 +236,4 @@ def test_api_train_federated_endpoint_not_enough_data(monkeypatch):
     
     assert response.status_code == 400
     assert "Not enough interaction data" in response.json()["detail"]
+
