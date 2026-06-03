@@ -42,3 +42,4 @@ def test_admin_access_rejects_missing_or_invalid_token(monkeypatch):
 
     assert exc.value.status_code == 401
     assert exc.value.detail == "Admin token required."
+
