@@ -369,7 +369,7 @@ def run_evaluation(
     tfidf_matrix = _load_or_build_tfidf(df)
     svd_matrix   = _load_or_build_svd(df)
 
-# --- build relevance sets from rating data ---
+    # --- build relevance sets from rating data ---
     def _get_relevant(row_idx: int) -> set[str]:
         row = df.iloc[row_idx]
         relevant = set()
