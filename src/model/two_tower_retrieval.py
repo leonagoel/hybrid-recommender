@@ -111,7 +111,7 @@ class TwoTowerRetrievalEngine:
         # FAISS returns -1 for padding slots when top_k > catalog size — skip those.
         retrieved_items = []
         for idx in indices[0]:
-            internal_id = idx + 1
-            if internal_id in self.rev_item_map:
-                retrieved_items.append(self.rev_item_map[internal_id])
+            if idx == -1 or idx >= len(self.faiss_index_to_item):
+                continue
+            retrieved_items.append(self.faiss_index_to_item[idx])
         return retrieved_items
