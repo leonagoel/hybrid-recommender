@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
-import logging
-logger = logging.getLogger(__name__)
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
