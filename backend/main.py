@@ -1054,6 +1054,7 @@ def search_items(
 
     is_fuzzy_fallback = False
 
+    products = []
 
     try:
         sb = get_supabase()
@@ -1119,6 +1120,8 @@ def search_items(
     if query:
         query_lower = query.lower()
 
+    if not products and query:
+        query_lower = query.lower()
         products = [
             p for p in products
             if query_lower in str(p.get('title', '')).lower()
@@ -1129,6 +1132,8 @@ def search_items(
         for p in products:
             p['rank'] = 0.0
 
+        for p in products:
+            p['rank'] = 0.0
 
     # Format response
     results = []
