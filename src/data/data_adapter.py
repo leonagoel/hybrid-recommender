@@ -5,7 +5,6 @@ used by all recommender models.
 """
 
 import pandas as pd
-import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
@@ -399,9 +398,14 @@ def adapt_data(df):
 
     desc_col = detect_column(
         columns,
-        ['desc', 'summary', 'overview', 'about']
+        [
+            'description',
+            'desc',
+            'summary',
+            'overview',
+            'about'
+        ]
     )
-
     user_col = detect_column(
         columns,
         ['user_id', 'user', 'reviewer', 'customer']

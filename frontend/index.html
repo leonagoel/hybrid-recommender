@@ -11,7 +11,12 @@
     <link rel="manifest" href="./site.webmanifest">
 
     <meta name="description" content="HybridRec — AI-powered product recommendations using content, collaborative, and sentiment analysis.">
-    <meta name="theme-color" content="#0f1923">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+
+    <meta property="og:title" content="HybridRec — Hybrid Recommender System" />
+    <meta property="og:description" content="A hybrid recommender fusing TF-IDF, SVD, and VADER sentiment analysis to deliver personalised product recommendations." />
+    <meta property="og:type" content="website" />
+
     <title>HybridRec — Smart Recommendations</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -34,6 +39,7 @@
                     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
                 <input type="text" id="search-input" aria-label="Search products" placeholder="Search products..." autocomplete="off" spellcheck="false">
+                <button id="clear-search-btn" class="clear-search-btn" aria-label="Clear search" style="display: none;">✕</button>
                 <span class="search-spinner" id="search-spinner" role="status" aria-live="polite" aria-label="Loading search results" hidden></span>
                 <div class="search-char-counter" id="search-char-counter" style="display: none;">0/100</div>
 
@@ -335,7 +341,7 @@
         <a href="https://github.com/your-username/hybrid-recommender" target="_blank">
             GitHub Repository
         </a>
-        <img src="https://gssoc.girlscript.tech/badges/postman.png" alt="GSSoC Badge" class="gssoc-badge" />
+        <img src="https://gssoc.girlscript.tech/badges/postman.png" alt="GSSoC Badge" class="gssoc-badge" loading="lazy" />
     </div>
 
     <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
