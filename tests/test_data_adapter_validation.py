@@ -188,3 +188,4 @@ class TestAdaptDataInteractionValidation:
 
         with pytest.raises(ValueError, match="rating must be numeric"):
             adapt_data(df)
+
