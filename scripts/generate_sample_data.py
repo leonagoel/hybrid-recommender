@@ -84,14 +84,16 @@ NEGATIVE_REVIEWS = [
 ]
 
 
-def generate_product_name(category):
+def generate_product_name(category: str) -> str:
+    """Generate a random product name for the given category."""
     adj = random.choice(ADJECTIVES)
     noun = random.choice(NOUNS[category])
     brand_suffix = random.choice(['X', 'Pro', 'Plus', 'Lite', 'Max', 'One', 'V2', 'SE', '360'])
     return f"{adj} {noun} {brand_suffix}"
 
 
-def generate_description(name, category):
+def generate_description(name: str, category: str) -> str:
+    """Generate a realistic product description."""
     templates = [
         f"High-quality {category.lower()} product. The {name} offers excellent performance and reliability for everyday use.",
         f"The {name} is a top-rated {category.lower()} item designed for modern users who value quality and convenience.",
@@ -101,7 +103,7 @@ def generate_description(name, category):
     return random.choice(templates)
 
 
-def generate_review_and_rating():
+def generate_review_and_rating() -> tuple[str, float]:
     """Generate a correlated review + rating pair."""
     sentiment = random.choices(['positive', 'neutral', 'negative'], weights=[50, 30, 20])[0]
     if sentiment == 'positive':
