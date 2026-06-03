@@ -185,3 +185,4 @@ class TestContentRecommender:
         model = ContentRecommender(sample_item_df, batch_size=2)
         assert model.matrix.shape[0] == len(sample_item_df)
 
+
