@@ -116,3 +116,4 @@ def test_search_endpoint_caches_supabase_response(monkeypatch):
     assert first.headers["x-cache"] == "MISS"
     assert second.headers["x-cache"] == "HIT"
     assert fake_supabase.query.calls == 1
+
