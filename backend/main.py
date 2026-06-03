@@ -124,7 +124,6 @@ async def csrf_header_dep(
     # This function exists solely to make the header visible in Swagger UI.
 
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
-app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
 def download_nltk_assets():
@@ -201,12 +200,12 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    global _cache_hits, _cache_misses   # Move globals to the top
+
     try:
         cached = _redis_client.get(key)
-
         if cached is not None:
             return json.loads(cached)
-
     except (RedisError, json.JSONDecodeError):
         pass
 
@@ -214,7 +213,6 @@ def _get_cached_response(key: str):
         cached = _response_cache.get(key)
 
         if not cached:
-            global _cache_misses
             _cache_misses += 1
             return None
 
@@ -222,13 +220,11 @@ def _get_cached_response(key: str):
 
         if expires_at <= time.time():
             _response_cache.pop(key, None)
-            global _cache_misses
             _cache_misses += 1
             return None
-        global _cache_hits
+
         _cache_hits += 1
         return value
-
 
 def _set_cached_response(key: str, value: Any) -> None:
     try:
@@ -2077,30 +2073,17 @@ def get_trending_products(
 ):
     """
     Get trending products based on recent interactions.
-    now = datetime.utcnow()
-
-    # Cache for 1 hour
-    now = datetime.now(timezone.utc)
-
-    if (
-        (now - TRENDING_CACHE["timestamp"]).seconds < 3600
-        TRENDING_CACHE["timestamp"] is not None and
-        (now - TRENDING_CACHE["timestamp"]).total_seconds() < 3600
-    ):
-        return TRENDING_CACHE["data"]
+    """
     cache_key = (days, limit)
-    if isinstance(TRENDING_CACHE, dict) and "data" in TRENDING_CACHE and TRENDING_CACHE["data"] is None:
-        cached_val = None
-    else:
-        cached_val = TRENDING_CACHE.get(cache_key)
-
-    if cached_val is not None:
-        timestamp, cached_data = cached_val
+    now = datetime.now(timezone.utc)
+    
+    # Check cache
+    if isinstance(TRENDING_CACHE, dict) and cache_key in TRENDING_CACHE:
+        timestamp, cached_data = TRENDING_CACHE[cache_key]
         if (now - timestamp).total_seconds() < 3600:
             return cached_data
 
     sb = get_supabase()
-
     cutoff_date = (now - timedelta(days=days)).isoformat()
 
     result = sb.table("purchases") \
@@ -2123,10 +2106,11 @@ def get_trending_products(
     rows = result.data or []
 
     if not rows:
-        return {"results": []}
+        response = {"results": [], "days": days, "limit": limit}
+        TRENDING_CACHE[cache_key] = (now, response)
+        return response
 
     from collections import defaultdict
-
     stats = defaultdict(lambda: {
         "count": 0,
         "ratings": [],
@@ -2135,19 +2119,15 @@ def get_trending_products(
 
     for row in rows:
         product = row.get("products")
-
         if not product:
             continue
-
         pid = product["id"]
-
         stats[pid]["count"] += 1
         stats[pid]["ratings"].append(row.get("rating", 0))
         stats[pid]["product"] = product
 
     # Bayesian ranking
     ranked = []
-
     global_avg = sum(
         sum(v["ratings"]) / max(len(v["ratings"]), 1)
         for v in stats.values()
@@ -2157,17 +2137,12 @@ def get_trending_products(
 
     for pid, data in stats.items():
         count = data["count"]
-        avg_rating = (
-            sum(data["ratings"]) / max(len(data["ratings"]), 1)
-        )
-
+        avg_rating = sum(data["ratings"]) / max(len(data["ratings"]), 1)
         bayesian_rating = (
             (count / (count + m)) * avg_rating
             + (m / (count + m)) * global_avg
         )
-
         score = bayesian_rating * count
-
         ranked.append({
             "id": data["product"]["id"],
             "title": data["product"]["title"],
@@ -2180,205 +2155,8 @@ def get_trending_products(
             "trending_score": round(score, 3),
         })
 
-    ranked.sort(
-        key=lambda x: x["trending_score"],
-        reverse=True
-    )
+    ranked.sort(key=lambda x: x["trending_score"], reverse=True)
 
-    response = {
-        "results": ranked[:limit],
-        "days": days,
-        "limit": limit,
-    }
-
-    if isinstance(TRENDING_CACHE, dict):
-        TRENDING_CACHE.pop("data", None)
-        TRENDING_CACHE.pop("timestamp", None)
-        TRENDING_CACHE[cache_key] = (now, response)
-    else:
-        TRENDING_CACHE = {cache_key: (now, response)}
-
+    response = {"results": ranked[:limit], "days": days, "limit": limit}
+    TRENDING_CACHE[cache_key] = (now, response)
     return response
-
-# ── Feedback ──────────────────────────────────────────────────────────
-@app.post("/api/feedback")
-def submit_feedback(
-    data: FeedbackCreate,
-    request: Request,
-    response: Response,
-    _csrf: None = Depends(csrf_header_dep),
-):
-    limited_response = _apply_rate_limit(
-        request,
-        response,
-        scope="feedback",
-        limit_env="RATE_LIMIT_FEEDBACK_PER_MIN",
-        default_limit=20,
-    )
-    if limited_response is not None:
-        return limited_response
-
-    feedback_client = _get_feedback_storage_client()
-    feedback_record = {
-        "user_id": data.user_id,
-        "item": data.item,
-        "feedback": data.feedback,
-        "metadata": {
-            "source_ip": request.client.host if request.client else None,
-            "user_agent": request.headers.get("user-agent", ""),
-        },
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    try:
-        result = feedback_client.table("feedback_submissions").insert(feedback_record).execute()
-    except Exception as exc:
-        logger.error("Failed to persist feedback submission: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to store feedback.")
-
-    stored_feedback = feedback_record
-    if getattr(result, "data", None):
-        stored_feedback = result.data[0] if isinstance(result.data, list) else result.data
-
-    return {
-        "message": "Feedback submitted successfully",
-        "feedback": stored_feedback,
-    }
-
-# ── Export Dataset ────────────────────────────────────────────────────
-@app.get("/api/export/dataset")
-def export_dataset(columns: Optional[str] = Query(None)):
-    if not models["ready"] or models["item_df"] is None:
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
-    import pandas as pd
-    from fastapi.responses import StreamingResponse
-    df = models["item_df"].copy()
-    if columns:
-        cols = [c.strip() for c in columns.split(",") if c.strip() in df.columns]
-        if cols:
-            df = df[cols]
-    output = io.StringIO()
-    df.to_csv(output, index=False)
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=dataset.csv"}
-    )
-
-
-# ── GitHub Webhook Triage ─────────────────────────────────────────────
-import hmac
-import hashlib
-
-def _verify_github_signature(request_body: bytes, signature_header: str | None) -> None:
-    secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
-    if not secret:
-        raise HTTPException(status_code=500, detail="GITHUB_WEBHOOK_SECRET is not configured.")
-    if not signature_header:
-        raise HTTPException(status_code=401, detail="Signature header X-Hub-Signature-256 missing.")
-    if not signature_header.startswith("sha256="):
-        raise HTTPException(status_code=400, detail="Invalid signature format.")
-        
-    expected_signature = hmac.new(
-        secret.encode(),
-        request_body,
-        hashlib.sha256
-    ).hexdigest()
-    
-    provided_signature = signature_header.partition("sha256=")[2].strip()
-    if not hmac.compare_digest(expected_signature, provided_signature):
-        raise HTTPException(status_code=403, detail="Invalid webhook signature.")
-
-
-@app.post("/api/webhook/github")
-async def github_webhook(request: Request, response: Response):
-    limited_response = _apply_rate_limit(
-        request,
-        response,
-        scope="github_webhook",
-        limit_env="RATE_LIMIT_GITHUB_WEBHOOK_PER_MIN",
-        default_limit=60,
-    )
-    if limited_response is not None:
-        return limited_response
-
-    body_bytes = await request.body()
-    signature = request.headers.get("X-Hub-Signature-256")
-    _verify_github_signature(body_bytes, signature)
-    
-    try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body.")
-        
-    # Guard against null objects, arrays, or strings passed as JSON
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Payload must be a JSON object.")
-        
-    event = request.headers.get("X-GitHub-Event")
-    action = payload.get("action")
-    
-    issue_number = None
-    title = None
-    body = None
-    repo_full_name = None
-    should_triage = False
-    
-    if event == "issues" and action == "opened":
-        issue = payload.get("issue")
-        if isinstance(issue, dict):
-            issue_number = issue.get("number")
-            title = issue.get("title", "")
-            body = issue.get("body", "")
-            
-        repo = payload.get("repository")
-        if isinstance(repo, dict):
-            repo_full_name = repo.get("full_name")
-            
-        should_triage = True
-        
-    elif event == "issue_comment" and action == "created":
-        comment = payload.get("comment")
-        if isinstance(comment, dict):
-            comment_body = str(comment.get("body", "")).strip()
-            if comment_body.startswith("!retriage"):
-                issue = payload.get("issue")
-                if isinstance(issue, dict):
-                    issue_number = issue.get("number")
-                    title = issue.get("title", "")
-                    body = issue.get("body", "")
-                    
-                repo = payload.get("repository")
-                if isinstance(repo, dict):
-                    repo_full_name = repo.get("full_name")
-                    
-                should_triage = True
-                
-    if should_triage and issue_number and repo_full_name:
-        token = os.environ.get("GITHUB_TOKEN", "").strip()
-        triage_res = await triage_issue(
-            issue_number=issue_number,
-            title=title,
-            body=body,
-            repo_full_name=repo_full_name,
-            token=token
-        )
-        return {"status": "success", "action": "triaged", "details": triage_res}
-        
-    return {"status": "skipped", "reason": f"No triage actions required for event '{event}' action '{action}'."}
-
-
-# ── Frontend Serving ──────────────────────────────────────────────────
-frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
-
-if os.path.isdir(frontend_dir):
-    app.mount("/static", StaticFiles(directory=frontend_dir), name="frontend")
-
-    @app.get("/")
-    def serve_frontend():
-        return FileResponse(os.path.join(frontend_dir, "index.html"))
-
-    @app.get("/dashboard.html")
-    def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
