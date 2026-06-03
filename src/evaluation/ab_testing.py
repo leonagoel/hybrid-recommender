@@ -155,3 +155,4 @@ def summarize_variant_metrics(
             }
         )
     return summary
+
