@@ -396,7 +396,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 ```text
 ✓  No hardcoded credentials — config served via /api/config
 ✓  .env excluded from git via .gitignore
-✓  CORS restricted to configured origins
+✓  CORS restricted to explicit configured origins; wildcard origins are rejected
 ✓  Row-Level Security (RLS) on all Supabase tables
 ✓  Input validation via Pydantic models
 ✓  Generic error messages — no stack trace leakage

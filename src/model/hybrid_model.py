@@ -11,6 +11,7 @@ Improvements:
 - Optional causal debiasing via Inverse Propensity Scoring (IPS)
 """
 import math
+from collections import Counter
 
 import numpy as np
 
@@ -159,6 +160,9 @@ class HybridRecommender:
                             row['review_count'] / max_reviews
                         )
 
+            # Optional runtime hook for online updates (attachable)
+            self.online_updater = None
+
     def set_weights(self, alpha, beta, gamma):
         """Update the scoring weights. Normalized to sum to 1."""
         if any(math.isnan(w) for w in [alpha, beta, gamma]):
@@ -283,7 +287,6 @@ class HybridRecommender:
                 cats = self.item_df[self.item_df['title'].isin(candidate_titles)]['category'].dropna().tolist()
                 if cats:
                     # use the modal category
-                    from collections import Counter
                     top_cat = Counter(cats).most_common(1)[0][0]
                     key = f'category:{top_cat}'
                     if key in self.weight_matrix:
@@ -620,6 +623,90 @@ class HybridRecommender:
             return 'negative'
         return 'neutral'
 
+    def set_online_updater(self, updater):
+        """Attach an optional OnlineUpdater-like object exposing `ingest(...)`.
+
+        This method only stores the reference; behaviour remains unchanged
+        unless `apply_interaction` is called by the application.
+        """
+        self.online_updater = updater
+
+    def apply_interaction(self, user_id, item_title, rating=None, sentiment=None, timestamp=None):
+        """Best-effort incremental update of internal signals for a single interaction.
+
+        - Delegates to attached `online_updater.ingest(...)` when present; otherwise
+          performs lightweight local updates to review counts, popularity,
+          rating and sentiment aggregates, and appends to `collab_model.df` if available.
+        - Returns True on success, False on error.
+        """
+        # Delegate to external updater if provided
+        if self.online_updater is not None:
+            try:
+                self.online_updater.ingest(
+                    user_id=user_id,
+                    item_title=item_title,
+                    rating=rating,
+                    sentiment=sentiment,
+                    timestamp=timestamp,
+                    recommender=self,
+                )
+                return True
+            except Exception:
+                # fallback to local best-effort updates
+                pass
+
+        try:
+            prev = int(self._review_count_map.get(item_title, 0))
+            new_count = prev + 1
+            self._review_count_map[item_title] = new_count
+
+            # popularity update relative to tracked max
+            try:
+                max_reviews = max(self._review_count_map.values()) if self._review_count_map else new_count
+            except Exception:
+                max_reviews = new_count
+            self._popularity_map[item_title] = (new_count / max_reviews) if max_reviews > 0 else 0.0
+
+            if rating is not None:
+                try:
+                    prev_rating = float(self._rating_map.get(item_title, 0.0))
+                    prev_n = prev if prev > 0 else 0
+                    raw_avg = (prev_rating * prev_n + float(rating)) / (prev_n + 1) if (prev_n + 1) > 0 else float(rating)
+                    try:
+                        global_avg = float(np.mean(list(self._rating_map.values()))) if self._rating_map else 3.0
+                    except Exception:
+                        global_avg = 3.0
+                    self._rating_map[item_title] = bayesian_rating(raw_avg, new_count, global_avg=global_avg)
+                except Exception:
+                    pass
+
+            if sentiment is not None:
+                try:
+                    prev_sent = self._sentiment_map.get(item_title)
+                    if prev_sent is None:
+                        self._sentiment_map[item_title] = float(sentiment)
+                    else:
+                        self._sentiment_map[item_title] = (float(prev_sent) * prev + float(sentiment)) / (prev + 1)
+                except Exception:
+                    pass
+
+            # append to collab_model.df if available
+            try:
+                if self.collab_model is not None and hasattr(self.collab_model, 'df'):
+                    import pandas as pd
+                    row = {'user_id': user_id, 'title': item_title}
+                    if rating is not None:
+                        row['rating'] = float(rating)
+                    if timestamp is not None:
+                        row['timestamp'] = timestamp
+                    self.collab_model.df = pd.concat([self.collab_model.df, pd.DataFrame([row])], ignore_index=True)
+            except Exception:
+                pass
+
+            return True
+        except Exception:
+            return False
+
     def _cold_start_fallback(self, title, top_n, target_catalog=None):
         """
         Fallback when no model data exists for the title.
@@ -658,10 +745,10 @@ class HybridRecommender:
         df = df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-
+            global_avg = 3.0
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
-            global_avg = df['rating'].mean() if len(df) > 0 else 3.0
+            df['_bayesian'] = df.apply(lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1)
             df['_bayesian'] = df.apply(
                 lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1
             )
@@ -688,51 +775,3 @@ class HybridRecommender:
                 'top_reviews': [],
             })
         return results
-    def _diversity_rerank(self, results, top_n, diversity=0.0, serendipity=0.0):
-            """
-            Re-ranks results to reduce filter bubbles.
-
-            Args:
-                results: list of recommendation dicts sorted by hybrid_score
-                top_n: number of final results to return
-                diversity: 0.0 = no diversity, 1.0 = max category variety
-                serendipity: 0.0 = no surprises, 1.0 = more random/unexpected items
-
-            Returns:
-                Re-ranked list of recommendations
-            """
-            if not results:
-                return results
-
-            if diversity == 0.0 and serendipity == 0.0:
-                return results[:top_n]
-
-            selected = []
-            remaining = results.copy()
-            seen_categories = []
-
-            while len(selected) < top_n and remaining:
-                best = None
-                best_score = -1
-
-                for item in remaining:
-                    score = item['hybrid_score']
-                    category = item.get('category', 'unknown')
-
-                    times_seen = seen_categories.count(category)
-                    diversity_penalty = diversity * times_seen * 0.2
-                    score = score - diversity_penalty
-
-                    surprise_bonus = serendipity * np.random.uniform(0, 0.3)
-                    score = score + surprise_bonus
-
-                    if score > best_score:
-                        best_score = score
-                        best = item
-
-                selected.append(best)
-                remaining.remove(best)
-                seen_categories.append(best.get('category', 'unknown'))
-
-            return selected
-    

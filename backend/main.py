@@ -13,6 +13,7 @@ import logging
 import math
 import secrets
 import re
+from urllib.parse import urlsplit
 import json
 from redis import Redis
 from redis.exceptions import RedisError
@@ -54,6 +55,8 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+from typing import Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
 from dotenv import load_dotenv
@@ -476,25 +479,60 @@ def _require_admin_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Admin token required.")
 
 
-def _admin_access_dep(request: Request) -> None:
-    _require_admin_access(request)
+CORS_ORIGINS_ENV = "CORS_ORIGINS"
+DEFAULT_CORS_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
+ALLOWED_CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+ALLOWED_CORS_HEADERS = ["Accept", "Authorization", "Content-Type", "X-Admin-Token", "X-CSRF-Token"]
 
 
-def _get_feedback_storage_client():
-    client = get_supabase_admin()
-    if client is None:
-        raise HTTPException(status_code=500, detail="Feedback storage is unavailable.")
-    return client
+def _normalize_cors_origin(origin: str) -> str:
+    normalized = origin.strip().rstrip("/")
+    if not normalized:
+        raise RuntimeError("CORS_ORIGINS cannot contain empty entries.")
+    if normalized == "*":
+        raise RuntimeError("CORS_ORIGINS must not include wildcard origin '*'.")
+
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError(f"Invalid CORS origin: {origin}")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise RuntimeError(f"Invalid CORS origin: {origin}")
+
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _parse_cors_origins(raw_value: str | None = None) -> list[str]:
+    configured_value = os.environ.get(CORS_ORIGINS_ENV, "") if raw_value is None else raw_value
+    if not configured_value.strip():
+        return list(DEFAULT_CORS_ORIGINS)
+
+    origins = []
+    seen = set()
+    for raw_origin in configured_value.split(","):
+        normalized_origin = _normalize_cors_origin(raw_origin)
+        if normalized_origin not in seen:
+            origins.append(normalized_origin)
+            seen.add(normalized_origin)
+
+    return origins
+
+
+@app.on_event("startup")
+def validate_cors_configuration() -> None:
+    _parse_cors_origins()
 
 
 # CORS
-allowed_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
-allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
+allowed_origins = _parse_cors_origins()
+
+allow_creds = True
+if "*" in allowed_origins:
+    allow_creds = False
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials=allow_creds,
     allow_methods=["*"],
     allow_headers=["*", "X-CSRF-Token"],
 )

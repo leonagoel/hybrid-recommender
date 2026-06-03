@@ -8,11 +8,16 @@ Improvements:
 - Adaptive n_factors for sparse matrices
 - User-based personalized recommendations
 """
+__all__ = ["CollaborativeRecommender"]
+
+import logging
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import coo_matrix
+
+logger = logging.getLogger(__name__)
 
 
 class CollaborativeRecommender:
@@ -142,8 +147,6 @@ class CollaborativeRecommender:
         top_n = min(top_n, 100)
 
         if user_id not in self._user_to_idx:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
             return self._popularity_fallback(top_n)
             
@@ -183,9 +186,7 @@ class CollaborativeRecommender:
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
     
     def _popularity_fallback(self, top_n=10):
-    #Fallback for cold-start users — top-N by interaction count (popularity)
-        import logging
-        logger = logging.getLogger(__name__)
+        # Fallback for cold-start users — top-N by interaction count (popularity)
         logger.info("Using popularity-based fallback for cold-start user.")
     
         item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()

@@ -9,16 +9,6 @@ import os
 import sys
 import random
 import csv
-from pathlib import Path
-
-# --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---
-SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = SCRIPT_DIR.parent
-
-# Anchor datasets location straight to the absolute project base layout
-OUTPUT_DIR = PROJECT_ROOT / "datasets"
-OUTPUT_FILE = OUTPUT_DIR / "sample_products.csv"
-
 # --- Configuration ---
 NUM_PRODUCTS = 200
 NUM_USERS = 100

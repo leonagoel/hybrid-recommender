@@ -23,7 +23,6 @@ jobs:
         run: pip install flake8
 
       - name: Run flake8
-        continue-on-error: true
         run: |
           flake8 . \
             --exclude=datasets/,frontend/,scripts/,assets/,tests/ \
@@ -58,7 +57,6 @@ jobs:
           python -c "import nltk; nltk.download('vader_lexicon')"
 
       - name: Run smoke test
-        continue-on-error: true
         run: python test_pipeline.py
         env:
           SUPABASE_URL: "https://placeholder.supabase.co"
@@ -87,7 +85,7 @@ jobs:
         run: |
           python -c "import nltk; nltk.download('vader_lexicon')"
 
-      - name: Execute pytest Checkpoint
+      - name: Execute full pytest suite
         env:
           SUPABASE_URL: "https://placeholder.supabase.co"
           SUPABASE_ANON_KEY: "placeholder"

@@ -510,13 +510,9 @@ def run_evaluation(
         cov = _catalog_coverage(all_recs, len(df)) if all_recs else 0.0
 
         results[m] = {
-            "precision": round(avg_precision, 4),
-            "recall":    round(avg_recall, 4),
-            "ndcg":      round(avg_ndcg, 4),
-            "mrr":       round(avg_mrr, 4),
-            "hit_rate":  round(avg_hit, 4),
-            "catalog_coverage": round(cov, 4),
-            "intra_list_diversity": round(avg_ild, 4),
+            "precision": round(float(np.mean(precisions)), 4) if precisions else 0.0,
+            "recall":    round(float(np.mean(recalls)),    4) if recalls    else 0.0,
+            "ndcg":      round(float(np.mean(ndcgs)),      4) if ndcgs      else 0.0,
         }
 
     return results
