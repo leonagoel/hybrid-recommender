@@ -130,3 +130,4 @@ def test_user_with_all_items_seen():
     model = CollaborativeRecommender(df)
     results = model.predict_for_user(1, top_n=10)
     assert len(results) == 0
+
