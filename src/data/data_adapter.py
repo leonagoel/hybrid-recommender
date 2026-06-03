@@ -497,3 +497,4 @@ def adapt_data(df):
     }
 
     return df, meta
+
