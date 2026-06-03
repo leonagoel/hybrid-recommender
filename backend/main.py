@@ -124,7 +124,6 @@ async def csrf_header_dep(
     # This function exists solely to make the header visible in Swagger UI.
 
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
-app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
 def download_nltk_assets():
