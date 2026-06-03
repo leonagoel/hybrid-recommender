@@ -12,3 +12,4 @@ streamlit>=1.28.0
 celery>=5.3.6
 redis>=5.0.1
 python-dotenv>=1.0.1
+pytest-env>=1.1.3
