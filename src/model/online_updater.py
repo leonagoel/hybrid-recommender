@@ -98,3 +98,4 @@ class OnlineUpdater:
             return True
         except Exception:
             return False
+
