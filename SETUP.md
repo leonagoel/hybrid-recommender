@@ -167,4 +167,4 @@ hybrid-recommender/
 - **Recommendations:** Hybrid (Content + Collaborative + Sentiment)
 - **Upload:** CSV and JSON format support
 - **UI:** Amazon-like modern design with animations
-
+- **Streamlit UI:** Upload a CSV locally, build models, and get recommendations — no Supabase or server setup needed (`streamlit run src/api/app.py`)
