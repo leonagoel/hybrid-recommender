@@ -8,18 +8,15 @@ Improvements:
 - Adaptive n_factors for sparse matrices
 - User-based personalized recommendations
 """
-__all__ = ["CollaborativeRecommender"]
-
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, List, Optional
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import coo_matrix
 
 
 class CollaborativeRecommender:
-    def __init__(self, interaction_df: pd.DataFrame, n_factors: int = 50, use_implicit: bool = True) -> None:
+    def __init__(self, interaction_df, n_factors=50, use_implicit=True):
         """
         interaction_df: DataFrame with columns 'user_id', 'title', 'rating'.
                         Optionally 'views' and 'purchases' for implicit feedback.
@@ -88,7 +85,12 @@ class CollaborativeRecommender:
                 self.user_factors = np.ones((n_users, 1))
                 self.item_factors = np.ones((1, n_items))
 
-    def recommend(self, title: str, top_n: int = 10) -> List[Dict[str, Any]]:
+        # Build catalog map if catalog column is present in interaction_df
+        self._catalog_map = {}
+        if 'catalog' in self.df.columns:
+            self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+
+    def recommend(self, title, top_n=10, target_catalog=None):
         """
         Item-item collaborative recommendations using SVD latent space.
         Returns list of dicts: [{ 'title', 'collab_score' }, ...]
@@ -130,7 +132,7 @@ class CollaborativeRecommender:
 
         return results
 
-    def predict_for_user(self, user_id: str, top_n: int = 10) -> List[Dict[str, Any]]:
+    def predict_for_user(self, user_id, top_n=10, target_catalog=None):
         """
         Personalized recommendations for a specific user.
         Predicts scores for all unseen items and returns top N.
@@ -172,7 +174,7 @@ class CollaborativeRecommender:
         scored.sort(key=lambda x: x[1], reverse=True)
         return [{'title': t, 'predicted_score': s} for t, s in scored[:top_n]]
 
-    def predict_rating(self, user_id: str, title: str) -> Optional[float]:
+    def predict_rating(self, user_id, title):
         """Predict the rating a user would give to an item."""
         if user_id not in self._user_to_idx or title not in self._title_to_idx:
             return None
