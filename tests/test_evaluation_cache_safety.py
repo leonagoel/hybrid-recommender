@@ -56,3 +56,4 @@ def test_svd_cache_loads_safe_npy_without_pickle(monkeypatch, tmp_path):
     loaded = evaluation._load_or_build_svd(_dataset())
 
     np.testing.assert_array_equal(loaded, expected)
+
