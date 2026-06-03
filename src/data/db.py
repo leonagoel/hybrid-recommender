@@ -59,7 +59,6 @@ def get_supabase_admin() -> Client:
             return None
             
         try:
-            from supabase import create_client
             _admin_client = create_client(url, key)
         except Exception as e:
             logger.error(f"Failed to initialize Supabase admin client: {e}")

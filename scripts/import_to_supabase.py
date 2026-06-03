@@ -14,17 +14,8 @@ import sys
 import argparse
 from pathlib import Path
 
-# --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---
-SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = SCRIPT_DIR.parent
-
-# Safely append project root to sys.path using absolute system reference strings
-sys.path.insert(0, str(PROJECT_ROOT))
-
 import pandas as pd
 from tqdm import tqdm
-from src.data.data_adapter import adapt_data
-from src.data.db import get_supabase_admin
 
 
 def chunked(df, size):
@@ -63,9 +54,9 @@ def build_product_row(row):
 
 def import_dataset(file_path, batch_size=1000, run_sentiment=False):
     """Import a single dataset file into the products table."""
-    # Ensure we use an absolute Path object for cross-platform naming resolution
-    file_path_obj = Path(file_path).resolve()
-    
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from src.data.data_adapter import adapt_data
+    from src.data.db import get_supabase_admin
     print(f"\n{'='*60}")
     print(f"  Importing: {file_path_obj.name}")
     print(f"  Batch size: {batch_size}")
