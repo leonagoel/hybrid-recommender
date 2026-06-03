@@ -222,3 +222,13 @@ def test_dashboard_rejects_invalid_admin_token(client, monkeypatch):
 
     assert res.status_code == 401
     assert res.json()['detail'] == "Admin token required."
+
+
+def test_dashboard_fails_closed_when_admin_token_unset(client, monkeypatch):
+    _patch_supabase(monkeypatch, {'products': [], 'purchases': []})
+    monkeypatch.delenv(backend_main.ADMIN_API_TOKEN_ENV, raising=False)
+
+    res = client.get('/api/dashboard')
+
+    assert res.status_code == 500
+    assert res.json()['detail'] == "Admin token not configured."
