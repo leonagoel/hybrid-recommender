@@ -98,3 +98,4 @@ class TestFairnessAwareSpec:
         # Should execute successfully without throwing KeyError
         res = mock_recommender._fair_rerank(results, top_n=3, key='category', max_share=0.5)
         assert len(res) == 3
+
