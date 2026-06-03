@@ -5,6 +5,9 @@ Creates realistic user-product interactions to solve the cold start problem.
 Usage:
     python scripts/seed_mock_data.py
     python scripts/seed_mock_data.py --users 50 --purchases 2000
+
+Optimized via Issue #490: Implements strict pathlib absolute context mappings 
+to prevent relative lookup path anomalies across multi-tier runtime environments.
 """
 import os
 import sys
@@ -12,8 +15,14 @@ import random
 import argparse
 import secrets
 import string
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---
+SCRIPT_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+# Safely append project root to sys.path using absolute system reference strings
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from tqdm import tqdm
 from src.data.db import get_supabase_admin
@@ -46,7 +55,25 @@ REVIEW_TEMPLATES = [
 ]
 
 
-def seed_mock_data(num_users: int = 100, num_purchases: int = 5000) -> None:
+def generate_mock_password(length=24):
+    """Generate a high-entropy password for throwaway mock accounts."""
+    if length < 16:
+        raise ValueError("Mock user passwords must be at least 16 characters.")
+
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
+    required = [
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%^&*()-_=+"),
+    ]
+    remaining = [secrets.choice(alphabet) for _ in range(length - len(required))]
+    chars = required + remaining
+    secrets.SystemRandom().shuffle(chars)
+    return ''.join(chars)
+
+
+def seed_mock_data(num_users=100, num_purchases=5000):
     sb = get_supabase_admin()
 
     # Get available products
@@ -169,7 +196,7 @@ def seed_mock_data(num_users: int = 100, num_purchases: int = 5000) -> None:
     print(f"  {'='*50}\n")
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description='Seed mock users and purchases')
     parser.add_argument('--users', type=int, default=100)
     parser.add_argument('--purchases', type=int, default=5000)

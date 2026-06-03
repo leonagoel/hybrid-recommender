@@ -1,15 +1,14 @@
-# Data processing
-pandas
-numpy
-scipy
-# Machine learning
-scikit-learn
-nltk
-tqdm
-# Web framework
-fastapi
-uvicorn[standard]
-python-multipart
-# Database & auth
-supabase
-python-dotenv
+pandas>=2.1.0
+numpy>=1.26.0
+scikit-learn>=1.3.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+nltk>=3.8.0
+python-multipart>=0.0.6
+supabase>=2.5.0
+tqdm>=4.66.0
+scipy>=1.11.0
+streamlit>=1.28.0
+celery>=5.3.6
+redis>=5.0.1
+python-dotenv>=1.0.1

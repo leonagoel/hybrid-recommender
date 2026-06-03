@@ -65,6 +65,22 @@ class TestBayesianRating:
         result = bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10)
         assert abs(result - 3.5) < 0.01
 
+    def test_bayesian_rating_negative_rating(self):
+        result = bayesian_rating(-1.0, 5, global_avg=3.0, min_votes=10)
+        assert result < 3.0
+
+    def test_bayesian_rating_large_rating(self):
+        result = bayesian_rating(10.0, 5, global_avg=3.0, min_votes=10)
+        assert result > 3.0
+
+    def test_bayesian_rating_zero_min_votes(self):
+        result = bayesian_rating(4.5, 5, global_avg=3.0, min_votes=0)
+        assert result == 4.5
+
+    def test_bayesian_rating_float_votes(self):
+        result = bayesian_rating(4.0, 5.5, global_avg=3.0, min_votes=10.0)
+        assert 3.0 < result < 4.0
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
