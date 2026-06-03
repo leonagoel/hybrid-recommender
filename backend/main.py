@@ -806,6 +806,8 @@ def search_items(
         _set_cache_headers(response, "HIT")
         return cached
 
+    products = []
+
     try:
         sb = get_supabase()
 
@@ -851,6 +853,16 @@ def search_items(
                 or query_lower in str(p.get('description', '')).lower()
                 or query_lower in str(p.get('category', '')).lower()
             ]
+    if not products and query:
+        query_lower = query.lower()
+        products = [
+            p for p in products
+            if query_lower in str(p.get('title', '')).lower()
+            or query_lower in str(p.get('description', '')).lower()
+            or query_lower in str(p.get('category', '')).lower()
+        ]
+        for p in products:
+            p['rank'] = 0.0
 
     def _product_price(product):
         metadata = product.get('metadata') or {}
