@@ -59,6 +59,7 @@ function escapeHtml(value) {
  * HybridRec — Frontend Application v3
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
  */
+'use strict';
 
 // ── CSRF Token ──────────────────────────────────────────────────────
 // Fetched once from /api/csrf-token and kept in memory.

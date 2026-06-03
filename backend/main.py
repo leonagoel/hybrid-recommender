@@ -55,9 +55,9 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -620,6 +620,18 @@ STAGING_MODEL_VERSION = None
 
 SHADOW_LOGS = []
 
+MODEL_DATASET_IMPORTANT_COLUMNS = (
+    "id",
+    "title",
+    "description",
+    "category",
+    "rating",
+    "review_count",
+    "avg_sentiment",
+    "combined",
+)
+
+
 def generate_model_version():
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"1.0.0-{timestamp}"
@@ -743,7 +755,10 @@ def get_config():
 
 # ── Status ────────────────────────────────────────────────────────────
 @app.get("/api/status")
-def status():
+def status() -> dict:
+    sb = get_supabase()
+    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+    product_count = count_result.count or 0
     return {
         "status": "healthy",
         "model_ready": models["ready"],
@@ -751,7 +766,128 @@ def status():
     }
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────
+# Model readiness diagnostics
+def _get_component_readiness():
+    return {
+        "content": models.get("content") is not None,
+        "collab": models.get("collab") is not None,
+        "hybrid": models.get("hybrid") is not None,
+        "item_df": models.get("item_df") is not None,
+    }
+
+
+def _get_dataset_readiness(item_df):
+    diagnostics = {
+        "available": item_df is not None,
+        "shape": {"rows": 0, "columns": 0},
+        "columns": [],
+        "important_columns": {
+            column: False for column in MODEL_DATASET_IMPORTANT_COLUMNS
+        },
+    }
+
+    if item_df is None:
+        return diagnostics
+
+    try:
+        rows, columns_count = item_df.shape
+        diagnostics["shape"] = {
+            "rows": int(rows),
+            "columns": int(columns_count),
+        }
+    except (AttributeError, TypeError, ValueError):
+        diagnostics["available"] = False
+        return diagnostics
+
+    try:
+        columns = [str(column) for column in item_df.columns]
+    except AttributeError:
+        diagnostics["available"] = False
+        return diagnostics
+
+    available_columns = set(columns)
+    diagnostics["columns"] = columns
+    diagnostics["important_columns"] = {
+        column: column in available_columns
+        for column in MODEL_DATASET_IMPORTANT_COLUMNS
+    }
+    return diagnostics
+
+
+def _get_hybrid_weights(hybrid_model, warnings):
+    if hybrid_model is None:
+        return None
+
+    if not hasattr(hybrid_model, "get_weights"):
+        warnings.append("Hybrid model is loaded but does not expose weights.")
+        return None
+
+    try:
+        weights = hybrid_model.get_weights()
+        return dict(weights) if weights is not None else None
+    except Exception as exc:
+        logger.warning("Unable to read hybrid model weights: %s", exc)
+        warnings.append("Hybrid model weights could not be read.")
+        return None
+
+
+def _get_model_readiness_warnings(is_ready, components, dataset):
+    warnings = []
+
+    if not is_ready:
+        warnings.append("Models have not been built yet.")
+
+    missing_components = [
+        name for name, available in components.items() if not available
+    ]
+    if is_ready and missing_components:
+        warnings.append(
+            "Model state is marked ready but missing components: "
+            + ", ".join(missing_components)
+            + "."
+        )
+    elif any(components.values()) and missing_components:
+        warnings.append(
+            "Partial model readiness detected; missing components: "
+            + ", ".join(missing_components)
+            + "."
+        )
+
+    missing_columns = [
+        column
+        for column, present in dataset["important_columns"].items()
+        if not present
+    ]
+    if components["item_df"] and missing_columns:
+        warnings.append(
+            "Item dataset is missing important columns: "
+            + ", ".join(missing_columns)
+            + "."
+        )
+
+    return warnings
+
+
+@app.get("/api/model-readiness")
+def model_readiness():
+    components = _get_component_readiness()
+    dataset = _get_dataset_readiness(models.get("item_df"))
+    is_ready = bool(models.get("ready"))
+    warnings = _get_model_readiness_warnings(is_ready, components, dataset)
+    weights = _get_hybrid_weights(models.get("hybrid"), warnings)
+
+    return {
+        "ready": is_ready,
+        "active_model_version": ACTIVE_MODEL_VERSION,
+        "last_trained_at": models.get("last_trained_at"),
+        "components": components,
+        "dataset": dataset,
+        "weights": weights,
+        "warnings": warnings,
+    }
+
+
+# Dashboard
 @app.get("/api/dashboard")
 def dashboard(request: Request):
     _require_admin_access(request)
@@ -1897,7 +2033,7 @@ def move_model_to_shadow(
     }
 
 @app.get("/api/weights")
-def get_weights():
+def get_weights() -> dict:
     if not models["ready"]:
         return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2}
     return models["hybrid"].get_weights()
@@ -1918,7 +2054,8 @@ def update_weights(
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = 1, per_page: int = 50) -> dict:
+    """List products from Supabase with pagination."""
     sb = get_supabase()
     offset = (page - 1) * limit
     result = sb.table('products') \

@@ -16,7 +16,8 @@ import numpy as np
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
-
+import logging
+logger = logging.getLogger(__name__)
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
@@ -77,7 +78,7 @@ class HybridRecommender:
             if use_implicit is not None and hasattr(self.collab_model, 'use_implicit'):
                 self.collab_model.use_implicit = use_implicit
 
-        # # normalization: 'minmax' or 'zscore'
+        # normalization: 'minmax' or 'zscore'
         self.normalization = normalization
         # dynamic weighting matrix (dict of context -> (alpha,beta,gamma))
         self.weight_matrix = weight_matrix or {}
@@ -283,8 +284,8 @@ class HybridRecommender:
                     key = f'category:{top_cat}'
                     if key in self.weight_matrix:
                         a, b, g = self.weight_matrix[key]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Weight resolution failed for category signal: {e}")    
 
         # user signals
         if user_id and self.collab_model and hasattr(self.collab_model, 'df'):
@@ -294,8 +295,9 @@ class HybridRecommender:
                     a, b, g = self.weight_matrix['warm_user']
                 if 'cold_user' in self.weight_matrix and user_interacts < 3:
                     a, b, g = self.weight_matrix['cold_user']
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Weight resolution failed for user signal: {e}")
+
 
         # feature absence overrides
         if self.collab_model is None and 'no_collab' in self.weight_matrix:
@@ -640,8 +642,9 @@ class HybridRecommender:
 
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
+            global_avg = df['rating'].mean() if len(df) > 0 else 3.0
             df['_bayesian'] = df.apply(
-                lambda r: bayesian_rating(r['rating'], r.get('review_count', 0)), axis=1
+                lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1
             )
             df = df.sort_values(
                 ['_bayesian', 'review_count'],
