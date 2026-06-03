@@ -12,7 +12,6 @@ import time
 import logging
 import math
 import secrets
-import re
 from urllib.parse import urlsplit
 import json
 from redis import Redis
