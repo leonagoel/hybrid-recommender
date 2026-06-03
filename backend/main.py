@@ -729,11 +729,62 @@ class FederatedTrainRequest(BaseModel):
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
-    return {
-        "status": "healthy",
+    """
+    Low‑overhead health check endpoint for component tracking.
+    Checks database (Supabase), model readiness, and cache (Redis).
+    """
+    result = {
+        "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "model_loaded": models["ready"],
+        "components": {
+            "database": {"status": "unknown", "details": None},
+            "model": {"status": "unknown", "details": None},
+            "cache": {"status": "unknown", "details": None},
+        },
     }
+
+    # 1. Database check (Supabase)
+    try:
+        sb = get_supabase()
+        response = sb.table("products").select("id").limit(1).execute()
+        if response.data is not None:
+            result["components"]["database"] = {"status": "healthy", "details": "connected"}
+        else:
+            result["components"]["database"] = {"status": "unhealthy", "details": "query returned no data"}
+            result["status"] = "degraded"
+    except Exception as e:
+        result["components"]["database"] = {"status": "unhealthy", "details": str(e)}
+        result["status"] = "degraded"
+
+    # 2. Model readiness check
+    try:
+        if models.get("ready"):
+            result["components"]["model"] = {"status": "ready", "details": "models loaded"}
+        else:
+            result["components"]["model"] = {"status": "not_ready", "details": "models not built"}
+            result["status"] = "degraded"
+    except Exception as e:
+        result["components"]["model"] = {"status": "error", "details": str(e)}
+        result["status"] = "degraded"
+
+    # 3. Cache (Redis) check
+    try:
+        redis_url = os.environ.get("REDIS_URL", "")
+        if redis_url:
+            from redis import Redis
+            r = Redis.from_url(redis_url, decode_responses=True)
+            if r.ping():
+                result["components"]["cache"] = {"status": "healthy", "details": "redis ping successful"}
+            else:
+                result["components"]["cache"] = {"status": "unhealthy", "details": "redis ping failed"}
+                result["status"] = "degraded"
+        else:
+            result["components"]["cache"] = {"status": "not_configured", "details": "REDIS_URL not set"}
+    except Exception as e:
+        result["components"]["cache"] = {"status": "error", "details": str(e)}
+        result["status"] = "degraded"
+
+    return result
 
 
 # ── API Metrics ───────────────────────────────────────────────────────
