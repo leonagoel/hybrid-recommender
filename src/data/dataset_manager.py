@@ -1,14 +1,9 @@
-"""
-Dataset Manager — Loads, adapts, and merges multiple CSV datasets
-into a unified schema for the recommender pipeline.
-"""
-__all__ = ["DatasetManager"]
-
 import pandas as pd
 import os
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from data_adapter import adapt_data
+from data_preprocessing import preprocess
 
 
 class DatasetManager:
@@ -18,11 +13,11 @@ class DatasetManager:
     All datasets can be merged into a single DataFrame for the recommender.
     """
 
-    def __init__(self) -> None:
-        self._datasets: Dict[str, Dict[str, Any]] = {}
+    def __init__(self):
+        self._datasets = {}  # id → { 'name': str, 'raw': df, 'adapted': df, 'meta': dict }
 
     # ------------------------------------------------------------------
-    def load_csv(self, file_path_or_buffer: Any, name: Optional[str] = None) -> str:
+    def load_csv(self, file_path_or_buffer: Any, name: Optional[str] = None, catalog: Optional[str] = None) -> str:
         """
         Load a CSV file (path string or file-like object) into the manager.
         Returns the dataset ID.
@@ -57,7 +52,7 @@ class DatasetManager:
         return ds_id
 
     # ------------------------------------------------------------------
-    def remove_dataset(self, ds_id: str) -> bool:
+    def remove_dataset(self, ds_id):
         """Remove a loaded dataset by ID."""
         if ds_id in self._datasets:
             del self._datasets[ds_id]
@@ -65,7 +60,7 @@ class DatasetManager:
         return False
 
     # ------------------------------------------------------------------
-    def list_datasets(self) -> List[Dict[str, Any]]:
+    def list_datasets(self):
         """Return a summary of all loaded datasets."""
         result = []
         for ds_id, ds in self._datasets.items():
@@ -84,7 +79,7 @@ class DatasetManager:
         return result
 
     # ------------------------------------------------------------------
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self):
         """Aggregate statistics across all loaded datasets."""
         total_rows = sum(ds['meta']['total_rows'] for ds in self._datasets.values())
         return {
@@ -94,7 +89,7 @@ class DatasetManager:
         }
 
     # ------------------------------------------------------------------
-    def merge_all(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def merge_all(self):
         """
         Merge all adapted datasets into a single DataFrame.
         Deduplicates by (title) — keeps the first occurrence,
@@ -145,7 +140,7 @@ class DatasetManager:
         return merged, grouped
 
     # ------------------------------------------------------------------
-    def get_interaction_df(self) -> pd.DataFrame:
+    def get_interaction_df(self):
         """Return the full interaction-level DataFrame (user × item ratings)."""
         if not self._datasets:
             raise ValueError("No datasets loaded.")

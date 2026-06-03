@@ -133,7 +133,27 @@ class TestValidateRecommenderInputs:
                 item_id_col="item_id",
                 rating_col="rating"
             )
+class TestHasBlankValues:
 
+    def test_no_blanks_returns_false(self):
+        from src.data.data_adapter import _has_blank_values
+        s = pd.Series(['a', 'b', 'c'])
+        assert not _has_blank_values(s)   
+
+    def test_nan_returns_true(self):
+        from src.data.data_adapter import _has_blank_values
+        s = pd.Series(['a', None, 'c'])
+        assert _has_blank_values(s)      
+
+    def test_empty_string_returns_true(self):
+        from src.data.data_adapter import _has_blank_values
+        s = pd.Series(['a', '', 'c'])
+        assert _has_blank_values(s)       
+
+    def test_whitespace_only_returns_true(self):
+        from src.data.data_adapter import _has_blank_values
+        s = pd.Series(['a', '   ', 'c'])
+        assert _has_blank_values(s)      
 
 class TestReadFile:
     """Test read_file function."""

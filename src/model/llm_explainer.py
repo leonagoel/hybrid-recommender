@@ -7,7 +7,7 @@ for why items were recommended.
 
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 try:
     import google.generativeai as genai
@@ -70,7 +70,6 @@ class LLMExplainer:
             description: Item description
             top_reviews: List of top reviews
             category: Item category
-            Reason: Why the item is recommended (main reason based on scores)
 
         Returns:
             Formatted prompt for LLM
