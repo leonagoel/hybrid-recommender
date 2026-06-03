@@ -65,3 +65,4 @@ def get_supabase_admin() -> Client:
             return None
             
     return _admin_client
+
