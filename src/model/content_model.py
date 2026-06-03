@@ -135,4 +135,7 @@ class ContentRecommender:
                 'top_reviews': top_reviews,
             })
 
+            if len(results) >= top_n:
+                break
+
         return results
