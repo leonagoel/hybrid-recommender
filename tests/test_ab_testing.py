@@ -140,3 +140,4 @@ def test_summarize_variant_metrics_returns_average_by_variant():
         {"variant": "content_heavy", "count": 1, "total": 1.0, "average": 1.0},
         {"variant": "control", "count": 2, "total": 1.0, "average": 0.5},
     ]
+
