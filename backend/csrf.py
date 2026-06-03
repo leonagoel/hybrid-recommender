@@ -247,3 +247,4 @@ class CSRFMiddleware:
 
         # 7. Both tokens present and identical — pass to the next handler.
         await self._app(scope, receive, send)
+
