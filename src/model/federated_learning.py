@@ -194,3 +194,4 @@ def train_federated_collaborative_model(
     recommender.user_factors = np.array(user_factors_list)
 
     return recommender
+
