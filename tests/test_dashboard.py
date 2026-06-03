@@ -232,3 +232,4 @@ def test_dashboard_fails_closed_when_admin_token_unset(client, monkeypatch):
 
     assert res.status_code == 500
     assert res.json()['detail'] == "Admin token not configured."
+
