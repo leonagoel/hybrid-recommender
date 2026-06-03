@@ -139,3 +139,4 @@ class PropensityModel:
             "min": round(float(values.min()), 4),
             "max": round(float(values.max()), 4),
         }
+
