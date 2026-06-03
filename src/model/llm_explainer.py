@@ -248,3 +248,4 @@ def get_explainer(model_name: str = "gemini-pro") -> LLMExplainer:
     if _explainer_instance is None:
         _explainer_instance = LLMExplainer(model_name=model_name)
     return _explainer_instance
+
