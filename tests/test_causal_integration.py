@@ -352,3 +352,4 @@ class TestCausalEvaluation:
             causal_model, baseline_model, item_df, [], top_n=3
         )
         assert result["n_queries"] == 0
+
