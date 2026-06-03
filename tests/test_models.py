@@ -182,7 +182,7 @@ class TestCollaborativeRecommender:
     def test_predict_rating_unknown_returns_none(self, collab_model):
         result = collab_model.predict_rating('ghost_user', 'Product A')
         assert result is None
-
+    
 
 # ─── HybridRecommender ───────────────────────────────────────────────────────
 

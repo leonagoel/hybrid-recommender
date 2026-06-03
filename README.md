@@ -598,6 +598,100 @@ git merge upstream/main
 MIT — see [`LICENSE`](LICENSE)
 
 ---
+## 🛠️ Troubleshooting Local Setup
+
+### 1. ModuleNotFoundError while running the project
+
+This usually happens when the virtual environment is not activated or dependencies are not installed.
+
+Create a virtual environment:
+
+```bash
+python -m venv venv
+```
+
+Activate it:
+
+#### Windows
+
+```bash
+venv\Scripts\activate
+```
+
+#### macOS/Linux
+
+```bash
+source venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### 2. Dependency conflicts during installation
+
+If `pip install -r requirements.txt` fails because of version conflicts:
+
+Upgrade pip first:
+
+```bash
+python -m pip install --upgrade pip
+```
+
+Then reinstall dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+If issues persist, recreate the virtual environment.
+
+#### Windows
+
+```bash
+deactivate
+rmdir /s /q venv
+python -m venv venv
+```
+
+#### macOS/Linux
+
+```bash
+deactivate
+rm -rf venv
+python -m venv venv
+```
+
+---
+
+### 3. Verify local environment setup
+
+Run these commands to confirm everything is working correctly.
+
+Check Python version:
+
+```bash
+python --version
+```
+
+Check installed packages:
+
+```bash
+pip list
+```
+
+Run the test suite:
+
+```bash
+pytest
+```
+
+If tests run successfully, the environment is ready for development.
+
 
 ## Documentation
 
@@ -648,3 +742,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to get started — all skill levels welco
 </div>
 
 ---
+## Knowledge Graph Embeddings
+
+This project now supports semantic item relationships using
+TransE-style knowledge graph embeddings.
+
+Features:
+- Semantic similarity learning
+- Graph-based recommendation enrichment
+- Hybrid recommendation integration
+- Category/author relationship modeling
+
+Run:
+
+```bash
+python scripts/generate_kg_embeddings.py
+
+---
+
