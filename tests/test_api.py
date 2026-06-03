@@ -38,3 +38,4 @@ def test_version_endpoint():
         "service": "Hybrid Recommender API",
         "status": "running",
     }
+
