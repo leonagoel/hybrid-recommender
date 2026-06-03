@@ -127,3 +127,4 @@ def test_hybrid_recommender_cross_domain_fallback(multi_catalog_dataset_manager)
     assert len(recs) > 0
     for r in recs:
         assert r['title'] in ['Harry Potter', 'The Hobbit', 'Dune']
+
