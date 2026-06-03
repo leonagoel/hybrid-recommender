@@ -46,25 +46,7 @@ REVIEW_TEMPLATES = [
 ]
 
 
-def generate_mock_password(length=24):
-    """Generate a high-entropy password for throwaway mock accounts."""
-    if length < 16:
-        raise ValueError("Mock user passwords must be at least 16 characters.")
-
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
-    required = [
-        secrets.choice(string.ascii_lowercase),
-        secrets.choice(string.ascii_uppercase),
-        secrets.choice(string.digits),
-        secrets.choice("!@#$%^&*()-_=+"),
-    ]
-    remaining = [secrets.choice(alphabet) for _ in range(length - len(required))]
-    chars = required + remaining
-    secrets.SystemRandom().shuffle(chars)
-    return ''.join(chars)
-
-
-def seed_mock_data(num_users=100, num_purchases=5000):
+def seed_mock_data(num_users: int = 100, num_purchases: int = 5000) -> None:
     sb = get_supabase_admin()
 
     # Get available products
@@ -187,7 +169,7 @@ def seed_mock_data(num_users=100, num_purchases=5000):
     print(f"  {'='*50}\n")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description='Seed mock users and purchases')
     parser.add_argument('--users', type=int, default=100)
     parser.add_argument('--purchases', type=int, default=5000)

@@ -15,27 +15,34 @@ except ImportError:
     genai = None
 
 logger = logging.getLogger(__name__)
-GOOGLE_API_KEY = "Your_API_KEY"
+# API key must be supplied via the GOOGLE_API_KEY environment variable.
+# Never hardcode credentials in source code.
 
 class LLMExplainer:
-    """Generate natural language explanations for recommendations using LLM."""
-
     def __init__(self, model_name: str = "gemini-pro", api_key: Optional[str] = None):
-        """
-        Initialize the LLM explainer.
-
-        Args:
-            model_name: Google Generative AI model to use (default: gemini-pro)
-            api_key: Google API key (will read from GOOGLE_API_KEY env var if not provided)
-        """
         self.model_name = model_name
-        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or GOOGLE_API_KEY
+        # Resolve key: explicit argument takes priority, then env var, then None.
+        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or None
 
         if genai is None:
             logger.warning(
                 "google-generativeai not installed. Falling back to text-based explanations."
             )
             self.client = None
+            return
+
+        if not self.api_key:
+            logger.warning(
+                "GOOGLE_API_KEY not found. Set it as an environment variable to enable LLM explanations."
+            )
+            self.client = None
+        else:
+            try:
+                genai.configure(api_key=self.api_key)
+                self.client = genai.GenerativeModel(model_name)
+            except Exception as e:
+                logger.error(f"Failed to initialize Google Generative AI: {e}")
+                self.client = None
             return
 
         if not self.api_key or self.api_key == "Your_API_KEY":

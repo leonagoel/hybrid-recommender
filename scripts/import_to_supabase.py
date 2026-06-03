@@ -9,6 +9,7 @@ Usage:
 import os
 import sys
 import argparse
+from typing import Iterator
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -18,41 +19,13 @@ from src.data.data_adapter import adapt_data
 from src.data.db import get_supabase_admin
 
 
-def chunked(df, size):
+def chunked(df: pd.DataFrame, size: int) -> Iterator[pd.DataFrame]:
+    """Yield successive chunks of a DataFrame."""
     for start in range(0, len(df), size):
         yield df.iloc[start:start + size]
 
 
-def _safe_float(value, default=0.0):
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    return number if pd.notna(number) else default
-
-
-def _safe_int(value, default=0):
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(number, default)
-
-
-def build_product_row(row):
-    """Normalize one adapted product row for the Supabase products table."""
-    return {
-        'title': str(row.get('title', 'Unknown'))[:500],
-        'description': str(row.get('description', ''))[:2000],
-        'category': str(row.get('category', ''))[:200],
-        'rating': _safe_float(row.get('rating', 0)),
-        'avg_sentiment': _safe_float(row.get('sentiment', 0)),
-        'review_count': _safe_int(row.get('review_count', 0)),
-        'metadata': {},
-    }
-
-
-def import_dataset(file_path, batch_size=1000, run_sentiment=False):
+def import_dataset(file_path: str, batch_size: int = 1000, run_sentiment: bool = False) -> int:
     """Import a single dataset file into the products table."""
     print(f"\n{'='*60}")
     print(f"  Importing: {os.path.basename(file_path)}")
@@ -117,7 +90,7 @@ def import_dataset(file_path, batch_size=1000, run_sentiment=False):
     return inserted
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description='Import datasets into Supabase')
     parser.add_argument('--file', type=str, help='Specific file to import')
     parser.add_argument('--batch-size', type=int, default=1000, help='Rows per batch')
