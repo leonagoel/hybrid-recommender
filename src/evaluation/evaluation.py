@@ -167,8 +167,14 @@ def _intra_list_diversity(
 
 
 # Small helper used by benchmark to build models/test pairs
-def _build_test_data(data_path: str | None = None):
+def _build_test_data(
+    data_path: str | None = None,
+    random_seed: int = 42,
+):
     """Build minimal models and test pairs for benchmark scripts.
+
+    Uses a fixed ``random_seed`` so that repeated calls with the same dataset
+    produce the same test pairs, making benchmark comparisons stable.
 
     Returns (content_model, collab_model, df, test_pairs).
     """
@@ -205,18 +211,22 @@ def _build_test_data(data_path: str | None = None):
 
     collab_model = _Collab()
 
-    # build simple test pairs
+    # Build test pairs with category-only relevance.
+    #
+    # Relevance is restricted to items in the same category as the query.
+    # Item ratings are intentionally excluded: mixing a global
+    # "rating >= threshold" filter marks unrelated high-rated items as
+    # ground-truth matches for every query, inflating Precision@K, Recall@K,
+    # NDCG@K, and MRR regardless of semantic similarity.
     test_pairs = []
     sample = min(50, len(df))
-    indices = np.random.choice(len(df), size=sample, replace=False)
+    indices = rng.choice(len(df), size=sample, replace=False)
     for uid, idx in enumerate(indices):
         title = df.iloc[idx]["title"]
         relevant = set()
         if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):
             same = df[df["category"] == df.iloc[idx]["category"]]["title"].tolist()
             relevant.update(same)
-        if "rating" in df.columns:
-            relevant.update(df[df["rating"] >= 4.0]["title"].tolist())
         relevant.discard(title)
         if relevant:
             test_pairs.append((uid, title, relevant))
@@ -320,12 +330,47 @@ def run_evaluation(
     mode: Mode = "all",
     weights: dict[str, float] | None = None,
     data_path: str | None = None,
+    test_size: float = 0.2,
+    random_seed: int = 42,
 ) -> ResultsDict:
     """
     Run Precision@K, Recall@K, NDCG@K evaluation for the requested mode(s).
+
+    Train / test separation
+    -----------------------
+    The dataset is split into a training portion (1 - test_size) and a
+    held-out test portion (test_size).  TF-IDF vocabulary / IDF weights and
+    the SVD latent factors are fitted **only on the training split**.  Test
+    items are then *transformed* (not fitted) with those trained artifacts,
+    exactly mirroring how the system would treat unseen items in production.
+
+    Recommendations for each test query are drawn from the training catalog,
+    so no test item can appear as both a query and a candidate used during
+    training, eliminating train / test leakage.
+
+    Reproducibility
+    ---------------
+    All random operations use ``np.random.default_rng(random_seed)``
+    (PCG64 generator).  Identical inputs always produce identical results.
+
+    Parameters
+    ----------
+    k           : number of recommendations per query
+    mode        : 'content', 'collaborative', 'sentiment', 'hybrid', or 'all'
+    weights     : override hybrid weights {alpha, beta, gamma}
+    data_path   : path to CSV dataset; falls back to DATA_PATH env var
+    test_size   : fraction of rows held out for evaluation (default 0.2).
+                  Must be strictly between 0 and 1.
+    random_seed : seed for all random operations (default 42)
     """
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.decomposition import TruncatedSVD
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics.pairwise import cosine_similarity as _cosine_sim
+
+    # --- validate parameters ---
+    if not (0.0 < test_size < 1.0):
+        raise ValueError("test_size must be strictly between 0 and 1.")
 
     # --- resolve weights ---
     w = {"alpha": 0.4, "beta": 0.4, "gamma": 0.2}
@@ -350,6 +395,11 @@ def run_evaluation(
 
     df = df.dropna(subset=["title"]).reset_index(drop=True)
 
+    if len(df) < 5:
+        raise RuntimeError(
+            "Dataset is too small for evaluation (need at least 5 items)."
+        )
+
     # --- auto-analyze sentiment if missing ---
     if "sentiment_score" not in df.columns:
         try:
@@ -365,30 +415,38 @@ def run_evaluation(
             )
             df = batch_analyze(df, text_col=text_col)
 
-    # --- build/load matrices ---
-    tfidf_matrix = _load_or_build_tfidf(df)
-    svd_matrix   = _load_or_build_svd(df)
-
-    # --- build relevance sets from rating data ---
-    def _get_relevant(row_idx: int) -> set[str]:
-        row = df.iloc[row_idx]
-        relevant = set()
-        # Same category
-        if "category" in df.columns and pd.notna(row.get("category")):
-            same_cat = df[df["category"] == row["category"]]["title"].tolist()
-            relevant.update(same_cat)
-        # High-rated items (if ratings available)
-        if "rating" in df.columns:
-            high_rated = df[df["rating"] >= 4.0]["title"].tolist()
-            relevant.update(high_rated)
-        # Remove self
-        relevant.discard(row["title"])
-        return relevant
+    # -----------------------------------------------------------------------
+    # Train / test split
+    # -----------------------------------------------------------------------
+    # Attempt stratification by category so both splits share the same
+    # category distribution.  Stratification fails if any category has
+    # fewer than 2 members; fall back to a plain random split in that case.
+    try:
+        stratify = (
+            df["category"].fillna("__none__")
+            if "category" in df.columns
+            else None
+        )
+        train_df, test_df = train_test_split(
+            df,
+            test_size=test_size,
+            random_state=random_seed,
+            stratify=stratify,
+        )
+    except ValueError:
+        train_df, test_df = train_test_split(
+            df,
+            test_size=test_size,
+            random_state=random_seed,
+        )
 
     # Sample up to 200 items for speed
     sample_size = min(200, len(df))
     sample_indices = np.random.choice(len(df), size=sample_size, replace=False)
 
+    # -----------------------------------------------------------------------
+    # Determine evaluation strategy
+    # -----------------------------------------------------------------------
     modes_to_run = (
         ["content", "collaborative", "sentiment", "hybrid"]
         if mode == "all"
@@ -396,17 +454,20 @@ def run_evaluation(
     )
 
     results: ResultsDict = {}
-    
-    # Check out if user interaction signals exist in the dataset
-    has_user_data = "user_id" in df.columns and len(df["user_id"].dropna().unique()) > 1
+
+    has_user_data = (
+        "user_id" in df.columns
+        and len(df["user_id"].dropna().unique()) > 1
+    )
 
     if has_user_data:
-        # User-based Evaluation Profile
         unique_users = df["user_id"].dropna().unique()
-        sample_users = np.random.choice(unique_users, size=min(100, len(unique_users)), replace=False)
+        sample_users = rng.choice(
+            unique_users, size=min(100, len(unique_users)), replace=False
+        )
     else:
-        # Fallback to item index sample if explicit user tracking columns aren't present
-        sample_indices = np.random.choice(len(df), size=min(100, len(df)), replace=False)
+        sample_size    = min(200, len(test_df))
+        sample_indices = rng.choice(len(test_df), size=sample_size, replace=False)
 
     for m in modes_to_run:
         precisions, recalls, ndcgs = [], [], []
@@ -414,48 +475,54 @@ def run_evaluation(
         all_recs = []
 
         if has_user_data:
-            # ----------------------------------------------------
-            # USER-BASED PERSONALIZATION LOOP (Core Fix)
-            # ----------------------------------------------------
+            # ------------------------------------------------------------------
+            # User-based leave-one-out evaluation.
+            #
+            # For each sampled user we hold out their last interaction as the
+            # evaluation target.  Recommendations are generated from the
+            # training split using the user's remaining interaction history as
+            # seed items.  The training TF-IDF/SVD artifacts are used for all
+            # similarity computations, so the held-out item never influences
+            # the model fit.
+            # ------------------------------------------------------------------
             for current_user in sample_users:
-                # User ki poori consumption profiles fetch karna
-                user_profile = df[df["user_id"] == current_user].reset_index(drop=True)
+                user_profile = (
+                    df[df["user_id"] == current_user].reset_index(drop=True)
+                )
                 if len(user_profile) < 2:
-                    continue  # Leave-one-out needs at least 2 items (1 history, 1 held-out)
+                    continue  # leave-one-out requires at least 2 interactions
 
-                # Hold out the last item as the evaluation truth target
-                query_item = user_profile.iloc[-1]["title"]
-                relevant = {query_item}
-                
-                # Baki bache items user history seed banenge
+                query_item   = user_profile.iloc[-1]["title"]
+                relevant     = {query_item}
                 user_history = user_profile.iloc[:-1]["title"].tolist()
 
-                agg_recs = {}
-                # Extract up to 5 interaction points for high-fidelity evaluation profiling
+                agg_recs: dict[str, float] = {}
                 for seed_title in user_history[:5]:
                     try:
                         if m == "content":
-                            recs_raw = _get_content_recs(seed_title, df, tfidf_matrix, k)
+                            recs_raw = _content_recs_train_title(seed_title)
                         elif m == "collaborative":
-                            recs_raw = _get_collab_recs(seed_title, df, svd_matrix, k)
+                            recs_raw = _collab_recs_train_title(seed_title)
                         elif m == "sentiment":
-                            recs_raw = _get_sentiment_recs(seed_title, df, k)
-                        else:  # hybrid
-                            recs_raw = _get_hybrid_recs(
-                                seed_title, df, tfidf_matrix, svd_matrix,
-                                w["alpha"], w["beta"], w["gamma"], k,
+                            recs_raw = _sentiment_recs_train_title(seed_title)
+                        else:
+                            recs_raw = _hybrid_recs_train_title(seed_title)
+
+                        for rank, item_name in enumerate(recs_raw):
+                            score = 1.0 / (rank + 1)
+                            agg_recs[item_name] = max(
+                                agg_recs.get(item_name, 0.0), score
                             )
-                        
-                        # Blend recommendation confidence arrays
-                        for idx_rank, item_name in enumerate(recs_raw):
-                            score = 1.0 / (idx_rank + 1)  # Rank-based reciprocal pooling fallback
-                            agg_recs[item_name] = max(agg_recs.get(item_name, 0), score)
                     except Exception:
                         continue
 
-                # Sort aggregated items and filter out historical elements
-                sorted_recs = sorted(agg_recs.items(), key=lambda x: x[1], reverse=True)
-                final_recs = [item[0] for item in sorted_recs if item[0] not in user_history][:k]
+                sorted_recs = sorted(
+                    agg_recs.items(), key=lambda x: x[1], reverse=True
+                )
+                final_recs = [
+                    item for item, _ in sorted_recs
+                    if item not in user_history
+                ][:k]
 
                 if final_recs:
                     precisions.append(_precision_at_k(final_recs, relevant, k))
@@ -463,7 +530,9 @@ def run_evaluation(
                     ndcgs.append(_ndcg_at_k(final_recs, relevant, k))
                     mrrs.append(_mean_reciprocal_rank(final_recs, relevant, k))
                     hits.append(_hit_rate(final_recs, relevant, k))
-                    ilds.append(_intra_list_diversity(final_recs, df, tfidf_matrix))
+                    ilds.append(
+                        _intra_list_diversity(final_recs, train_df, train_tfidf)
+                    )
                     all_recs.append(final_recs)
         else:
             # ----------------------------------------------------
@@ -472,7 +541,11 @@ def run_evaluation(
             for idx in sample_indices:
                 title = df.iloc[idx]["title"]
                 
-                # Establish pseudo-relevance via category boundaries
+                # Relevance is defined by category membership only.
+                # Do NOT add a global rating threshold here: mixing
+                # "rating >= N" into the relevance set marks unrelated
+                # high-rated items as ground-truth matches, inflating
+                # Precision@K, Recall@K, MRR, and NDCG for every query.
                 relevant = set()
                 if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):
                     relevant.update(df[df["category"] == df.iloc[idx]["category"]]["title"].tolist())
@@ -482,15 +555,14 @@ def run_evaluation(
                     continue
 
                 if m == "content":
-                    recs = _get_content_recs(title, df, tfidf_matrix, k)
+                    recs = _content_recs_vec(test_tfidf[test_idx])
                 elif m == "collaborative":
-                    recs = _get_collab_recs(title, df, svd_matrix, k)
+                    recs = _collab_recs_vec(test_svd[test_idx])
                 elif m == "sentiment":
-                    recs = _get_sentiment_recs(title, df, k)
+                    recs = _sentiment_recs_train()
                 else:
-                    recs = _get_hybrid_recs(
-                        title, df, tfidf_matrix, svd_matrix,
-                        w["alpha"], w["beta"], w["gamma"], k,
+                    recs = _hybrid_recs_vec(
+                        test_tfidf[test_idx], test_svd[test_idx]
                     )
 
                 precisions.append(_precision_at_k(recs, relevant, k))
@@ -498,21 +570,25 @@ def run_evaluation(
                 ndcgs.append(_ndcg_at_k(recs, relevant, k))
                 mrrs.append(_mean_reciprocal_rank(recs, relevant, k))
                 hits.append(_hit_rate(recs, relevant, k))
-                ilds.append(_intra_list_diversity(recs, df, tfidf_matrix))
+                ilds.append(_intra_list_diversity(recs, train_df, train_tfidf))
                 all_recs.append(recs)
 
         avg_precision = float(np.mean(precisions)) if precisions else 0.0
-        avg_recall = float(np.mean(recalls)) if recalls else 0.0
-        avg_ndcg = float(np.mean(ndcgs)) if ndcgs else 0.0
-        avg_mrr = float(np.mean(mrrs)) if mrrs else 0.0
-        avg_hit = float(np.mean(hits)) if hits else 0.0
-        avg_ild = float(np.mean(ilds)) if ilds else 0.0
-        cov = _catalog_coverage(all_recs, len(df)) if all_recs else 0.0
+        avg_recall    = float(np.mean(recalls))    if recalls    else 0.0
+        avg_ndcg      = float(np.mean(ndcgs))      if ndcgs      else 0.0
+        avg_mrr       = float(np.mean(mrrs))        if mrrs       else 0.0
+        avg_hit       = float(np.mean(hits))        if hits        else 0.0
+        avg_ild       = float(np.mean(ilds))        if ilds        else 0.0
+        cov = _catalog_coverage(all_recs, len(train_df)) if all_recs else 0.0
 
         results[m] = {
-            "precision": round(float(np.mean(precisions)), 4) if precisions else 0.0,
-            "recall":    round(float(np.mean(recalls)),    4) if recalls    else 0.0,
-            "ndcg":      round(float(np.mean(ndcgs)),      4) if ndcgs      else 0.0,
+            "precision":            round(avg_precision, 4),
+            "recall":               round(avg_recall,    4),
+            "ndcg":                 round(avg_ndcg,      4),
+            "mrr":                  round(avg_mrr,       4),
+            "hit_rate":             round(avg_hit,       4),
+            "catalog_coverage":     round(cov,           4),
+            "intra_list_diversity": round(avg_ild,       4),
         }
 
     return results
@@ -579,21 +655,28 @@ def _cli() -> None:
     parser.add_argument("--mode", type=str,   default="all",
                         choices=["content", "collaborative", "sentiment", "hybrid", "all"],
                         help="Which model(s) to evaluate (default: all)")
-    parser.add_argument("--alpha", type=float, default=0.4, help="Content weight (default: 0.4)")
-    parser.add_argument("--beta",  type=float, default=0.4, help="Collaborative weight (default: 0.4)")
-    parser.add_argument("--gamma", type=float, default=0.2, help="Sentiment weight (default: 0.2)")
+    parser.add_argument("--alpha",       type=float, default=0.4,  help="Content weight (default: 0.4)")
+    parser.add_argument("--beta",        type=float, default=0.4,  help="Collaborative weight (default: 0.4)")
+    parser.add_argument("--gamma",       type=float, default=0.2,  help="Sentiment weight (default: 0.2)")
+    parser.add_argument("--test-size",   type=float, default=0.2,
+                        help="Fraction of data held out for evaluation (default: 0.2)")
+    parser.add_argument("--random-seed", type=int,   default=42,
+                        help="Random seed for reproducible evaluation (default: 42)")
     args = parser.parse_args()
 
     print(f"\n📊 Running evaluation — mode={args.mode}, k={args.k}")
-    print(f"   Weights: α={args.alpha} β={args.beta} γ={args.gamma}\n")
+    print(f"   Weights: α={args.alpha} β={args.beta} γ={args.gamma}")
+    print(f"   Test split: {args.test_size:.0%}  seed: {args.random_seed}\n")
 
     try:
         results = run_evaluation(
             k=args.k,
             mode=args.mode,
             weights={"alpha": args.alpha, "beta": args.beta, "gamma": args.gamma},
+            test_size=args.test_size,
+            random_seed=args.random_seed,
         )
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         print(f"❌ Error: {e}")
         return
 
