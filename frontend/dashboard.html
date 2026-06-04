@@ -85,6 +85,11 @@
 async function loadDashboard() {
 
   const response = await fetch('/api/dashboard');
+
+  if (!response.ok) {
+    throw new Error('Failed to load dashboard data');
+  }
+
   const data = await response.json();
 
   document.getElementById('products').textContent =
