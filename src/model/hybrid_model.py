@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
+from src.model.recommendation_history import history_tracker
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
@@ -37,7 +38,8 @@ class HybridRecommender:
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None):
+                 causal_config=None, model_kwargs=None,
+                 kg_model=None, delta=0.0):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -404,9 +406,7 @@ class HybridRecommender:
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
         kg_scores = []
-        t
         if self.kg_model:
-            l
             kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
            
             kg_map = {
@@ -521,6 +521,12 @@ class HybridRecommender:
             return self._cold_start_fallback(title=None, top_n=top_n)
 
         collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
+        recent_titles = history_tracker.get_recent_titles(user_id)
+
+        collab_recs = [ 
+            rec for rec in collab_recs
+            if rec["title"] not in recent_titles
+        ]
         
         results = []
         for r in collab_recs[:top_n]:
@@ -562,7 +568,12 @@ class HybridRecommender:
             results = self._debiaser.debias_batch(results, score_key=score_key)
             results.sort(key=lambda x: x[score_key], reverse=True)
 
-        return results
+            for item in results:
+                history_tracker.add_recommendation(
+                    user_id,
+                    item["title"]
+                    )
+                return results
 
     def _build_explanation(
         self,
@@ -588,6 +599,26 @@ class HybridRecommender:
             'popularity_bonus': round(0.05 * popularity, 4),
         }
         strongest = max(weighted_components, key=weighted_components.get)
+        if strongest == "content":
+            explanation_text = (
+                f"Recommended due to strong content similarity "
+                f"with '{source_title}'."
+                )
+
+        elif strongest == "collaborative":
+            explanation_text = (
+                "Recommended because users with similar preferences "
+                "also interacted with this item."
+                )
+        elif strongest == "sentiment":
+            explanation_text = (
+                "Recommended because it has highly positive reviews."
+                )
+
+        else:
+            explanation_text = (
+                "Recommended because of its popularity and overall score."
+                )
 
         return {
             'source_item': source_title,
@@ -601,7 +632,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'raw_content': round(raw_item['raw_content'], 4),
+                'raw_content': roaund(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
             },
@@ -613,6 +644,7 @@ class HybridRecommender:
                 'sentiment_polarity': self._sentiment_label(raw_item['raw_sentiment']),
                 'popularity': round(popularity, 4),
             },
+            "human_explanation": explanation_text,
         }
 
     @staticmethod
