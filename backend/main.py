@@ -153,6 +153,11 @@ _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 _cache_lock = Lock()
 
+# Optional Redis client for distributed caching.  None when REDIS_URL is unset
+# or the connection cannot be established at startup; the in-process dict cache
+# is used as a fallback in both cases.
+_redis_client: Redis | None = None
+
 MOCK_PRODUCTS = [
     {
         "id": 1,
@@ -198,15 +203,47 @@ def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
+def _recommendation_cache_key(
+    title: str,
+    top_n: int = 10,
+    explain: bool = False,
+    user_id: str = "",
+    target_catalog: str = "",
+    model_version: str = "",
+    strategy: str = "",
+) -> str:
+    """Single authoritative cache key for recommendation responses.
+
+    Both the precomputation path (_precompute_recommendation_cache) and
+    the request-serving path (get_recommendations) must use this function
+    so that precomputed entries are always retrievable by the API.
+
+    All optional parameters default to '' so that a plain item lookup
+    produces the same key whether called from precomputation or from the
+    API handler with all optional query params absent.
+    """
+    return _cache_key(
+        "recommend",
+        title,
+        top_n,
+        explain,
+        user_id or "",
+        target_catalog or "",
+        model_version or "",
+        strategy or "",
+    )
+
+
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses   # Move globals to the top
 
-    try:
-        cached = _redis_client.get(key)
-        if cached is not None:
-            return json.loads(cached)
-    except (RedisError, json.JSONDecodeError):
-        pass
+    if _redis_client is not None:
+        try:
+            cached = _redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
+        except (RedisError, json.JSONDecodeError):
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -333,7 +370,7 @@ def _precompute_recommendation_cache(
     item_df = models["item_df"]
 
     for title in item_df["title"].dropna().astype(str).unique():
-        cache_key = _cache_key("recommend", title, top_n, explain, "")
+        cache_key = _recommendation_cache_key(title, top_n, explain)
 
         recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
 
@@ -472,6 +509,11 @@ def _require_admin_access(request: Request) -> None:
     )
     if not provided_token or not secrets.compare_digest(provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
+
+
+def _admin_access_dep(request: Request) -> None:
+    """FastAPI dependency wrapper around _require_admin_access."""
+    _require_admin_access(request)
 
 
 CORS_ORIGINS_ENV = "CORS_ORIGINS"
@@ -1567,8 +1609,7 @@ def get_recommendations(
 
         selected_models = MODEL_REGISTRY[model_version]
 
-    cache_key = _cache_key(
-        "recommend",
+    cache_key = _recommendation_cache_key(
         query_title,
         top_n,
         explain,
