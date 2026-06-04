@@ -9,6 +9,7 @@ import os
 import sys
 import random
 import csv
+from pathlib import Path
 
 # --- Output paths ---
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "datasets")
@@ -18,6 +19,10 @@ OUTPUT_FILE = os.path.join(OUTPUT_DIR, "sample_products.csv")
 NUM_PRODUCTS = 200
 NUM_USERS = 100
 REVIEWS_PER_PRODUCT = (5, 15)  # min, max reviews per product
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = PROJECT_ROOT / "datasets"
+OUTPUT_FILE = OUTPUT_DIR / "sample_products.csv"
 
 CATEGORIES = [
     'Electronics', 'Books', 'Clothing', 'Home & Kitchen', 'Sports',
@@ -109,7 +114,7 @@ def generate_review_and_rating():
 
 def main():
     # Enforce safe directory presence before initialization
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     random.seed(42)
 
     rows = []

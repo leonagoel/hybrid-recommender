@@ -10,9 +10,18 @@ def test_minmax_normalization():
     assert res[2] == 1.0
 
 
-def test_zscore_constant_fallback():
+def test_zscore_all_zero_returns_zeros():
+    # An all-zero input represents "no signal".  The correct output is all zeros,
+    # not the midpoint 0.5 that would inject phantom signal into hybrid scores.
     h = HybridRecommender(None, None, item_df=None, normalization='zscore')
     res = h._normalize_scores([0.0, 0.0, 0.0])
+    assert all(v == 0.0 for v in res), "All-zero input must stay all-zero"
+
+
+def test_zscore_constant_nonzero_fallback():
+    # A constant non-zero input is a legitimate tie; 0.5 is the correct midpoint.
+    h = HybridRecommender(None, None, item_df=None, normalization='zscore')
+    res = h._normalize_scores([3.0, 3.0, 3.0])
     assert all(abs(v - 0.5) < 1e-6 for v in res)
 
 

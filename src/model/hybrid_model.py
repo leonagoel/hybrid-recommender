@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
+from src.model.recommendation_history import history_tracker
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
@@ -37,7 +38,8 @@ class HybridRecommender:
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None):
+                 causal_config=None, model_kwargs=None,
+                 kg_model=None, delta=0.0):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -244,10 +246,25 @@ class HybridRecommender:
         return self._normalize_scores(scores)
 
     def _normalize_scores(self, scores):
-        """Normalize a list of numeric scores to [0,1].
+        """Normalize a list of numeric scores to [0, 1].
 
-        Supports 'minmax' and 'zscore'. When std is zero, falls back to
-        constant 0.5 for all values.
+        Supports 'minmax' and 'zscore'.
+
+        Zero-variance handling
+        ----------------------
+        When all values in the input are identical two semantically different
+        situations can occur:
+
+        1. **No-information vector** — every value is exactly ``0.0``.
+           This arises when the collaborative model is absent and every
+           candidate receives ``raw_collab = 0.0``.  There is no signal;
+           converting this to ``0.5`` would inject a phantom contribution
+           equal to ``weight × 0.5`` into every hybrid score.  The correct
+           output is ``[0.0, …, 0.0]``.
+
+        2. **Legitimate constant-score vector** — every value is the same
+           finite non-zero number (a genuine tie).  ``0.5`` (the midpoint
+           of [0, 1]) is a reasonable and stable choice.
         """
         if not scores:
             return scores
@@ -256,7 +273,7 @@ class HybridRecommender:
             mu = float(np.nanmean(arr))
             sigma = float(np.nanstd(arr))
             if sigma == 0 or math.isnan(sigma):
-                return [0.5] * len(arr)
+                return [0.0 if mu == 0.0 else 0.5] * len(arr)
             # map z-score to standard normal CDF to get values in (0,1)
             z = (arr - mu) / sigma
             cdf = 0.5 * (1.0 + np.vectorize(math.erf)(z / math.sqrt(2.0)))
@@ -265,7 +282,7 @@ class HybridRecommender:
         mn = float(np.nanmin(arr))
         mx = float(np.nanmax(arr))
         if mx - mn == 0 or math.isnan(mn) or math.isnan(mx):
-            return [0.5] * len(arr)
+            return [0.0 if mn == 0.0 else 0.5] * len(arr)
         return [float((v - mn) / (mx - mn)) for v in arr]
 
     def _get_active_weights(self, base_a, base_b, base_g, user_id=None, candidate_titles=None):
@@ -404,25 +421,23 @@ class HybridRecommender:
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
         kg_scores = []
-        t
         if self.kg_model:
-            l
             kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
-           
             kg_map = {
                 item['title']: item['kg_score']
                 for item in kg_recs
             }
-
-            for item in items:
-                kg_scores.append(kg_map.get(item['title'], 0.0))
-
-            kg_scores = self._normalize_scores(kg_scores)
-
+            kg_scores_raw = [kg_map.get(item['title'], 0.0) for item in items]
+            kg_scores = self._normalize_scores(kg_scores_raw)
         else:
             kg_scores = [0.0] * len(items)
 
-        
+        # 5. Resolve active weights (applies weight_matrix overrides and context signals).
+        a, b, g = self._get_active_weights(
+            self.alpha, self.beta, self.gamma,
+            user_id=user_id,
+            candidate_titles=list(candidates.keys()),
+        )
 
         # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
@@ -521,6 +536,12 @@ class HybridRecommender:
             return self._cold_start_fallback(title=None, top_n=top_n)
 
         collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
+        recent_titles = history_tracker.get_recent_titles(user_id)
+
+        collab_recs = [ 
+            rec for rec in collab_recs
+            if rec["title"] not in recent_titles
+        ]
         
         results = []
         for r in collab_recs[:top_n]:
@@ -562,7 +583,12 @@ class HybridRecommender:
             results = self._debiaser.debias_batch(results, score_key=score_key)
             results.sort(key=lambda x: x[score_key], reverse=True)
 
-        return results
+            for item in results:
+                history_tracker.add_recommendation(
+                    user_id,
+                    item["title"]
+                    )
+                return results
 
     def _build_explanation(
         self,
@@ -588,6 +614,26 @@ class HybridRecommender:
             'popularity_bonus': round(0.05 * popularity, 4),
         }
         strongest = max(weighted_components, key=weighted_components.get)
+        if strongest == "content":
+            explanation_text = (
+                f"Recommended due to strong content similarity "
+                f"with '{source_title}'."
+                )
+
+        elif strongest == "collaborative":
+            explanation_text = (
+                "Recommended because users with similar preferences "
+                "also interacted with this item."
+                )
+        elif strongest == "sentiment":
+            explanation_text = (
+                "Recommended because it has highly positive reviews."
+                )
+
+        else:
+            explanation_text = (
+                "Recommended because of its popularity and overall score."
+                )
 
         return {
             'source_item': source_title,
@@ -601,7 +647,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'raw_content': round(raw_item['raw_content'], 4),
+                'raw_content': roaund(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
             },
@@ -613,6 +659,7 @@ class HybridRecommender:
                 'sentiment_polarity': self._sentiment_label(raw_item['raw_sentiment']),
                 'popularity': round(popularity, 4),
             },
+            "human_explanation": explanation_text,
         }
 
     @staticmethod
