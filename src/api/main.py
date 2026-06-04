@@ -6,6 +6,9 @@ import sys
 from pathlib import Path  # <-- Added
 from dotenv import load_dotenv  # <-- Added
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from src.api.response_utils import success_response, error_response
+
 from pydantic import BaseModel
 from typing import Optional
 
@@ -95,7 +98,14 @@ def startup_event():
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
     if _content_model is None:
-        raise HTTPException(status_code=503, detail="Models not loaded")
+        return JSONResponse(
+            status_code=503,
+            content=error_response(
+                message="Models not loaded",
+                model_name="hybrid",
+                detail="Models not loaded"
+            )
+        )
 
     # ===================================================================
     # Try the Primary Hybrid Pipeline
@@ -118,13 +128,14 @@ def get_recommendations(req: RecommendationRequest):
             causal_config=causal_cfg,
         )
 
-<<<<<<< HEAD
         recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
-        return {
-            "recommendations": recs,
-            "causal_debiasing_applied": req.use_causal,
-            "fallback": False
-        }
+        return success_response(
+            recommendations=recs,
+            model_name="hybrid",
+            message="Recommendations retrieved successfully",
+            causal_debiasing_applied=req.use_causal,
+            fallback=False
+        )
 
     # ===================================================================
     # Graceful Popularity Fallback Recovery Layer (#678)
@@ -157,20 +168,23 @@ def get_recommendations(req: RecommendationRequest):
                 for item in popular_items
             ]
             
-            return {
-                "recommendations": fallback_recs,
-                "causal_debiasing_applied": False,
-                "fallback": True,
-                "note": "Primary pipeline encountered an error. Serving trending fallback layout."
-            }
+            return success_response(
+                recommendations=fallback_recs,
+                model_name="hybrid",
+                message="Primary pipeline encountered an error. Serving trending fallback layout.",
+                causal_debiasing_applied=False,
+                fallback=True,
+                note="Primary pipeline encountered an error. Serving trending fallback layout."
+            )
             
         except Exception as fallback_exc:
             logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
-            raise HTTPException(status_code=500, detail="Recommendation engine completely offline.")
-=======
-    recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
-    return {
-        "recommendations": recs,
-        "causal_debiasing_applied": req.use_causal,
-    }
->>>>>>> fea1db0 (fix: safeguard github webhook against null payloads and fix api indentation)
+            return JSONResponse(
+                status_code=500,
+                content=error_response(
+                    message="Recommendation engine completely offline.",
+                    model_name="hybrid",
+                    detail="Recommendation engine completely offline."
+                )
+            )
+
