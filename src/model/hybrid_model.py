@@ -65,8 +65,8 @@ class HybridRecommender:
         self.fairness_key = "category"
         self.fairness_max_share = 1.0
 
-        self.kg_model = kg_model
-        self.delta = delta
+        self.kg_model = None
+        self.delta = 0.0
 
         # Expose model kwargs explicitly as structural configuration dictionaries
         # Legacy compatibility: no explicit model_kwargs parameter in signature,
@@ -404,9 +404,7 @@ class HybridRecommender:
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
         kg_scores = []
-        t
         if self.kg_model:
-            l
             kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
            
             kg_map = {
@@ -428,9 +426,9 @@ class HybridRecommender:
         results = []
         for i, item in enumerate(items):
             hybrid_base = (
-                a * content_scores[i] +
-                b * collab_scores[i] +
-                g * sentiment_scores[i]
+                self.alpha * content_scores[i] +
+                self.beta * collab_scores[i] +
+                self.gamma * sentiment_scores[i]
             )
 
             # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
@@ -472,9 +470,9 @@ class HybridRecommender:
                     collab_scores[i],
                     sentiment_scores[i],
                     popularity,
-                    a,
-                    b,
-                    g,
+                    self.alpha,
+                    self.beta,
+                    self.gamma,
                     item,
                 )
             results.append(result)

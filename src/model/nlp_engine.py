@@ -1,3 +1,4 @@
+import numpy as np
 """
 NLP Sentiment Engine
 Uses NLTK VADER for lightweight sentiment analysis on user review text.

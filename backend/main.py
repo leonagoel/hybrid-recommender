@@ -5,6 +5,7 @@ FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
 Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
 """
 import os
+_redis_client = None
 import re
 import sys
 import io
@@ -14,6 +15,7 @@ import math
 import secrets
 from urllib.parse import urlsplit
 import json
+_redis_client = None
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -202,9 +204,10 @@ def _get_cached_response(key: str):
     global _cache_hits, _cache_misses   # Move globals to the top
 
     try:
-        cached = _redis_client.get(key)
-        if cached is not None:
-            return json.loads(cached)
+        if _redis_client:
+            cached = _redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
     except (RedisError, json.JSONDecodeError):
         pass
 
@@ -1342,7 +1345,7 @@ async def upload_dataset(
 @app.post("/api/build")
 def build_models(
     _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     global STAGING_MODEL_VERSION
     try:
@@ -1436,7 +1439,7 @@ def build_models(
 @app.post("/api/train/federated")
 def train_federated(
     req: FederatedTrainRequest,
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     sb = get_supabase()
     all_products = []
@@ -1898,7 +1901,7 @@ def list_models():
 def promote_model(
     version: str,
     _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     global ACTIVE_MODEL_VERSION, SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
 
@@ -1941,7 +1944,7 @@ def promote_model(
 def move_model_to_shadow(
     version: str,
     _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     global SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
 
@@ -1972,7 +1975,7 @@ def get_weights():
 def update_weights(
     w: WeightsUpdate,
     _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
