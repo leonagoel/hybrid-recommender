@@ -149,7 +149,7 @@ class CollaborativeRecommender:
         if user_id not in self._user_to_idx:
             logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
             return self._popularity_fallback(top_n)
-            
+
 
         u_idx = self._user_to_idx[user_id]
         user_vec = self.user_factors[u_idx]
@@ -184,30 +184,30 @@ class CollaborativeRecommender:
         u_idx = self._user_to_idx[user_id]
         i_idx = self._title_to_idx[title]
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
-    
+
     def _popularity_fallback(self, top_n=10):
         # Fallback for cold-start users — top-N by interaction count (popularity)
         import logging
         logger = logging.getLogger(__name__)
         logger.info("Using popularity-based fallback for cold-start user.")
-    
+
         item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
-    
+
         # Bayesian rating
         global_avg = item_counts['mean'].mean()
         m = 5
         item_counts['bayesian'] = (
-            (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +
-            (m / (item_counts['count'] + m)) * global_avg
+            (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean']
+            + (m / (item_counts['count'] + m)) * global_avg
         )
-    
+
         top_items = item_counts.nlargest(top_n, 'bayesian')
-    
+
         return [
-        {
-            'title': row['title'],
-            'predicted_score': round(float(row['bayesian']), 4),
-            'fallback': True
-        }
-        for _, row in top_items.iterrows()
+            {
+                'title': row['title'],
+                'predicted_score': round(float(row['bayesian']), 4),
+                'fallback': True
+            }
+            for _, row in top_items.iterrows()
         ]

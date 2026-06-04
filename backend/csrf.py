@@ -57,6 +57,7 @@ class CSRFTokenResponse(BaseModel):
     """
     csrfToken: str  # 64-character hex string (256-bit entropy)
 
+
 # Methods that mutate state and therefore require a valid CSRF token.
 _PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -149,11 +150,11 @@ def set_csrf_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=CSRF_COOKIE_NAME,       # Cookie name the browser stores and sends
         value=token,                # Raw 64-char hex token — no encoding needed
-        max_age=CSRF_COOKIE_MAX_AGE,# Relative expiry in seconds (8 hours)
+        max_age=CSRF_COOKIE_MAX_AGE,  # Relative expiry in seconds (8 hours)
         path="/",                   # Sent on all routes, not just /api/*
         samesite="lax",             # Blocks cross-site POST; allows OAuth GETs
         httponly=False,             # JS must read this — see docstring above
-        secure=_is_secure_context(),# HTTPS-only in production
+        secure=_is_secure_context(),  # HTTPS-only in production
     )
 
 

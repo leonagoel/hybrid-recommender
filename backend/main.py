@@ -27,18 +27,16 @@ except ModuleNotFoundError:
                 return str(value)
             return re.sub(r"<[^>]*>", "", str(value))
 
-from collections import deque, Counter
+from collections import Counter, defaultdict, deque
 from threading import Lock
 from datetime import datetime, timezone, timedelta
-
-from collections import defaultdict
 
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import (
+from fastapi import (  # noqa: E402
     FastAPI,
     Depends,
     Header,
@@ -51,14 +49,12 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
-from typing import Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
-from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from pydantic import BaseModel, ConfigDict, Field  # noqa: E402
+from typing import Any, Dict, List, Optional  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
@@ -68,25 +64,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from celery.result import AsyncResult
-from celery_app import celery_app
-from tasks import compute_recommendations
+from celery.result import AsyncResult  # noqa: E402
+from celery_app import celery_app  # noqa: E402
+from tasks import compute_recommendations  # noqa: E402
 
 
 # backend/main.py — corrected imports
-from src.data.db import get_supabase, get_supabase_admin
-from src.data.data_adapter import adapt_data, read_file
-from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.hybrid_model import HybridRecommender
-from src.model.two_tower_retrieval import TwoTowerRetrievalEngine
-from src.model.issue_triage import triage_issue
-from src.model.federated_learning import train_federated_collaborative_model
+from src.data.db import get_supabase, get_supabase_admin  # noqa: E402
+from src.data.data_adapter import adapt_data, read_file  # noqa: E402
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item  # noqa: E402
+from src.model.content_model import ContentRecommender  # noqa: E402
+from src.model.collaborative_model import CollaborativeRecommender  # noqa: E402
+from src.model.hybrid_model import HybridRecommender  # noqa: E402
+from src.model.two_tower_retrieval import TwoTowerRetrievalEngine  # noqa: E402
+from src.model.issue_triage import triage_issue  # noqa: E402
+from src.model.federated_learning import train_federated_collaborative_model  # noqa: E402
 
-from functools import lru_cache
+from functools import lru_cache  # noqa: E402
 
-from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
+from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse  # noqa: E402
 
 
 # ── OpenAPI CSRF header dependency ────────────────────────────────────
@@ -568,16 +564,16 @@ def record_response_metric(endpoint, method, status_code, response_time_ms):
         if status_code >= 400:
             response_metrics["error_requests"] += 1
         response_time_samples.append(
-          (time.time(), response_time_ms)
+            (time.time(), response_time_ms)
         )
 
         current_time = time.time()
 
         while (
-          response_time_samples
-          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
+            response_time_samples
+            and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
         ):
-          response_time_samples.popleft()
+            response_time_samples.popleft()
     log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
     if log_level == logging.WARNING:
         logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
@@ -672,6 +668,7 @@ class RealtimeConnectionHub:
 
         for connection in disconnected:
             self.disconnect(connection)
+
 
 realtime_hub = RealtimeConnectionHub()
 
@@ -780,7 +777,6 @@ def health_check():
     try:
         redis_url = os.environ.get("REDIS_URL", "")
         if redis_url:
-            from redis import Redis
             r = Redis.from_url(redis_url, decode_responses=True)
             if r.ping():
                 result["components"]["cache"] = {"status": "healthy", "details": "redis ping successful"}
@@ -956,16 +952,16 @@ def search_items(
                     'match_count': limit,
                     'offset_val': offset,
                 }).execute()
-    
+
                 products = result.data or []
-    
+
             except Exception as e:
                 logger.warning(
                     "Full-text search failed for query '%s': %s",
                     query.strip(),
                     e
                 )
-    
+
                 # Fallback: LIKE search
                 result = sb.table('products') \
                     .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -973,34 +969,34 @@ def search_items(
                     .order('rating', desc=True) \
                     .limit(limit) \
                     .execute()
-    
+
                 products = result.data or []
-    
+
             # 2. Fuzzy fallback
             if len(products) < 3:
                 is_fuzzy_fallback = True
-    
+
                 fuzzy_res = sb.rpc('fuzzy_search_products', {
                     'q': query,
                     'threshold': 0.3
                 }).execute()
-    
+
                 products = fuzzy_res.data or []
-    
+
         else:
             query_builder = sb.table('products').select(
                 'id, title, description, category, rating, avg_sentiment, review_count, metadata'
             )
-    
+
             if sort == "rating":
                 query_builder = query_builder.order('rating', desc=True)
             else:
                 query_builder = query_builder.order('rating', desc=True) \
-                .order('review_count', desc=True)
-    
+                    .order('review_count', desc=True)
+
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
-    
+
     except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
 
@@ -1022,37 +1018,37 @@ def search_items(
 
     # Format response
     results = []
-    
+
     for p in products:
-    
+
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
+
         # Newly added products may still have the default
         # sentiment value before the NLP batch pipeline runs.
         # Recompute dynamically so the UI never shows misleading 0.0.
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
-    
+
                 computed_sentiment = compute_product_sentiment(reviews)
-    
+
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
                     else "N/A"
                 )
-    
+
             except Exception:
                 sentiment_value = "N/A"
-    
+
         else:
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment != 0.0
                 else "N/A"
             )
-    
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
@@ -1063,69 +1059,69 @@ def search_items(
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-    
-    
+
+
     def _product_price(product):
         metadata = product.get('metadata') or {}
-    
+
         raw_price = (
             product.get('price')
             if product.get('price') is not None
             else metadata.get('price')
         )
-    
+
         try:
             return float(raw_price or 0)
-    
+
         except (TypeError, ValueError):
             return 0.0
-    
-    
+
+
     if sort == "price-low":
         products = sorted(products, key=_product_price)
-    
+
     elif sort == "price-high":
         products = sorted(products, key=_product_price, reverse=True)
-    
+
     elif sort == "rating":
         products = sorted(
             products,
             key=lambda p: float(p.get('rating') or 0),
             reverse=True
         )
-    
-    
+
+
     results = []
-    
+
     for p in products:
-    
+
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
+
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
-    
+
                 computed_sentiment = compute_product_sentiment(reviews)
-    
+
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
                     else "N/A"
                 )
-    
+
             except Exception:
                 sentiment_value = "N/A"
-    
+
         else:
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment != 0.0
                 else "N/A"
             )
-    
+
         price = _product_price(p)
-    
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
@@ -1137,10 +1133,10 @@ def search_items(
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-    
-    
+
+
     result_count = len(results)
-    
+
     payload = {
         "results": results,
         "count": result_count,
@@ -1149,10 +1145,10 @@ def search_items(
         "sort": sort,
         "is_fallback": not query or is_fuzzy_fallback,
     }
-    
+
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
-    
+
     return payload
 
 
@@ -1210,9 +1206,9 @@ def fuzzy_search_items(
             'q': query, 
             'threshold': threshold
         }).execute()
-        
+
         products = result.data or []
-        
+
         results = []
         for p in products:
             metadata = p.get('metadata') or {}
@@ -1228,7 +1224,7 @@ def fuzzy_search_items(
                 'review_count': p.get('review_count', 0), 
                 'rank': p.get('rank', 0.0),
             })
-            
+
         return {
             "results": results,
             "count": len(results),
@@ -1334,7 +1330,7 @@ async def upload_dataset(
                 sb.table('products').upsert(rows, on_conflict='title', ignore_duplicates=True).execute()
                 imported += len(rows)
             except Exception as e:
-                errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
+                errors.append(f"Batch {start}-{start + len(rows)}: {str(e)[:100]}")
         models["ready"] = False
         _clear_response_cache()
         result = {
@@ -1360,7 +1356,7 @@ def build_models(
 ):
     global STAGING_MODEL_VERSION
     try:
-       sb = get_supabase_admin()
+        sb = get_supabase_admin()
     except RuntimeError:
         sb = get_supabase()
     all_products = []
@@ -1378,9 +1374,9 @@ def build_models(
     import pandas as pd
     item_df = pd.DataFrame(all_products)
     item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
+        item_df['title'].astype(str) + ' '
+        + item_df['description'].fillna('').astype(str) + ' '
+        + item_df['category'].fillna('').astype(str)
     )
     item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
     start_time = time.time()
@@ -1435,7 +1431,7 @@ def build_models(
         retrieval_model=neural_model,
     )
     build_time = round(time.time() - start_time, 2)
-    
+
     version = generate_model_version()
 
     MODEL_REGISTRY[version] = {
@@ -1460,7 +1456,7 @@ def build_models(
     }
 
     STAGING_MODEL_VERSION = version
-    
+
     models["content"] = content_model
     models["collab"] = collab_model
     models["hybrid"] = hybrid_model
@@ -1479,7 +1475,7 @@ def build_models(
         "has_collaborative": collab_model is not None,
         "has_neural_retrieval": neural_model is not None,
         "build_time_seconds": build_time,
-	"precomputed_recommendations": precomputed_count,
+        "precomputed_recommendations": precomputed_count,
     }
 
 @app.post("/api/train/federated")
@@ -1504,9 +1500,9 @@ def train_federated(
     import pandas as pd
     item_df = pd.DataFrame(all_products)
     item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
-        item_df['category'].fillna('').astype(str)
+        item_df['title'].astype(str) + ' '
+        + item_df['description'].fillna('').astype(str) + ' '
+        + item_df['category'].fillna('').astype(str)
     )
     item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
 
@@ -1814,7 +1810,7 @@ def get_user_recommendations(
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-    
+
     is_fallback = False
     collab = models["hybrid"].collab_model
     if collab is None or user_id not in getattr(collab, "_user_to_idx", {}):
@@ -1831,7 +1827,7 @@ def get_user_recommendations(
         if "candidate_source" not in str(exc):
             raise
         recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
-        
+
     return {
         "query_user": user_id,
         "recommendations": recs,
@@ -2175,6 +2171,7 @@ def create_purchase(
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 
+
 TRENDING_CACHE = {
     "data": None,
     "timestamp": None,
@@ -2191,7 +2188,7 @@ def get_trending_products(
     """
     cache_key = (days, limit)
     now = datetime.now(timezone.utc)
-    
+
     # Check cache
     if isinstance(TRENDING_CACHE, dict) and cache_key in TRENDING_CACHE:
         timestamp, cached_data = TRENDING_CACHE[cache_key]
@@ -2225,7 +2222,6 @@ def get_trending_products(
         TRENDING_CACHE[cache_key] = (now, response)
         return response
 
-    from collections import defaultdict
     stats = defaultdict(lambda: {
         "count": 0,
         "ratings": [],

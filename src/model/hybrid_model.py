@@ -18,8 +18,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-from src.model.causal_config import CausalConfig
-from src.model.causal_model import CausalDebiaser
+from src.model.causal_config import CausalConfig  # noqa: E402
+from src.model.causal_model import CausalDebiaser  # noqa: E402
 
 VALID_CANDIDATE_SOURCES = {"hybrid", "neural", "mixed"}
 
@@ -88,7 +88,7 @@ class HybridRecommender:
         if self.collab_model and self.model_kwargs:
             n_factors = self.model_kwargs.get("n_factors")
             use_implicit = self.model_kwargs.get("use_implicit")
-            
+
             # Re-initialize or pass hyperparameters down safely if explicitly specified
             if n_factors is not None and hasattr(self.collab_model, 'n_factors'):
                 self.collab_model.n_factors = n_factors
@@ -178,6 +178,7 @@ class HybridRecommender:
                         self._popularity_map[row['title']] = (
                             row['review_count'] / max_reviews
                         )
+
     def set_weights(self, alpha, beta, gamma):
         """Update the scoring weights. Normalized to sum to 1."""
         if any(math.isnan(w) for w in [alpha, beta, gamma]):
@@ -708,20 +709,20 @@ class HybridRecommender:
         results = []
         for i, item in enumerate(items):
             hybrid_base = (
-                a * content_scores[i] +
-                b * collab_scores[i] +
-                g * sentiment_scores[i]
+                a * content_scores[i]
+                + b * collab_scores[i]
+                + g * sentiment_scores[i]
             )
             if self.kg_model and self.delta > 0:
                 hybrid_base = (
-                    (1 - self.delta) * hybrid_base +
-                    self.delta * kg_scores[i]
+                    (1 - self.delta) * hybrid_base
+                    + self.delta * kg_scores[i]
                 )
 
             # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
             popularity = self._popularity_map.get(item['title'], 0.5)
             popularity_bonus = 0.05 * popularity
-            
+
             # Enforce strict upper bound limit check
             hybrid = min(1.0, hybrid_base + popularity_bonus)
 
@@ -802,7 +803,7 @@ class HybridRecommender:
             return self._fair_rerank(results, top_n, key, max_share)
 
         return results[:top_n]
-    
+
     def recommend_for_user(
         self,
         user_id,
@@ -851,7 +852,7 @@ class HybridRecommender:
             return self._cold_start_fallback(title=None, top_n=top_n)
 
         collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
-        
+
         results = []
         for r in collab_recs[:top_n]:
             item_title = r['title']

@@ -22,11 +22,11 @@ else:
 # Fix the path mapping so internal src imports work perfectly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from src.data.dataset_manager import DatasetManager
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.hybrid_model import HybridRecommender
-from src.model.causal_config import CausalConfig
+from src.data.dataset_manager import DatasetManager  # noqa: E402
+from src.model.content_model import ContentRecommender  # noqa: E402
+from src.model.collaborative_model import CollaborativeRecommender  # noqa: E402
+from src.model.hybrid_model import HybridRecommender  # noqa: E402
+from src.model.causal_config import CausalConfig  # noqa: E402
 
 app = FastAPI(title="Hybrid Recommender API")
 # ===========================================================================
@@ -118,12 +118,11 @@ def get_recommendations(req: RecommendationRequest):
             causal_config=causal_cfg,
         )
 
-<<<<<<< HEAD
         recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
         return {
             "recommendations": recs,
             "causal_debiasing_applied": req.use_causal,
-            "fallback": False
+            "fallback": False,
         }
 
     # ===================================================================
@@ -133,7 +132,7 @@ def get_recommendations(req: RecommendationRequest):
         import logging
         logger = logging.getLogger("uvicorn.error")
         logger.error(f"Primary recommendation engine failed: {str(exc)}. Triggering popularity fallback.")
-        
+
         try:
             # Fallback calculation: safe data pull from the global item dataframe
             if '_item_df' in globals() and _item_df is not None and not _item_df.empty:
@@ -142,7 +141,7 @@ def get_recommendations(req: RecommendationRequest):
             else:
                 # Absolute zero-dependency static default array
                 popular_items = ["Top Trending Item A", "Top Trending Item B", "Top Trending Item C"]
-            
+
             # Format the payload items to mimic real recommendation results
             fallback_recs = [
                 {
@@ -152,25 +151,18 @@ def get_recommendations(req: RecommendationRequest):
                     "collab_score": "—",
                     "sentiment_score": "—",
                     "rating": "5.0",
-                    "category": "Trending"
+                    "category": "Trending",
                 }
                 for item in popular_items
             ]
-            
+
             return {
                 "recommendations": fallback_recs,
                 "causal_debiasing_applied": False,
                 "fallback": True,
-                "note": "Primary pipeline encountered an error. Serving trending fallback layout."
+                "note": "Primary pipeline encountered an error. Serving trending fallback layout.",
             }
-            
+
         except Exception as fallback_exc:
             logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
             raise HTTPException(status_code=500, detail="Recommendation engine completely offline.")
-=======
-    recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
-    return {
-        "recommendations": recs,
-        "causal_debiasing_applied": req.use_causal,
-    }
->>>>>>> fea1db0 (fix: safeguard github webhook against null payloads and fix api indentation)

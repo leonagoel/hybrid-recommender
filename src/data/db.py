@@ -52,16 +52,16 @@ def get_supabase_admin() -> Client:
     if _admin_client is None:
         url = os.environ.get("SUPABASE_URL", "")
         key = os.environ.get("SUPABASE_SERVICE_KEY", "")
-        
+
         # FIX FOR ISSUE #487: Dynamic fallback check prevents global execution crashes
         if not url or not key:
             logger.warning("Supabase admin credentials missing (SUPABASE_URL/SUPABASE_SERVICE_KEY). Admin features disabled.")
             return None
-            
+
         try:
             _admin_client = create_client(url, key)
         except Exception as e:
             logger.error(f"Failed to initialize Supabase admin client: {e}")
             return None
-            
+
     return _admin_client

@@ -106,16 +106,17 @@ def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = "datasets/C
     print(f"Final shape: {df.shape}")
     return df
 
+
 if __name__ == "__main__":
     print("=== Preprocessing Books Data ===")
     books_df = preprocess_books_data()
-    
+
     print("\n=== Preprocessing Ratings Data ===")
     ratings_df = preprocess_ratings_data()
-    
+
     print("\n=== Preprocessing Sentiment Data ===")
     sentiment_df = preprocess_sentiment_data()
-    
+
     print("\n✅ All datasets preprocessed successfully!")
     print(f"Books: {books_df.shape}")
     print(f"Ratings: {ratings_df.shape}")

@@ -65,7 +65,7 @@ def _recall_at_k(recommended: list, relevant: set, k: int) -> float:
     if not relevant or k == 0 or not recommended:
         return 0.0
     hits = sum(1 for item in recommended[:k] if item in relevant)
-    
+
     # FIX FOR ISSUE #486: Guard cold states to prevent ZeroDivisionError
     denom = len(relevant)
     return hits / denom if denom > 0 else 0.0
@@ -86,7 +86,7 @@ def _ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
     """Normalised DCG at K (IDCG assumes all relevant items are at top)."""
     dcg = _dcg_at_k(recommended, relevant, k)
     ideal = _dcg_at_k(list(relevant)[:k], relevant, k)
-    
+
     # FIX FOR ISSUE #486: Handle zero baseline ideal scores gracefully
     return dcg / ideal if ideal > 0.0 else 0.0
 
@@ -207,6 +207,7 @@ def _build_test_data(data_path: str | None = None):
         content_model = ContentRecommender(df, batch_size=256)
 
     svd_matrix = _load_or_build_svd(df)
+
     class _Collab:
         def recommend(self, title, top_n=10, **kwargs):
             return [{"title": t} for t in _get_collab_recs(title, df, svd_matrix, top_n)]
@@ -302,7 +303,7 @@ def _get_hybrid_recs(
         return []
 
     content_scores = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
-    collab_scores  = cosine_similarity(svd_matrix[idx].reshape(1, -1), svd_matrix).flatten()
+    collab_scores = cosine_similarity(svd_matrix[idx].reshape(1, -1), svd_matrix).flatten()
 
     # Normalise sentiment scores to [0, 1]
     sentiment_raw = df.get("sentiment_score", pd.Series(np.zeros(len(df)))).values.astype(float)
@@ -503,7 +504,7 @@ def run_evaluation(
 
     # --- build/load matrices ---
     tfidf_matrix = _load_or_build_tfidf(df)
-    svd_matrix   = _load_or_build_svd(df)
+    svd_matrix = _load_or_build_svd(df)
 
     # --- build relevance sets from rating data ---
     def _get_relevant(row_idx: int) -> set[str]:
@@ -526,7 +527,7 @@ def run_evaluation(
     sample_indices = np.random.choice(len(df), size=sample_size, replace=False)
 
     results: ResultsDict = {}
-    
+
     # Check out if user interaction signals exist in the dataset
     has_user_data = "user_id" in df.columns and len(df["user_id"].dropna().unique()) > 1
     neural_engine, neural_item_map = (
@@ -568,7 +569,7 @@ def run_evaluation(
                 # Hold out the last item as the evaluation truth target
                 query_item = user_profile.iloc[-1]["title"]
                 relevant = {query_item}
-                
+
                 # Baki bache items user history seed banenge
                 user_history = user_profile.iloc[:-1]["title"].tolist()
 
@@ -601,7 +602,7 @@ def run_evaluation(
                                 seed_title, df, tfidf_matrix, svd_matrix,
                                 w["alpha"], w["beta"], w["gamma"], k,
                             )
-                        
+
                         # Blend recommendation confidence arrays
                         for idx_rank, item_name in enumerate(recs_raw):
                             score = 1.0 / (idx_rank + 1)  # Rank-based reciprocal pooling fallback
@@ -627,7 +628,7 @@ def run_evaluation(
             # ----------------------------------------------------
             for idx in sample_indices:
                 title = df.iloc[idx]["title"]
-                
+
                 # Establish pseudo-relevance via category boundaries
                 relevant = set()
                 if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):
@@ -745,8 +746,8 @@ def _reject_unsafe_cache(cache_path: Path) -> None:
 
 def _cli() -> None:
     parser = argparse.ArgumentParser(description="Evaluate hybrid recommender models.")
-    parser.add_argument("--k",    type=int,   default=10,   help="Number of recommendations (default: 10)")
-    parser.add_argument("--mode", type=str,   default="all",
+    parser.add_argument("--k", type=int, default=10, help="Number of recommendations (default: 10)")
+    parser.add_argument("--mode", type=str, default="all",
                         choices=[
                             "content",
                             "collaborative",
@@ -758,7 +759,7 @@ def _cli() -> None:
                         ],
                         help="Which model(s) to evaluate (default: all)")
     parser.add_argument("--alpha", type=float, default=0.4, help="Content weight (default: 0.4)")
-    parser.add_argument("--beta",  type=float, default=0.4, help="Collaborative weight (default: 0.4)")
+    parser.add_argument("--beta", type=float, default=0.4, help="Collaborative weight (default: 0.4)")
     parser.add_argument("--gamma", type=float, default=0.2, help="Sentiment weight (default: 0.2)")
     args = parser.parse_args()
 

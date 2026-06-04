@@ -9,7 +9,7 @@ import random
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from src.evaluation.evaluation import (
+from src.evaluation.evaluation import (  # noqa: E402
     ndcg_at_k,
     average_precision_at_k,
     _mean_reciprocal_rank,
@@ -18,15 +18,17 @@ from src.evaluation.evaluation import (
     _intra_list_diversity,
     _build_test_data,
 )
-from src.model.causal_config import CausalConfig
+from src.model.causal_config import CausalConfig  # noqa: E402
+
 
 class RandomRecommender:
     def __init__(self, item_titles):
         self.items = list(item_titles)
-        
+
     def recommend(self, title, user_id=None, top_n=10):
         recs = random.sample(self.items, min(top_n, len(self.items)))
         return [{'title': t} for t in recs]
+
 
 class PopularityRecommender:
     def __init__(self, item_df):
@@ -34,18 +36,18 @@ class PopularityRecommender:
             self.popular_items = item_df.sort_values('rating', ascending=False)['title'].tolist()
         else:
             self.popular_items = item_df['title'].tolist()
-        
+
     def recommend(self, title, user_id=None, top_n=10):
         return [{'title': t} for t in self.popular_items[:top_n]]
 
 def run_benchmark():
     print("Building test data and base models...")
     content_model, collab_model, item_df, test_pairs = _build_test_data()
-    
+
     if not test_pairs:
         print("Not enough data to run benchmark.")
         return
-        
+
     from src.model.hybrid_model import HybridRecommender
 
     # Plain hybrid baseline (correlation only)
@@ -63,35 +65,35 @@ def run_benchmark():
         causal_config=CausalConfig.conservative(),
     )
 
-    random_model  = RandomRecommender(item_df['title'].unique())
+    random_model = RandomRecommender(item_df['title'].unique())
     popular_model = PopularityRecommender(item_df)
-    
+
     models = {
-        "Random":            random_model,
-        "Popularity":        popular_model,
-        "Semantic-Content":  content_model,
+        "Random": random_model,
+        "Popularity": popular_model,
+        "Semantic-Content": content_model,
         "SVD-Collaborative": collab_model,
-        "Semantic-Hybrid":   hybrid_model,
+        "Semantic-Hybrid": hybrid_model,
         # Causal variant — same weights as Semantic-Hybrid but with IPS debiasing
-        "Causal-Hybrid":     causal_hybrid_model,
+        "Causal-Hybrid": causal_hybrid_model,
     }
-    
+
     K = 10
     results = []
-    
+
     print(f"\nRunning Benchmark on {len(test_pairs)} test users (Top-K={K})...")
-    
+
     for name, model in models.items():
         if model is None:
             continue
-            
+
         ndcgs = []
         maps = []
         mrrs = []
         hits = []
         ilds = []
         all_recs = []
-        
+
         for user_id, query_item, relevant_items in test_pairs:
             if hasattr(model, 'predict_for_user') and name == "SVD-Collaborative":
                 recs_raw = model.predict_for_user(user_id, top_n=K)
@@ -101,7 +103,7 @@ def run_benchmark():
                 recs_raw = model.recommend(query_item, user_id=user_id, top_n=K)
             else:
                 recs_raw = model.recommend(query_item, top_n=K)
-                
+
             rec_titles = [r['title'] for r in recs_raw]
             all_recs.append(rec_titles)
 
@@ -117,7 +119,7 @@ def run_benchmark():
             except Exception:
                 ild = _intra_list_diversity(rec_titles, item_df, None)
             ilds.append(ild)
-            
+
         avg_n = np.mean(ndcgs)
         avg_m = np.mean(maps)
         avg_mrr = np.mean(mrrs) if mrrs else 0.0
@@ -131,8 +133,9 @@ def run_benchmark():
             f"MRR@{K}: {avg_mrr:.4f} | Hit@{K}: {avg_hit:.4f} | "
             f"Cov: {cov:.4f} | ILD: {avg_ild:.4f}"
         )
-        
+
     print("\nBenchmark Complete.")
+
 
 if __name__ == '__main__':
     run_benchmark()

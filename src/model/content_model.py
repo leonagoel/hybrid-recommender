@@ -51,7 +51,7 @@ class ContentRecommender:
 
             self.vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
             self.matrix = self.vectorizer.fit_transform(texts)
-        
+
         # Internal ANN attributes (built automatically if hnswlib available)
         self._ann_index = None
         self._ann_enabled = False
@@ -137,7 +137,7 @@ class ContentRecommender:
             t = self.df.iloc[i]['title']
             if t.lower() == title.lower() or t in seen:
                 continue
-            
+
             # Catalog filtering
             if target_catalog and 'catalog' in self.df.columns:
                 item_catalog = self.df.iloc[i].get('catalog', '')
@@ -164,12 +164,12 @@ class ContentRecommender:
 
         source_idx = self._title_to_idx[source_title.lower()]
         candidate_idx = self._title_to_idx[candidate_title.lower()]
-        
+
         score = cosine_similarity(
             self.matrix[source_idx].reshape(1, -1), 
             self.matrix[candidate_idx].reshape(1, -1)
         )[0][0]
-        
+
         return [{'term': 'semantic_similarity', 'score': round(float(score), 4)}]
 
     def search(self, query, top_n=20, target_catalog=None):
@@ -225,7 +225,7 @@ class ContentRecommender:
                     continue
 
             seen.add(t)
-            
+
             tp = self.df.iloc[idx].get('top_reviews', [])
             top_reviews = tp if isinstance(tp, list) else []
 

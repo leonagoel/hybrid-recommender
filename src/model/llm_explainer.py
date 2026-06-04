@@ -163,7 +163,7 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
             return self._generate_fallback_explanation(
                 recommended_item, query_item, scores, description, category
             )
-    
+
     def _generate_fallback_explanation(
         self,
         recommended_item: str,
@@ -177,19 +177,19 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
         valid_scores = {k: v for k, v in scores.items() if v is not None and isinstance(v, (int, float))}
         max_score_name = max(valid_scores, key=valid_scores.get) if valid_scores else "hybrid"
         max_score_value = valid_scores.get(max_score_name, 0) if valid_scores else 0
-        
+
         explanations = {
             "hybrid": f"This {category if category else 'item'} matches your interests across multiple recommendation factors including content similarity, user preferences, and sentiment analysis.",
             "content": f"This {category if category else 'item'} shares similar content features and characteristics with '{query_item}'. Based on content analysis, it has high relevance to your search query.",
             "collab": f"Users who were interested in '{query_item}' also highly appreciated this {category if category else 'item'}. This is based on collaborative filtering across user preferences.",
             "sentiment": f"This {category if category else 'item'} has strong positive reviews and excellent user sentiment scores, indicating high customer satisfaction.",
         }
-        
+
         base_explanation = explanations.get(
             max_score_name, 
             f"This item scored {max_score_value:.1%} match with your search criteria based on hybrid recommendation analysis."
         )
-        
+
         # Add description if available - increased from 100 to 300 characters
         if description and description.strip():
             desc_snippet = description[:300].strip()

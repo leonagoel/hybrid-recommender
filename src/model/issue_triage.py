@@ -46,7 +46,7 @@ SEED_DATA = [
     {"text": "Bayesian ranking rating returns NaN when product vote count is zero", "type": "bug", "domain": "ml", "level": "beginner", "priority": "medium"},
     {"text": "Collaborative model predictions mismatch during evaluation cycle runs", "type": "bug", "domain": "ml", "level": "advanced", "priority": "medium"},
     {"text": "Sentiment analysis analyzer fails to load nltk VADER lexicon files", "type": "bug", "domain": "ml", "level": "beginner", "priority": "medium"},
-    
+
     # Features
     {"text": "Add federated learning training support to collaborative models", "type": "feature", "domain": "ml", "level": "advanced", "priority": "high"},
     {"text": "Implement cross-domain recommendation matching for multi-catalog data", "type": "feature", "domain": "ml", "level": "advanced", "priority": "high"},
@@ -63,7 +63,7 @@ SEED_DATA = [
     {"text": "Implement API response caching layer using Redis backend server", "type": "feature", "domain": "backend", "level": "advanced", "priority": "medium"},
     {"text": "Add rate limiting headers to prevent abuse on search endpoints", "type": "feature", "domain": "backend", "level": "beginner", "priority": "medium"},
     {"text": "Create purchase tracking POST API route to record user interactions", "type": "feature", "domain": "backend", "level": "beginner", "priority": "low"},
-    
+
     # Security
     {"text": "Migrate password hashing function from MD5 to bcrypt with cost factor 12", "type": "security", "domain": "backend", "level": "advanced", "priority": "critical"},
     {"text": "Prevent SQL injection in search RPC by using parameterized query binds", "type": "security", "domain": "backend", "level": "advanced", "priority": "critical"},
@@ -86,15 +86,15 @@ class IssueClassifier:
         self.vectorizer = None
         self.models = {}
         self.categories = ["type", "domain", "level", "priority"]
-        
+
         if HAS_SKLEARN:
             self._train()
-            
+
     def _train(self):
         texts = [item["text"].lower() for item in SEED_DATA]
         self.vectorizer = TfidfVectorizer(max_features=500, stop_words="english", ngram_range=(1, 2))
         X = self.vectorizer.fit_transform(texts)
-        
+
         for category in self.categories:
             y = [item[category] for item in SEED_DATA]
             clf = LogisticRegression(C=5.0, class_weight="balanced", random_state=42)
@@ -112,7 +112,7 @@ class IssueClassifier:
         Returns: Dict containing updates to predictions {category: (label, confidence, reason)}
         """
         rules = {}
-        
+
         # Security overrides
         sec_keywords = ["security", "vulnerability", "leak", "secret", "token", "password", "md5", "bcrypt", "csrf", "xss", "auth", "encrypt", "cve"]
         if any(kw in text for kw in sec_keywords):
@@ -141,7 +141,7 @@ class IssueClassifier:
             rules["level"] = ("beginner", 0.9, f"Matched beginner keyword(s): {[kw for kw in beginner_keywords if kw in text]}")
             if "priority" not in rules:
                 rules["priority"] = ("low", 0.9, "Beginner tasks marked as low priority")
-                
+
         advanced_keywords = ["advanced", "performance", "architecture", "federated", "concurrency", "race condition", "multithreading", "optimizing", "memory leak"]
         if any(kw in text for kw in advanced_keywords) and "level" not in rules:
             rules["level"] = ("advanced", 0.9, f"Matched advanced keyword(s): {[kw for kw in advanced_keywords if kw in text]}")
@@ -164,7 +164,7 @@ class IssueClassifier:
         """
         text = self.clean_text(title, body)
         predictions = {}
-        
+
         # NLP classifier prediction
         if HAS_SKLEARN and self.vectorizer is not None:
             X = self.vectorizer.transform([text])
@@ -230,7 +230,7 @@ def format_triage_comment(predictions: Dict[str, Dict[str, Any]], assignees: Lis
         rows.append(f"| **{cat.capitalize()}** | `{label}` | {pred['reason']} (conf: {pred['confidence']:.2f}) |")
 
     assignee_str = ", ".join([f"@{a}" for a in assignees]) if assignees else "None suggested"
-    
+
     comment = f"""### 📌 GSSoC 2026 - Issue Auto-Triaged
 
 | Category | Detected Label | Reasoning |
@@ -263,7 +263,7 @@ async def apply_github_actions(
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json"
     }
-    
+
     # Map raw predictions to GitHub label format
     labels = []
     # 1. Type
@@ -275,14 +275,14 @@ async def apply_github_actions(
     # 3. Level
     l_label = predictions["level"]["label"]
     labels.append(f"level:{l_label}")
-    
+
     # We also add 'gssoc:approved' by default since this is GSSoC auto-triage
     labels.append("gssoc:approved")
 
     api_url = f"https://api.github.com/repos/{repo_full_name}/issues/{issue_number}"
-    
+
     results = {}
-    
+
     # Add labels
     async with httpx.AsyncClient() as client:
         try:
@@ -295,7 +295,7 @@ async def apply_github_actions(
         except Exception as e:
             logger.error("GitHub API labels application failed: %s", e)
             results["labels"] = f"error: {str(e)}"
-            
+
         # Post comment
         comment_body = format_triage_comment(predictions, assignees)
         try:
@@ -322,16 +322,16 @@ async def triage_issue(
     """Main function called by webhook to process issue and apply actions."""
     classifier = IssueClassifier()
     predictions = classifier.predict(title, body)
-    
+
     domain = predictions["domain"]["label"]
     assignees = get_suggested_assignees(domain)
-    
+
     triage_info = {
         "issue_number": issue_number,
         "predictions": predictions,
         "suggested_assignees": assignees,
     }
-    
+
     if token:
         github_results = await apply_github_actions(
             repo_full_name=repo_full_name,
@@ -344,5 +344,5 @@ async def triage_issue(
     else:
         logger.info("Skipping GitHub API actions (GITHUB_TOKEN not configured).")
         triage_info["github_api"] = {"status": "skipped"}
-        
+
     return triage_info

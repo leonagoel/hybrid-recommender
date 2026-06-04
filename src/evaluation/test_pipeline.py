@@ -38,7 +38,7 @@ def main():
     print(f"   Query: {title}")
     recs = hm.recommend(title, top_n=5)
     for i, r in enumerate(recs):
-        print(f"   #{i+1} {r['title']} — Hybrid: {r['hybrid_score']:.4f}")
+        print(f"   #{i + 1} {r['title']} — Hybrid: {r['hybrid_score']:.4f}")
 
     print("\n7. Testing LLM Explanations...")
     from src.model.llm_explainer import get_explainer

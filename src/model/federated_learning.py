@@ -94,7 +94,7 @@ class FederatedServer:
         self.reg = reg
 
         self.title_to_idx = {t: i for i, t in enumerate(self.item_list)}
-        
+
         # Initialize global item factors randomly
         np.random.seed(42)
         self.global_item_factors = np.random.normal(
@@ -158,7 +158,7 @@ def train_federated_collaborative_model(
     # 3. Federated Training Loop
     for _ in range(epochs):
         client_updates = []
-        
+
         # Phase 1: Local computations on each client
         for client in clients:
             # Client updates its local user vector based on global item factors
@@ -185,7 +185,7 @@ def train_federated_collaborative_model(
     # 4. Construct final CollaborativeRecommender
     # We create a mock/empty instance and populate its SVD matrix factors
     recommender = CollaborativeRecommender(interaction_df, n_factors=n_factors)
-    
+
     # Overwrite matrix factors and lookups
     recommender.title_list = list(unique_items)
     recommender._user_to_idx = {u: i for i, u in enumerate(unique_users)}

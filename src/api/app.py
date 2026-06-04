@@ -21,12 +21,12 @@ PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data.data_adapter import adapt_data, read_file
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.hybrid_model import HybridRecommender
-from src.model.causal_config import CausalConfig
-from src.model.llm_explainer import get_explainer
+from src.data.data_adapter import adapt_data, read_file  # noqa: E402
+from src.model.content_model import ContentRecommender  # noqa: E402
+from src.model.collaborative_model import CollaborativeRecommender  # noqa: E402
+from src.model.hybrid_model import HybridRecommender  # noqa: E402
+from src.model.causal_config import CausalConfig  # noqa: E402
+from src.model.llm_explainer import get_explainer  # noqa: E402
 
 
 # ── Page configuration ───────────────────────────────────────────────────────
@@ -100,10 +100,10 @@ with st.sidebar:
     st.subheader("⚖️ Hybrid Weights")
     st.caption("Weights are auto-normalised to sum to 1 by the model.")
 
-    alpha = st.slider("α — Content-Based",  min_value=0.0, max_value=1.0, value=0.40, step=0.05)
-    beta  = st.slider("β — Collaborative",  min_value=0.0, max_value=1.0, value=0.35, step=0.05)
-    gamma = st.slider("γ — Sentiment",      min_value=0.0, max_value=1.0, value=0.25, step=0.05)
-    
+    alpha = st.slider("α — Content-Based", min_value=0.0, max_value=1.0, value=0.40, step=0.05)
+    beta = st.slider("β — Collaborative", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
+    gamma = st.slider("γ — Sentiment", min_value=0.0, max_value=1.0, value=0.25, step=0.05)
+
     # Live Normalized Weight Preview
     weights = {
         "Content-Based": alpha,
@@ -172,11 +172,11 @@ if uploaded_file is not None:
             adapted_df, meta = adapt_data(raw_df)
 
             st.session_state.uploaded_file_name = uploaded_file.name
-            st.session_state.adapted_df    = adapted_df
-            st.session_state.meta          = meta
+            st.session_state.adapted_df = adapted_df
+            st.session_state.meta = meta
             st.session_state.content_model = None
-            st.session_state.collab_model  = None
-            st.session_state.hybrid_model  = None
+            st.session_state.collab_model = None
+            st.session_state.hybrid_model = None
 
         except Exception as e:
             st.error(f"Failed to read dataset: {e}")
@@ -184,7 +184,7 @@ if uploaded_file is not None:
     # Always show status for the currently loaded file (same or new)
     if st.session_state.adapted_df is not None:
         adapted_df = st.session_state.adapted_df
-        meta       = st.session_state.meta
+        meta = st.session_state.meta
 
         st.success(f"✅ Dataset loaded — {len(adapted_df):,} rows detected.")
 
@@ -204,7 +204,7 @@ if st.session_state.adapted_df is None:
 else:
     if st.button("🔨 Build Models"):
         adapted_df = st.session_state.adapted_df
-        meta       = st.session_state.meta
+        meta = st.session_state.meta
 
         with st.spinner("Building models — this may take a moment for large datasets…"):
             try:
@@ -231,8 +231,8 @@ else:
                 hybrid_model.set_weights(alpha, beta, gamma)
 
                 st.session_state.content_model = content_model
-                st.session_state.collab_model  = collab_model
-                st.session_state.hybrid_model  = hybrid_model
+                st.session_state.collab_model = collab_model
+                st.session_state.hybrid_model = hybrid_model
 
                 if collab_model is not None:
                     st.success("✅ Content model and Collaborative model trained. Hybrid mode active.")
@@ -255,7 +255,7 @@ st.header("3️⃣  Get Recommendations")
 if st.session_state.hybrid_model is None:
     st.info("Build models above to enable recommendations.")
 else:
-    adapted_df   = st.session_state.adapted_df
+    adapted_df = st.session_state.adapted_df
     hybrid_model = st.session_state.hybrid_model
     collab_model = st.session_state.collab_model
 
@@ -278,7 +278,7 @@ else:
             try:
                 if is_user_id and collab_model is not None:
                     # ── Collaborative path: personalised for the user ──────
-                    badge       = "🤝 COLLABORATIVE"
+                    badge = "🤝 COLLABORATIVE"
                     badge_color = "blue"
 
                     recs_raw = collab_model.predict_for_user(query, top_n=top_n)
@@ -293,19 +293,19 @@ else:
                     # Normalise to a common display format
                     recs = [
                         {
-                            "title":         r["title"],
-                            "hybrid_score":  round(r["predicted_score"], 4),
+                            "title": r["title"],
+                            "hybrid_score": round(r["predicted_score"], 4),
                             "content_score": "—",
-                            "collab_score":  round(r["predicted_score"], 4),
+                            "collab_score": round(r["predicted_score"], 4),
                             "sentiment_score": "—",
-                            "rating":        "—",
-                            "category":      "",
-                            "description":   "",
-                            "top_reviews":   [],
+                            "rating": "—",
+                            "category": "",
+                            "description": "",
+                            "top_reviews": [],
                         }
                         for r in recs_raw
                     ]
-                    
+
                     query_item_for_explanation = f"User {query}"
 
                 else:
@@ -331,15 +331,15 @@ else:
                     else:
                         item_title = exact.iloc[0]
 
-                recs = hybrid_model.recommend(item_title,top_n=top_n,explain=True)
+                recs = hybrid_model.recommend(item_title, top_n=top_n, explain=True)
 
                 if collab_model is None:
-                        badge       = "📄 CONTENT-BASED"
-                        badge_color = "green"
+                    badge = "📄 CONTENT-BASED"
+                    badge_color = "green"
                 else:
-                        badge       = "🔀 HYBRID"
-                        badge_color = "violet"
-                    
+                    badge = "🔀 HYBRID"
+                    badge_color = "violet"
+
                 query_item_for_explanation = item_title
 
                 # ── Generate LLM explanations if enabled ──────────────────
@@ -378,7 +378,7 @@ else:
                     st.markdown("---")
 
                     for i, rec in enumerate(recs, start=1):
-                        title    = rec.get("title", "Unknown")
+                        title = rec.get("title", "Unknown")
                         category = rec.get("category", "")
 
                         # Show causal score column only when debiasing was active
@@ -403,15 +403,15 @@ else:
                             title_label += f"  \n`{category}`"
                         col_title.markdown(title_label)
 
-                        col_hybrid.metric("Hybrid",  rec.get("hybrid_score",   "—"))
-                        col_content.metric("Content", rec.get("content_score",  "—"))
-                        col_collab.metric("Collab",  rec.get("collab_score",   "—"))
+                        col_hybrid.metric("Hybrid", rec.get("hybrid_score", "—"))
+                        col_content.metric("Content", rec.get("content_score", "—"))
+                        col_collab.metric("Collab", rec.get("collab_score", "—"))
                         if causal_active:
                             # Show original (pre-debiasing) score as delta so the
                             # user can see how much the causal layer changed the rank
                             original = rec.get("original_score")
-                            causal   = rec.get("causal_score", rec.get("hybrid_score"))
-                            delta    = round(causal - original, 4) if original is not None else None
+                            causal = rec.get("causal_score", rec.get("hybrid_score"))
+                            delta = round(causal - original, 4) if original is not None else None
                             col_causal.metric(
                                 "🔬 Causal",
                                 causal,
@@ -419,7 +419,7 @@ else:
                                 delta_color="normal",
                                 help="Debiased score. Delta = causal − original.",
                             )
-                        col_rating.metric("Rating",  rec.get("rating",         "—"))
+                        col_rating.metric("Rating", rec.get("rating", "—"))
 
                         # Display LLM explanation in a new row
                         explanation = rec.get("llm_explanation")

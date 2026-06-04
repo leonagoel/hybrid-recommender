@@ -7,14 +7,15 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from sentence_transformers import SentenceTransformer
-from src.data.db import get_supabase_admin
-from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer  # noqa: E402
+from src.data.db import get_supabase_admin  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 BATCH_SIZE = 50
+
 
 def main():
     print(f"Loading embedding model '{MODEL_NAME}'...")
@@ -37,16 +38,17 @@ def main():
     print(f"Generating embeddings for {len(products)} products...")
     total = len(products)
     for i in range(0, total, BATCH_SIZE):
-        batch = products[i:i+BATCH_SIZE]
-        texts = [f"{p['title']} {p.get('description','')}" for p in batch]
+        batch = products[i:i + BATCH_SIZE]
+        texts = [f"{p['title']} {p.get('description', '')}" for p in batch]
         embeddings = model.encode(texts, show_progress_bar=True)
 
         for p, emb in zip(batch, embeddings):
             sb.table('products').update({'embedding': emb.tolist()}).eq('id', p['id']).execute()
 
-        print(f"Processed {min(i+BATCH_SIZE, total)}/{total}")
+        print(f"Processed {min(i + BATCH_SIZE, total)}/{total}")
 
     print("Embeddings generation completed.")
+
 
 if __name__ == "__main__":
     main()

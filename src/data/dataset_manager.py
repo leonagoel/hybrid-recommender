@@ -39,7 +39,7 @@ class DatasetManager:
         raw_df = preprocess(raw_df)
         adapted_df, meta = adapt_data(raw_df)
         adapted_df['catalog'] = catalog
-        
+
         ds_id = str(uuid.uuid4())[:8]
 
         self._datasets[ds_id] = {
@@ -106,21 +106,21 @@ class DatasetManager:
 
         # Deduplicate items — aggregate per unique title
         # Keep first description/category, average rating, concat reviews
-        
+
         # Ensure only columns that actually exist in merged are in the agg dict
         agg_dict = {
-            'item_id':      'first',
-            'description':  'first',
-            'category':     'first',
-            'combined':     'first',
-            'user_id':      'first',
-            'rating':       'mean',
-            'review_text':  lambda x: ' '.join(x.astype(str)),
-            'views':        'sum',
-            'purchases':    'sum',
-            'catalog':      'first',
+            'item_id': 'first',
+            'description': 'first',
+            'category': 'first',
+            'combined': 'first',
+            'user_id': 'first',
+            'rating': 'mean',
+            'review_text': lambda x: ' '.join(x.astype(str)),
+            'views': 'sum',
+            'purchases': 'sum',
+            'catalog': 'first',
         }
-        
+
         # Filter agg_dict to only include columns present in merged
         valid_agg_dict = {k: v for k, v in agg_dict.items() if k in merged.columns}
 
@@ -131,7 +131,7 @@ class DatasetManager:
             def get_reviews(series):
                 valid = [s for s in series.astype(str) if s and str(s).strip() and len(str(s)) > 8]
                 return valid[:2]
-            
+
             reviews_df = merged.groupby('title')['review_text'].agg(get_reviews).reset_index()
             reviews_df.rename(columns={'review_text': 'top_reviews'}, inplace=True)
             grouped = grouped.merge(reviews_df, on='title', how='left')
