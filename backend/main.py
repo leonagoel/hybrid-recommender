@@ -989,20 +989,19 @@ def search_items(
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
     
-    except Exception as e:
-    logger.warning("Search fallback to mock products: %s", e)
+        except Exception as e:
+        logger.warning("Search fallback to mock products: %s", e)
+        products = MOCK_PRODUCTS
 
-    products = MOCK_PRODUCTS
+        if query:
+            query_lower = query.lower()
 
-    if query:
-        query_lower = query.lower()
-
-        products = [
-            p for p in products
-            if query_lower in str(p.get('title', '')).lower()
-            or query_lower in str(p.get('description', '')).lower()
-            or query_lower in str(p.get('category', '')).lower()
-        ]
+            products = [
+                p for p in products
+                if query_lower in str(p.get('title', '')).lower()
+                or query_lower in str(p.get('description', '')).lower()
+                or query_lower in str(p.get('category', '')).lower()
+            ]
 
     for p in products:
         p['rank'] = 0.0
