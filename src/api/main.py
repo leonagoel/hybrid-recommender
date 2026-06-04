@@ -142,8 +142,7 @@ def get_recommendations(req: RecommendationRequest):
         import logging
         logger = logging.getLogger("uvicorn.error")
         logger.error(
-            f"Primary recommendation engine failed: {
-                str(exc)}. Triggering popularity fallback.")
+            f"Primary recommendation engine failed: {str(exc)}. Triggering popularity fallback.")
 
         try:
             # Fallback calculation: safe data pull from the global item

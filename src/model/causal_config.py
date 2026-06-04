@@ -68,8 +68,7 @@ class CausalConfig:
             raise ValueError("enabled must be a bool")
         if not 0.0 <= self.blend_lambda <= 1.0:
             raise ValueError(
-                f"blend_lambda must be in [0.0, 1.0], got {
-                    self.blend_lambda}")
+                f"blend_lambda must be in [0.0, 1.0], got {self.blend_lambda}")
         if self.clip_max <= 0:
             raise ValueError(f"clip_max must be positive, got {self.clip_max}")
         if not self.score_key:

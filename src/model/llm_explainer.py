@@ -197,8 +197,7 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
 
         base_explanation = explanations.get(
             max_score_name,
-            f"This item scored {
-                max_score_value:.1%} match with your search criteria based on hybrid recommendation analysis."
+            f"This item scored {max_score_value:.1%} match with your search criteria based on hybrid recommendation analysis."
         )
 
         # Add description if available - increased from 100 to 300 characters

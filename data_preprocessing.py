@@ -21,8 +21,7 @@ def preprocess_books_data(
         df = pd.read_csv(data)
     else:
         raise TypeError(
-            f"Expected str, Path, or pd.DataFrame — got {
-                type(data)}")
+            f"Expected str, Path, or pd.DataFrame — got {type(data)}")
 
     print(f"Original shape: {df.shape}")
 
@@ -56,8 +55,7 @@ def preprocess_ratings_data(
         df = pd.read_csv(data)
     else:
         raise TypeError(
-            f"Expected str, Path, or pd.DataFrame — got {
-                type(data)}")
+            f"Expected str, Path, or pd.DataFrame — got {type(data)}")
 
     print(f"Original shape: {df.shape}")
 
@@ -91,8 +89,7 @@ def preprocess_sentiment_data(
         df = pd.read_csv(data)
     else:
         raise TypeError(
-            f"Expected str, Path, or pd.DataFrame — got {
-                type(data)}")
+            f"Expected str, Path, or pd.DataFrame — got {type(data)}")
 
     print(f"Original shape: {df.shape}")
 

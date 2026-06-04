@@ -84,8 +84,7 @@ def run_benchmark():
     results = []
 
     print(
-        f"\nRunning Benchmark on {
-            len(test_pairs)} test users (Top-K={K})...")
+        f"\nRunning Benchmark on {len(test_pairs)} test users (Top-K={K})...")
 
     for name, model in models.items():
         if model is None:

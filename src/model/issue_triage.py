@@ -257,9 +257,7 @@ class IssueClassifier:
             rules["level"] = (
                 "beginner",
                 0.9,
-                f"Matched beginner keyword(s): {
-                    [
-                        kw for kw in beginner_keywords if kw in text]}")
+                f"Matched beginner keyword(s): {[kw for kw in beginner_keywords if kw in text]}")
             if "priority" not in rules:
                 rules["priority"] = (
                     "low", 0.9, "Beginner tasks marked as low priority")
@@ -278,9 +276,7 @@ class IssueClassifier:
             rules["level"] = (
                 "advanced",
                 0.9,
-                f"Matched advanced keyword(s): {
-                    [
-                        kw for kw in advanced_keywords if kw in text]}")
+                f"Matched advanced keyword(s): {[kw for kw in advanced_keywords if kw in text]}")
             if "priority" not in rules:
                 rules["priority"] = (
                     "high", 0.9, "Advanced tasks marked as high priority")

@@ -57,8 +57,7 @@ def dispatch_task_safely(task, *args, **kwargs):
         # If connection succeeds, dispatch asynchronously to the Celery worker
         # cluster
         logger.info(
-            f"Redis cluster verified healthy. Dispatching task {
-                task.__name__} asynchronously.")
+            f"Redis cluster verified healthy. Dispatching task {task.__name__} asynchronously.")
         return task.delay(*args, **kwargs)
 
     except Exception as e:
@@ -66,8 +65,7 @@ def dispatch_task_safely(task, *args, **kwargs):
         # locally and synchronously
         logger.warning(
             f"Celery message broker/Redis offline ({e}). "
-            f"Degrading gracefully to execute task {
-                task.__name__} synchronously inline."
+            f"Degrading gracefully to execute task {task.__name__} synchronously inline."
         )
         # .apply() tells Celery to run the function right now on the main execution thread
         return task.apply(args=args, kwargs=kwargs)

@@ -1527,8 +1527,7 @@ def train_federated(
     except Exception as e:
         logger.error("Federated training: purchases load failed: %s", e)
         raise HTTPException(
-            500, f"Failed to retrieve purchases from database: {
-                str(e)}")
+            500, f"Failed to retrieve purchases from database: {str(e)}")
 
     if len(purchases) <= 10:
         raise HTTPException(
