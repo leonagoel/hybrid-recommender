@@ -2,7 +2,7 @@ import pandas as pd
 
 
 def main() -> None:
-if __name__ == '__main__':
+    # Load datasets
     # Load datasets
     books = pd.read_csv("books.csv")
     ratings = pd.read_csv("ratings.csv")
@@ -25,5 +25,5 @@ if __name__ == '__main__':
     print("Dataset prepared successfully!")
 
 
-if __name__ == '__main__':
+
     main()
