@@ -205,7 +205,13 @@ def _build_test_data(data_path: str | None = None):
 
     collab_model = _Collab()
 
-    # build simple test pairs
+    # Build test pairs with category-only relevance.
+    #
+    # Relevance is restricted to items in the same category as the query.
+    # Item ratings are intentionally excluded: mixing a global
+    # "rating >= threshold" filter marks unrelated high-rated items as
+    # ground-truth matches for every query, inflating Precision@K, Recall@K,
+    # NDCG@K, and MRR regardless of semantic similarity.
     test_pairs = []
     sample = min(50, len(df))
     indices = np.random.choice(len(df), size=sample, replace=False)
@@ -215,8 +221,6 @@ def _build_test_data(data_path: str | None = None):
         if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):
             same = df[df["category"] == df.iloc[idx]["category"]]["title"].tolist()
             relevant.update(same)
-        if "rating" in df.columns:
-            relevant.update(df[df["rating"] >= 4.0]["title"].tolist())
         relevant.discard(title)
         if relevant:
             test_pairs.append((uid, title, relevant))
@@ -369,22 +373,6 @@ def run_evaluation(
     tfidf_matrix = _load_or_build_tfidf(df)
     svd_matrix   = _load_or_build_svd(df)
 
-    # --- build relevance sets from rating data ---
-    def _get_relevant(row_idx: int) -> set[str]:
-        row = df.iloc[row_idx]
-        relevant = set()
-        # Same category
-        if "category" in df.columns and pd.notna(row.get("category")):
-            same_cat = df[df["category"] == row["category"]]["title"].tolist()
-            relevant.update(same_cat)
-        # High-rated items (if ratings available)
-        if "rating" in df.columns:
-            high_rated = df[df["rating"] >= 4.0]["title"].tolist()
-            relevant.update(high_rated)
-        # Remove self
-        relevant.discard(row["title"])
-        return relevant
-
     # Sample up to 200 items for speed
     sample_size = min(200, len(df))
     sample_indices = np.random.choice(len(df), size=sample_size, replace=False)
@@ -472,7 +460,11 @@ def run_evaluation(
             for idx in sample_indices:
                 title = df.iloc[idx]["title"]
                 
-                # Establish pseudo-relevance via category boundaries
+                # Relevance is defined by category membership only.
+                # Do NOT add a global rating threshold here: mixing
+                # "rating >= N" into the relevance set marks unrelated
+                # high-rated items as ground-truth matches, inflating
+                # Precision@K, Recall@K, MRR, and NDCG for every query.
                 relevant = set()
                 if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):
                     relevant.update(df[df["category"] == df.iloc[idx]["category"]]["title"].tolist())
