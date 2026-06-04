@@ -107,6 +107,8 @@ async function loadDashboard() {
 
   const list = document.getElementById('top-products');
 
+  list.innerHTML = '';
+
   data.top_5_recommended_products.forEach(product => {
     const li = document.createElement('li');
     li.textContent = product;
