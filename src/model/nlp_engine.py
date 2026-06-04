@@ -4,14 +4,6 @@ Uses NLTK VADER for lightweight sentiment analysis on user review text.
 """
 import nltk
 import pandas as pd
-import numpy as np
-
-__all__ = [
-    "analyze_sentiment",
-    "sentiment_label",
-    "batch_analyze",
-    "aggregate_sentiment_by_item",
-]
 
 # Download VADER lexicon (only on first run)
 try:
@@ -78,3 +70,31 @@ def aggregate_sentiment_by_item(df: pd.DataFrame, item_col: str = 'title') -> pd
     ).reset_index()
 
     return agg
+
+def compute_product_sentiment(reviews):
+    """
+    Dynamically compute average sentiment for products
+    whose sentiment has not yet been processed by the
+    NLP batch pipeline.
+
+    Used as a fallback for newly added products so the
+    API never returns misleading 0.0 sentiment values.
+    """
+
+    if not reviews:
+        return None
+
+    valid_reviews = [
+        review for review in reviews
+        if isinstance(review, str) and review.strip()
+    ]
+
+    if not valid_reviews:
+        return None
+
+    scores = [analyze_sentiment(review) for review in valid_reviews]
+
+    if not scores:
+        return None
+
+    return round(float(np.mean(scores)), 4)

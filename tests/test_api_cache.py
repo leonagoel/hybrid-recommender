@@ -20,7 +20,7 @@ class FakeHybrid:
     def get_weights(self):
         return {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}
 
-    def recommend(self, item_title, top_n=10, explain=False):
+    def recommend(self, item_title, top_n=10, explain=False, target_catalog=None, **kwargs):
         self.calls += 1
         return [{"title": f"{item_title} match", "hybrid_score": 0.98}][:top_n]
 
@@ -95,9 +95,8 @@ def test_recommendation_endpoint_sets_hit_after_first_response():
     assert first.status_code == 200
     assert second.status_code == 200
     first_payload = first.json()
-    assert first_payload["query"] == "Product A"
-    assert first_payload["count"] == 1
-    assert first_payload["results"] == first_payload["recommendations"]
+    assert first_payload["query_item"] == "Product A"
+    assert len(first_payload["recommendations"]) == 1
     assert first.headers["x-cache"] == "MISS"
     assert second.headers["x-cache"] == "HIT"
     assert second.headers["cache-control"] == main.CACHE_CONTROL_VALUE

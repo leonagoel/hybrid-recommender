@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from sentence_transformers import SentenceTransformer
-from db import get_supabase_admin
+from src.data.db import get_supabase_admin
 from dotenv import load_dotenv
 
 load_dotenv()

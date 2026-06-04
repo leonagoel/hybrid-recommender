@@ -89,8 +89,7 @@ jobs:
               `✅ Respond to reviews promptly`,
               `✅ Focus on one issue/PR at a time`,
               ``,
-              `📋 See our [Contribution Guidelines](../blob/main/CONTRIBUTING.md) and [Discussion Board](../../discussions) for more info.`,
-              ``,
+              `📋 See our [Contribution Guidelines](https://github.com/${owner}/${repo}/blob/main/CONTRIBUTING.md) and [Discussion Board](https://github.com/${owner}/${repo}/discussions) for more info.`,
               `Thanks for being a great contributor! 🎉`
             ].join('\n');
 
