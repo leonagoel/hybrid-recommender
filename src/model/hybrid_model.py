@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
+from src.model.recommendation_history import history_tracker
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
@@ -521,6 +522,12 @@ class HybridRecommender:
             return self._cold_start_fallback(title=None, top_n=top_n)
 
         collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
+        recent_titles = history_tracker.get_recent_titles(user_id)
+
+        collab_recs = [ 
+            rec for rec in collab_recs
+            if rec["title"] not in recent_titles
+        ]
         
         results = []
         for r in collab_recs[:top_n]:
@@ -562,7 +569,12 @@ class HybridRecommender:
             results = self._debiaser.debias_batch(results, score_key=score_key)
             results.sort(key=lambda x: x[score_key], reverse=True)
 
-        return results
+            for item in results:
+                history_tracker.add_recommendation(
+                    user_id,
+                    item["title"]
+                    )
+                return results
 
     def _build_explanation(
         self,
