@@ -7,13 +7,25 @@ Run with:
     streamlit run app.py
 """
 
+import os
+import sys
+from pathlib import Path
 import streamlit as st
 import pandas as pd
+
+# ── Dynamic Path Mapping Fix (#490) ──────────────────────────────────────────
+CURRENT_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
+
+# Ensure internal source packages can be imported without directory errors
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.data_adapter import adapt_data, read_file
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
+from src.model.causal_config import CausalConfig
 from src.model.llm_explainer import get_explainer
 
 
@@ -44,12 +56,62 @@ with st.sidebar:
         "Top-N Recommendations",
         min_value=5, max_value=20, value=10, step=1,
     )
+    diversity = st.slider(
+        "🌈 Recommendation Diversity",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.1,
+        help="Increase recommendation variety by reducing similar recommendations."
+    )
 
-    
+    serendipity = st.slider(
+        "✨ Recommendation Serendipity",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.1,
+        help="Discover more unexpected recommendations."
+    )
+
     enable_llm_explanations = st.checkbox(
         "🤖 Enable LLM Explanations",
         value=True,
         help="Generate AI-powered explanations for recommendations"
+    )
+
+    # ── Causal Inference settings ─────────────────────────────────────────
+    st.subheader("🔬 Causal Debiasing")
+    st.caption(
+        "IPS reweighting reduces popularity and category bias. "
+        "Higher λ = stronger correction."
+    )
+
+    # Master toggle — stored in session state so Build Models can read it
+    enable_causal = st.toggle(
+        "Enable Causal Debiasing",
+        value=False,
+        help=(
+            "When ON, items that were over-exposed in training data "
+            "(popular / dominant-category) are downweighted so niche "
+            "but genuinely relevant items surface higher."
+        ),
+    )
+
+    # λ slider — only meaningful when causal is on, but always rendered
+    # so the value is preserved when the user toggles back on
+    causal_lambda = st.slider(
+        "λ — Correction Strength",
+        min_value=0.0, max_value=1.0, value=0.5, step=0.05,
+        disabled=not enable_causal,
+        help="0 = no correction (pure correlation). 1 = full IPS reweighting.",
+    )
+
+    causal_clip = st.slider(
+        "IPS Clip Max",
+        min_value=1.0, max_value=10.0, value=5.0, step=0.5,
+        disabled=not enable_causal,
+        help="Maximum IPS weight cap. Prevents rare items from dominating.",
     )
 
     st.subheader("⚖️ Hybrid Weights")
@@ -60,32 +122,31 @@ with st.sidebar:
     gamma = st.slider("γ — Sentiment",      min_value=0.0, max_value=1.0, value=0.25, step=0.05)
     
     # Live Normalized Weight Preview
-weights = {
-    "Content-Based": alpha,
-    "Collaborative": beta,
-    "Sentiment": gamma,
-}
-
-total_weight = sum(weights.values())
-
-st.markdown("### Live Normalized Weight Preview")
-
-if total_weight <= 0:
-    st.warning("All weights are set to zero. Please increase at least one weight to see the normalized distribution.")
-else:
-    normalized_weights = {
-        name: value / total_weight
-        for name, value in weights.items()
+    weights = {
+        "Content-Based": alpha,
+        "Collaborative": beta,
+        "Sentiment": gamma,
     }
 
-    for name, value in normalized_weights.items():
-        st.write(f"**{name}:** {value:.2f}")
-        st.progress(value)
+    total_weight = sum(weights.values())
 
-    st.success(
-        f"Total Normalized Weight: {sum(normalized_weights.values()):.2f}"
-    )
+    st.markdown("### Live Normalized Weight Preview")
 
+    if total_weight <= 0:
+        st.warning("All weights are set to zero. Please increase at least one weight to see the normalized distribution.")
+    else:
+        normalized_weights = {
+            name: value / total_weight
+            for name, value in weights.items()
+        }
+
+        for name, value in normalized_weights.items():
+            st.write(f"**{name}:** {value:.2f}")
+            st.progress(value)
+
+        st.success(
+            f"Total Normalized Weight: {sum(normalized_weights.values()):.2f}"
+        )
 
     total_weight = alpha + beta + gamma
     if total_weight == 0:
@@ -108,7 +169,7 @@ else:
         col.metric(label, f"{value:.3f}")
         col.progress(value)
 
-    if st.button("Apply Weights", width='stretch'):
+    if st.button("Apply Weights", key="apply_weights_btn"):
         if st.session_state.hybrid_model is not None:
             st.session_state.hybrid_model.set_weights(alpha, beta, gamma)
             st.success("Weights updated!")
@@ -145,7 +206,7 @@ if uploaded_file is not None:
         st.success(f"✅ Dataset loaded — {len(adapted_df):,} rows detected.")
 
         with st.expander("Preview adapted data"):
-            st.dataframe(adapted_df.head(10), width='stretch')
+            st.dataframe(adapted_df.head(10))
 
         with st.expander("Detected columns"):
             detected = {k: v for k, v in meta.items() if k.endswith("_col") and v is not None}
@@ -158,7 +219,7 @@ st.header("2️⃣  Build Models")
 if st.session_state.adapted_df is None:
     st.info("Upload a dataset above to enable model building.")
 else:
-    if st.button("🔨 Build Models", width='stretch'):
+    if st.button("🔨 Build Models"):
         adapted_df = st.session_state.adapted_df
         meta       = st.session_state.meta
 
@@ -172,8 +233,18 @@ else:
                 if meta["has_user_data"] and adapted_df["user_id"].nunique() > 1:
                     collab_model = CollaborativeRecommender(adapted_df)
 
-                # Hybrid model
-                hybrid_model = HybridRecommender(content_model, collab_model, adapted_df)
+                # Build CausalConfig from sidebar settings
+                causal_cfg = (
+                    CausalConfig(enabled=True, blend_lambda=causal_lambda, clip_max=causal_clip)
+                    if enable_causal
+                    else CausalConfig.disabled()
+                )
+
+                # Hybrid model — pass causal_config for structured configuration
+                hybrid_model = HybridRecommender(
+                    content_model, collab_model, adapted_df,
+                    causal_config=causal_cfg,
+                )
                 hybrid_model.set_weights(alpha, beta, gamma)
 
                 st.session_state.content_model = content_model
@@ -183,8 +254,13 @@ else:
                 if collab_model is not None:
                     st.success("✅ Content model and Collaborative model trained. Hybrid mode active.")
                 else:
-                    st.success("✅ Content model trained. "
-                               "Collaborative model skipped (dataset needs more than one unique user).")
+                    st.success("✅ Content model trained. Collaborative model skipped (dataset needs more than one unique user).")
+
+                # Show causal diagnostics immediately after build
+                if enable_causal and hybrid_model._debiaser is not None:
+                    with st.expander("🔬 Causal Debiaser Diagnostics", expanded=False):
+                        summary = hybrid_model._debiaser.summary()
+                        st.json(summary)
 
             except Exception as e:
                 st.error(f"Model build failed: {e}")
@@ -205,7 +281,7 @@ else:
         placeholder="e.g. Item Name or user_id",
     )
 
-    submitted = st.button("🚀 Get Recommendations", width='content')
+    submitted = st.button("🚀 Get Recommendations")
 
     if submitted:
         if not query.strip():
@@ -271,16 +347,15 @@ else:
                         st.info(f"Exact match not found. Using closest match: **{item_title}**")
                     else:
                         item_title = exact.iloc[0]
-
-                    recs = hybrid_model.recommend(item_title, top_n=top_n)
+                        recs = hybrid_model.recommend(item_title,top_n=top_n,explain=True,diversity=diversity,serendipity=serendipity,)
 
                     if collab_model is None:
-                        badge       = "📄 CONTENT-BASED"
-                        badge_color = "green"
+                            badge       = "📄 CONTENT-BASED"
+                            badge_color = "green"
                     else:
-                        badge       = "🔀 HYBRID"
-                        badge_color = "violet"
-                    
+                            badge       = "🔀 HYBRID"
+                            badge_color = "violet"
+                        
                     query_item_for_explanation = item_title
 
                 # ── Generate LLM explanations if enabled ──────────────────
@@ -322,9 +397,20 @@ else:
                         title    = rec.get("title", "Unknown")
                         category = rec.get("category", "")
 
-                        col_rank, col_title, col_hybrid, col_content, col_collab, col_rating = st.columns(
-                            [0.4, 2.5, 1.0, 1.0, 1.0, 1.0]
+                        # Show causal score column only when debiasing was active
+                        causal_active = (
+                            st.session_state.hybrid_model is not None
+                            and st.session_state.hybrid_model.use_causal_debiasing
                         )
+
+                        if causal_active:
+                            col_rank, col_title, col_hybrid, col_content, col_collab, col_causal, col_rating = st.columns(
+                                [0.4, 2.2, 0.9, 0.9, 0.9, 0.9, 0.9]
+                            )
+                        else:
+                            col_rank, col_title, col_hybrid, col_content, col_collab, col_rating = st.columns(
+                                [0.4, 2.5, 1.0, 1.0, 1.0, 1.0]
+                            )
 
                         col_rank.markdown(f"**#{i}**")
 
@@ -336,6 +422,19 @@ else:
                         col_hybrid.metric("Hybrid",  rec.get("hybrid_score",   "—"))
                         col_content.metric("Content", rec.get("content_score",  "—"))
                         col_collab.metric("Collab",  rec.get("collab_score",   "—"))
+                        if causal_active:
+                            # Show original (pre-debiasing) score as delta so the
+                            # user can see how much the causal layer changed the rank
+                            original = rec.get("original_score")
+                            causal   = rec.get("causal_score", rec.get("hybrid_score"))
+                            delta    = round(causal - original, 4) if original is not None else None
+                            col_causal.metric(
+                                "🔬 Causal",
+                                causal,
+                                delta=delta,
+                                delta_color="normal",
+                                help="Debiased score. Delta = causal − original.",
+                            )
                         col_rating.metric("Rating",  rec.get("rating",         "—"))
 
                         # Display LLM explanation in a new row
@@ -344,6 +443,30 @@ else:
                             st.write(f"**💡 Why this match:** {explanation}")
                         else:
                             st.write("*Explanation not available*")
+                        # Explainable AI Dashboard
+                        exp = rec.get("explanation")
+                        if exp and exp.get("human_explanation"):
+                            st.info(exp["human_explanation"])
+
+                        if exp:
+                            with st.expander("📊 Explainable AI Dashboard", expanded=False):
+
+                                st.subheader("Model Weights")
+                                st.json(exp.get("active_weights", {}))
+
+                                st.subheader("Component Scores")
+                                st.json(exp.get("component_scores", {}))
+
+                                st.subheader("Weighted Contributions")
+                                st.json(exp.get("weighted_components", {}))
+
+                                st.subheader("Signals")
+                                st.json(exp.get("signals", {}))
+
+                                terms = exp.get("top_content_terms", [])
+                                if terms:
+                                    st.subheader("Top Content Terms")
+                                    st.write(", ".join(map(str, terms)))
 
                         st.divider()
 
