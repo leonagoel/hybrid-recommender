@@ -728,6 +728,11 @@ def health_check():
     Low‑overhead health check endpoint for component tracking.
     Checks database (Supabase), model readiness, and cache (Redis).
     """
+    from src.data.db import get_supabase
+    from redis import Redis
+    from redis.exceptions import RedisError
+    import os
+
     result = {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -741,8 +746,8 @@ def health_check():
     # 1. Database check (Supabase)
     try:
         sb = get_supabase()
-        response = sb.table("products").select("id").limit(1).execute()
-        if response.data is not None:
+        resp = sb.table("products").select("id").limit(1).execute()
+        if resp.data is not None:
             result["components"]["database"] = {"status": "healthy", "details": "connected"}
         else:
             result["components"]["database"] = {"status": "unhealthy", "details": "query returned no data"}
@@ -766,7 +771,6 @@ def health_check():
     try:
         redis_url = os.environ.get("REDIS_URL", "")
         if redis_url:
-            from redis import Redis
             r = Redis.from_url(redis_url, decode_responses=True)
             if r.ping():
                 result["components"]["cache"] = {"status": "healthy", "details": "redis ping successful"}
@@ -780,7 +784,6 @@ def health_check():
         result["status"] = "degraded"
 
     return result
-
 
 # ── API Metrics ───────────────────────────────────────────────────────
 @app.get("/api/version")
