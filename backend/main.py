@@ -1052,7 +1052,7 @@ def search_items(
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
     
-        except Exception as e:
+    except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
         products = MOCK_PRODUCTS
 
@@ -1640,62 +1640,62 @@ def build_models():
         collab_model = None
         with _model_lock:
 
-        try:
-            purchases_result = sb.table('purchases').select(
-                'user_id, product_id, rating'
-            ).limit(50000).execute()
+            try:
+                purchases_result = sb.table('purchases').select(
+                    'user_id, product_id, rating'
+                ).limit(50000).execute()
 
-            purchases = purchases_result.data or []
+                purchases = purchases_result.data or []
 
-            if len(purchases) > 10:
-                product_title_map = {
-                    p['id']: p['title']
-                    for p in all_products
-                }
+                if len(purchases) > 10:
+                    product_title_map = {
+                        p['id']: p['title']
+                        for p in all_products
+                    }
 
-                interaction_rows = []
+                    interaction_rows = []
 
-                for p in purchases:
-                    title = product_title_map.get(p['product_id'])
+                    for p in purchases:
+                        title = product_title_map.get(p['product_id'])
 
-                    if title:
-                        interaction_rows.append({
-                            'user_id': p['user_id'],
-                            'title': title,
-                            'rating': p.get('rating', 3.0)
-                        })
+                        if title:
+                            interaction_rows.append({
+                                'user_id': p['user_id'],
+                                'title': title,
+                                'rating': p.get('rating', 3.0)
+                            })
 
-                if len(interaction_rows) > 10:
-                    interaction_df = pd.DataFrame(interaction_rows)
+                    if len(interaction_rows) > 10:
+                        interaction_df = pd.DataFrame(interaction_rows)
 
-                    if interaction_df['user_id'].nunique() > 1:
-                        collab_model = CollaborativeRecommender(interaction_df)
+                        if interaction_df['user_id'].nunique() > 1:
+                            collab_model = CollaborativeRecommender(interaction_df)
 
-        except Exception as e:
-            logger.warning(
-                "Collaborative model data load failed: %s",
-                e
+            except Exception as e:
+                logger.warning(
+                    "Collaborative model data load failed: %s",
+                    e
+                )
+
+            hybrid_model = HybridRecommender(
+                content_model,
+                collab_model,
+                item_df
             )
 
-        hybrid_model = HybridRecommender(
-            content_model,
-            collab_model,
-            item_df
-        )
+            build_time = round(time.time() - start_time, 2)
 
-        build_time = round(time.time() - start_time, 2)
+            models["content"] = content_model
+            models["collab"] = collab_model
+            models["hybrid"] = hybrid_model
+            models["item_df"] = item_df
+            models["ready"] = True
+            models["build_time"] = build_time
+            models["last_trained_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
 
-        models["content"] = content_model
-        models["collab"] = collab_model
-        models["hybrid"] = hybrid_model
-        models["item_df"] = item_df
-        models["ready"] = True
-        models["build_time"] = build_time
-        models["last_trained_at"] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        _clear_response_cache()
+            _clear_response_cache()
 
         return {
             "message": "Models built successfully!",
@@ -1794,114 +1794,114 @@ def get_recommendations(
         _set_cache_headers(response, "HIT")
         return cached
 
-with _model_lock:
-    hybrid_model = selected_models["hybrid"]
+    with _model_lock:
+        hybrid_model = selected_models["hybrid"]
 
-if hybrid_model is None:
-    raise HTTPException(
-        status_code=500,
-        detail="Hybrid model not available."
-    )
-
-recs = hybrid_model.recommend(
-    query_title,
-    top_n=top_n,
-    explain=explain,
-    target_catalog=target_catalog
-)
-
-# Popularity fallback (existing behaviour)
-if not recs and strategy == "popularity" and models["collab"]:
-    recs = models["collab"]._popularity_fallback(top_n)
-
-# Cold-start fallback: blend content similarity with popularity/rating
-if not recs and strategy == "cold":
-    combined_text = query_title
-    cold_recs = cold_start_recommendation(
-        combined_text,
-        top_n=top_n,
-        target_catalog=target_catalog
-    )
-    if cold_recs:
-        recs = cold_recs
-    if not recs:
-        return JSONResponse(
-            status_code=404,
-            content=error_response(
-                message="Item not found or no recommendations.",
-                model_name="hybrid",
-                version=model_version or ACTIVE_MODEL_VERSION,
-                detail="Item not found or no recommendations."
-            )
+    if hybrid_model is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Hybrid model not available."
         )
 
-    has_history = False
-    if user_id and models.get("collab") is not None:
-        has_history = user_id in models["collab"]._user_to_idx
+    recs = hybrid_model.recommend(
+        query_title,
+        top_n=top_n,
+        explain=explain,
+        target_catalog=target_catalog
+    )
 
-    payload = {
-        "query": query_title,
-        "query_item": query_title,
-        "count": len(recs),
-        "results": recs,
-        "recommendations": recs,
-        "weights": hybrid_model.get_weights(),
-        "explain": explain,
-        "target_catalog": target_catalog,
-        "model_version": model_version or ACTIVE_MODEL_VERSION,
-        "has_history": has_history,
-    }
+    # Popularity fallback (existing behaviour)
+    if not recs and strategy == "popularity" and models["collab"]:
+        recs = models["collab"]._popularity_fallback(top_n)
 
-    if (
-        SHADOW_MODEL_VERSION
-        and SHADOW_MODEL_VERSION in MODEL_REGISTRY
-        and model_version is None
-    ):
-        shadow_model = MODEL_REGISTRY[SHADOW_MODEL_VERSION]
-
-        shadow_start = time.time()
-
-        try:
-            shadow_recs = shadow_model["hybrid"].recommend(
-                query_title,
-                top_n=top_n,
-                explain=explain,
-                target_catalog=target_catalog,
+    # Cold-start fallback: blend content similarity with popularity/rating
+    if not recs and strategy == "cold":
+        combined_text = query_title
+        cold_recs = cold_start_recommendation(
+            combined_text,
+            top_n=top_n,
+            target_catalog=target_catalog
+        )
+        if cold_recs:
+            recs = cold_recs
+        if not recs:
+            return JSONResponse(
+                status_code=404,
+                content=error_response(
+                    message="Item not found or no recommendations.",
+                    model_name="hybrid",
+                    version=model_version or ACTIVE_MODEL_VERSION,
+                    detail="Item not found or no recommendations."
+                )
             )
 
-            shadow_latency = round(
-                (time.time() - shadow_start) * 1000,
-                2,
-            )
+        has_history = False
+        if user_id and models.get("collab") is not None:
+            has_history = user_id in models["collab"]._user_to_idx
 
-            shadow_model["metrics"]["latency_ms"] = shadow_latency
-            shadow_model["metrics"]["error_rate"] = 0.0
+        payload = {
+            "query": query_title,
+            "query_item": query_title,
+            "count": len(recs),
+            "results": recs,
+            "recommendations": recs,
+            "weights": hybrid_model.get_weights(),
+            "explain": explain,
+            "target_catalog": target_catalog,
+            "model_version": model_version or ACTIVE_MODEL_VERSION,
+            "has_history": has_history,
+        }
 
-            SHADOW_LOGS.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "production_version": ACTIVE_MODEL_VERSION,
-                "shadow_version": SHADOW_MODEL_VERSION,
-                "query": query_title,
-                "shadow_count": len(shadow_recs),
-                "latency_ms": shadow_latency,
-                "error": None,
-            })
+        if (
+            SHADOW_MODEL_VERSION
+            and SHADOW_MODEL_VERSION in MODEL_REGISTRY
+            and model_version is None
+        ):
+            shadow_model = MODEL_REGISTRY[SHADOW_MODEL_VERSION]
 
-        except Exception as e:
-            shadow_model["metrics"]["error_rate"] = 1.0
+            shadow_start = time.time()
 
-            SHADOW_LOGS.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "production_version": ACTIVE_MODEL_VERSION,
-                "shadow_version": SHADOW_MODEL_VERSION,
-                "query": query_title,
-                "shadow_count": 0,
-                "latency_ms": 0.0,
-                "error": str(e),
-            })
-    _set_cached_response(cache_key, payload)
-    _set_cache_headers(response, "MISS")
-    return payload
+            try:
+                shadow_recs = shadow_model["hybrid"].recommend(
+                    query_title,
+                    top_n=top_n,
+                    explain=explain,
+                    target_catalog=target_catalog,
+                )
+
+                shadow_latency = round(
+                    (time.time() - shadow_start) * 1000,
+                    2,
+                )
+
+                shadow_model["metrics"]["latency_ms"] = shadow_latency
+                shadow_model["metrics"]["error_rate"] = 0.0
+
+                SHADOW_LOGS.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "production_version": ACTIVE_MODEL_VERSION,
+                    "shadow_version": SHADOW_MODEL_VERSION,
+                    "query": query_title,
+                    "shadow_count": len(shadow_recs),
+                    "latency_ms": shadow_latency,
+                    "error": None,
+                })
+
+            except Exception as e:
+                shadow_model["metrics"]["error_rate"] = 1.0
+
+                SHADOW_LOGS.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "production_version": ACTIVE_MODEL_VERSION,
+                    "shadow_version": SHADOW_MODEL_VERSION,
+                    "query": query_title,
+                    "shadow_count": 0,
+                    "latency_ms": 0.0,
+                    "error": str(e),
+                })
+        _set_cached_response(cache_key, payload)
+        _set_cache_headers(response, "MISS")
+        return payload
 
 
 
