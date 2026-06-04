@@ -20,12 +20,13 @@ from redis.exceptions import RedisError
 try:
     import bleach
 except ModuleNotFoundError:
+    import html
     class bleach:
         @staticmethod
         def clean(value, strip=True):
             if not strip:
                 return str(value)
-            return re.sub(r"<[^>]*>", "", str(value))
+            return html.escape(str(value))
 
 from collections import deque, Counter
 from threading import Lock
@@ -80,8 +81,10 @@ from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
+from src.model.trending_model import TrendingRecommender
 from src.model.issue_triage import triage_issue
 from src.model.federated_learning import train_federated_collaborative_model
+from src.api.response_utils import success_response, error_response
 
 from functools import lru_cache
 
@@ -244,6 +247,7 @@ def _get_cached_response(key: str):
                 return json.loads(cached)
         except (RedisError, json.JSONDecodeError):
             pass
+
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -479,6 +483,11 @@ def _apply_rate_limit(
         reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
         reset_time = max(0, reset_time)
 
+        # Garbage Collection: Remove empty buckets to prevent memory leak
+        empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
+        for k in empty_keys:
+            del _rate_limit_buckets[k]
+
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
     response.headers["x-ratelimit-reset"] = str(reset_time)
@@ -509,6 +518,16 @@ def _require_admin_access(request: Request) -> None:
     )
     if not provided_token or not secrets.compare_digest(provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
+    def _admin_access_dep(request: Request):
+        _require_admin_access(request)
+
+_admin_access_dep = _require_admin_access
+
+
+
+def _admin_access_dep(request: Request) -> None:
+    """FastAPI dependency wrapper around _require_admin_access."""
+    _require_admin_access(request)
 
 
 def _admin_access_dep(request: Request) -> None:
@@ -770,6 +789,11 @@ def health_check():
     Low‑overhead health check endpoint for component tracking.
     Checks database (Supabase), model readiness, and cache (Redis).
     """
+    from src.data.db import get_supabase
+    from redis import Redis
+    from redis.exceptions import RedisError
+    import os
+
     result = {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -783,8 +807,8 @@ def health_check():
     # 1. Database check (Supabase)
     try:
         sb = get_supabase()
-        response = sb.table("products").select("id").limit(1).execute()
-        if response.data is not None:
+        resp = sb.table("products").select("id").limit(1).execute()
+        if resp.data is not None:
             result["components"]["database"] = {"status": "healthy", "details": "connected"}
         else:
             result["components"]["database"] = {"status": "unhealthy", "details": "query returned no data"}
@@ -808,7 +832,6 @@ def health_check():
     try:
         redis_url = os.environ.get("REDIS_URL", "")
         if redis_url:
-            from redis import Redis
             r = Redis.from_url(redis_url, decode_responses=True)
             if r.ping():
                 result["components"]["cache"] = {"status": "healthy", "details": "redis ping successful"}
@@ -822,7 +845,6 @@ def health_check():
         result["status"] = "degraded"
 
     return result
-
 
 # ── API Metrics ───────────────────────────────────────────────────────
 @app.get("/api/version")
@@ -1308,7 +1330,15 @@ async def upload_dataset(
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
-    filename = file.filename or "data.csv"
+    import re
+    import uuid
+    raw_filename = os.path.basename(file.filename or "data.csv")
+    if not re.match(r'^[a-zA-Z0-9_\-]+\.(csv|json)$', raw_filename):
+        raw_filename = f"{uuid.uuid4().hex}.csv"
+    filename = raw_filename
+    UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    safe_path = os.path.join(UPLOAD_DIR, filename)
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
         raise HTTPException(400, "Only CSV and JSON files are supported.")
@@ -1465,6 +1495,7 @@ def build_models(
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
     _clear_response_cache()
     precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
+    _publish_model_version(version)
     return {
         "message": "Models built successfully!",
         "model_version": version,
@@ -1590,22 +1621,50 @@ def get_recommendations(
 # ----- EDGE CASES SAFE CHECK -----
     # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
-        raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
+        return JSONResponse(
+            status_code=400,
+            content=error_response(
+                message="Models not built or dynamic dataset is empty.",
+                model_name="hybrid",
+                detail="Models not built or dynamic dataset is empty."
+            )
+        )
     # ---------------------------------
     query_title = title or item_title
     if not query_title:
-        raise HTTPException(422, "Query parameter 'title' is required.")
+        return JSONResponse(
+            status_code=422,
+            content=error_response(
+                message="Query parameter 'title' is required.",
+                model_name="hybrid",
+                detail="Query parameter 'title' is required."
+            )
+        )
     selected_models = models
 
     if model_version == "staging":
         if not STAGING_MODEL_VERSION:
-            raise HTTPException(404, "No staging model available.")
+            return JSONResponse(
+                status_code=404,
+                content=error_response(
+                    message="No staging model available.",
+                    model_name="hybrid",
+                    detail="No staging model available."
+                )
+            )
 
         selected_models = MODEL_REGISTRY[STAGING_MODEL_VERSION]
 
     elif model_version:
         if model_version not in MODEL_REGISTRY:
-            raise HTTPException(404, "Requested model version not found.")
+            return JSONResponse(
+                status_code=404,
+                content=error_response(
+                    message="Requested model version not found.",
+                    model_name="hybrid",
+                    detail="Requested model version not found."
+                )
+            )
 
         selected_models = MODEL_REGISTRY[model_version]
 
@@ -1639,24 +1698,33 @@ def get_recommendations(
             recs = cold_recs
 
     if not recs:
-        raise HTTPException(404, "Item not found or no recommendations.")
+        return JSONResponse(
+            status_code=404,
+            content=error_response(
+                message="Item not found or no recommendations.",
+                model_name="hybrid",
+                version=model_version or ACTIVE_MODEL_VERSION,
+                detail="Item not found or no recommendations."
+            )
+        )
 
     has_history = False
     if user_id and models.get("collab") is not None:
         has_history = user_id in models["collab"]._user_to_idx
 
-    payload = {
-        "query": query_title,
-        "query_item": query_title,
-        "count": len(recs),
-        "results": recs,
-        "recommendations": recs,
-        "weights": models["hybrid"].get_weights(),
-        "explain": explain,
-        "target_catalog": target_catalog,
-        "model_version": model_version or ACTIVE_MODEL_VERSION,
-        "has_history": has_history,
-    }
+    payload = success_response(
+        recommendations=recs,
+        model_name="hybrid",
+        version=model_version or ACTIVE_MODEL_VERSION,
+        message="Recommendations retrieved successfully",
+        query=query_title,
+        query_item=query_title,
+        weights=models["hybrid"].get_weights(),
+        explain=explain,
+        target_catalog=target_catalog,
+        model_version=model_version or ACTIVE_MODEL_VERSION,
+        has_history=has_history
+    )
 
     if (
         SHADOW_MODEL_VERSION
@@ -1711,6 +1779,7 @@ def get_recommendations(
 
 
 
+
 @app.get("/api/recommend/cold_start")
 def recommend_cold_start(
     response: Response,
@@ -1730,7 +1799,14 @@ def recommend_cold_start(
     blended recommendations based on content TF-IDF similarity and popularity.
     """
     if not models or not models.get('item_df'):
-        raise HTTPException(400, "Models not built or no item catalog available.")
+        return JSONResponse(
+            status_code=400,
+            content=error_response(
+                message="Models not built or no item catalog available.",
+                model_name="cold_start",
+                detail="Models not built or no item catalog available."
+            )
+        )
 
     parts = []
     if title:
@@ -1744,24 +1820,53 @@ def recommend_cold_start(
 
     combined_text = " ".join(parts).strip()
     if not combined_text:
-        raise HTTPException(400, "Provide at least one of title, description, category or tags.")
+        return JSONResponse(
+            status_code=400,
+            content=error_response(
+                message="Provide at least one of title, description, category or tags.",
+                model_name="cold_start",
+                detail="Provide at least one of title, description, category or tags."
+            )
+        )
 
     weights = (float(alpha), float(beta), float(gamma))
     recs = cold_start_recommendation(combined_text, top_n=top_n, weights=weights, target_catalog=target_catalog)
     if not recs:
-        raise HTTPException(404, "No cold-start recommendations available.")
+        return JSONResponse(
+            status_code=404,
+            content=error_response(
+                message="No cold-start recommendations available.",
+                model_name="cold_start",
+                detail="No cold-start recommendations available."
+            )
+        )
 
     # Do not cache cold-start responses by default (content depends on input metadata)
     _set_cache_headers(response, "MISS")
-    return {"query": combined_text, "recommendations": recs, "weights": {"alpha": weights[0], "beta": weights[1], "gamma": weights[2]}}
+    return success_response(
+        recommendations=recs,
+        model_name="cold_start",
+        message="Cold-start recommendations retrieved successfully",
+        query=combined_text,
+        weights={"alpha": weights[0], "beta": weights[1], "gamma": weights[2]}
+    )
+
 
 
 @app.get("/api/user_recommend")
-def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
+@app.get("/api/recommend/user/{user_id}")
+def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), explain: bool = Query(False)):
     """Get hybrid recommendations for a user."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
+        return JSONResponse(
+            status_code=400,
+            content=error_response(
+                message="Models not built. Build first via /api/build.",
+                model_name="collaborative",
+                detail="Models not built. Build first via /api/build."
+            )
+        )
     
     is_fallback = False
     collab = models["hybrid"].collab_model
@@ -1770,12 +1875,15 @@ def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Quer
 
     recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
         
-    return {
-        "query_user": user_id,
-        "recommendations": recs,
-        "fallback": is_fallback,
-        "weights": models["hybrid"].get_weights(),
-    }
+    return success_response(
+        recommendations=recs,
+        model_name="collaborative",
+        message="User recommendations retrieved successfully",
+        query_user=user_id,
+        fallback=is_fallback,
+        weights=models["hybrid"].get_weights()
+    )
+
 
 @app.websocket("/ws/recommendations")
 async def websocket_recommendations(websocket: WebSocket):
@@ -1789,18 +1897,20 @@ async def websocket_recommendations(websocket: WebSocket):
             user_id = data.get("user_id")
 
             if not models.get("ready") or not models.get("hybrid"):
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Models not built yet."
-                })
+                await websocket.send_json(error_response(
+                    message="Models not built yet.",
+                    model_name="hybrid",
+                    type="error"
+                ))
                 continue
 
             recs = models["hybrid"].recommend(item_title, user_id=user_id, top_n=top_n, explain=explain)
-            await websocket.send_json({
-                "type": "recommendations",
-                "query_item": item_title,
-                "recommendations": recs
-            })
+            await websocket.send_json(success_response(
+                recommendations=recs,
+                model_name="hybrid",
+                type="recommendations",
+                query_item=item_title
+            ))
     except WebSocketDisconnect:
         realtime_hub.disconnect(websocket)
     except Exception as e:
@@ -1817,14 +1927,24 @@ def realtime_behavior(
     _csrf: None = Depends(csrf_header_dep),
 ):
     if not models.get("ready") or not models.get("hybrid"):
-        raise HTTPException(status_code=400, detail="Models not built yet. Train the models first.")
+        return JSONResponse(
+            status_code=400,
+            content=error_response(
+                message="Models not built yet. Train the models first.",
+                model_name="realtime",
+                detail="Models not built yet. Train the models first."
+            )
+        )
 
     recs = models["hybrid"].recommend(req.item_title, top_n=req.top_n, explain=req.explain)
-    return {
-        "type": "recommendations",
-        "query_item": req.item_title,
-        "recommendations": recs
-    }
+    return success_response(
+        recommendations=recs,
+        model_name="realtime",
+        message="Realtime recommendations retrieved successfully",
+        type="recommendations",
+        query_item=req.item_title
+    )
+
 
 
 def _json_scalar(value):
@@ -1854,13 +1974,34 @@ def get_similar_items(
         return rate_limited
 
     if not models["ready"] or models["item_df"] is None:
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
+        return JSONResponse(
+            status_code=400,
+            content=error_response(
+                message="Models not built. Build first via /api/build.",
+                model_name="hybrid",
+                detail="Models not built. Build first via /api/build."
+            )
+        )
     item_df = models["item_df"]
     if "id" not in item_df.columns:
-        raise HTTPException(400, "Model data does not include product ids.")
+        return JSONResponse(
+            status_code=400,
+            content=error_response(
+                message="Model data does not include product ids.",
+                model_name="hybrid",
+                detail="Model data does not include product ids."
+            )
+        )
     id_matches = item_df[item_df["id"].astype(str) == str(item_id)]
     if id_matches.empty:
-        raise HTTPException(404, "Item not found.")
+        return JSONResponse(
+            status_code=404,
+            content=error_response(
+                message="Item not found.",
+                model_name="hybrid",
+                detail="Item not found."
+            )
+        )
     source = id_matches.iloc[0]
     source_title = str(source.get("title", ""))
     source_category = source.get("category", "")
@@ -1871,18 +2012,28 @@ def get_similar_items(
         recs = [r for r in recs if str(r.get("category", "")).casefold() == requested_category.casefold()]
     recs = recs[:top_n]
     if not recs:
-        raise HTTPException(404, "No similar items found.")
-    return {
-        "query_item": {
+        return JSONResponse(
+            status_code=404,
+            content=error_response(
+                message="No similar items found.",
+                model_name="hybrid",
+                detail="No similar items found."
+            )
+        )
+    return success_response(
+        recommendations=recs,
+        model_name="hybrid",
+        message="Similar items retrieved successfully",
+        query_item={
             "id": _json_scalar(source.get("id")),
             "title": source_title,
             "category": _json_scalar(source_category),
         },
-        "category_filter": requested_category,
-        "recommendations": recs,
-        "total": len(recs),
-        "explain": explain,
-    }
+        category_filter=requested_category,
+        total=len(recs),
+        explain=explain
+    )
+
 
 
 # ── Similarity Matrix ─────────────────────────────────────────────────
@@ -1970,6 +2121,7 @@ def promote_model(
     models["last_trained_at"] = selected["created_at"]
 
     _clear_response_cache()
+    _publish_model_version(version)
 
     return {
         "message": "Model promoted successfully.",
@@ -2144,13 +2296,41 @@ def get_trending_products(
         .execute()
 
     rows = result.data or []
-
     if not rows:
-        response = {"results": [], "days": days, "limit": limit}
-        TRENDING_CACHE[cache_key] = (now, response)
-        return response
+        try:
+            trending_model = TrendingRecommender()
+
+            trending_products = trending_model.get_trending_products(
+                top_n=limit
+            )
+
+            response = {
+                "results": trending_products,
+                "days": days,
+                "limit": limit,
+                "source": "fallback_dataset"
+            }
+
+            TRENDING_CACHE[cache_key] = (now, response)
+            return response
+
+        except Exception as e:
+            logger.error(
+                "Trending fallback failed: %s",
+                e
+            )
+
+            response = {
+                "results": [],
+                "days": days,
+                "limit": limit
+            }
+
+            TRENDING_CACHE[cache_key] = (now, response)
+            return response
 
     from collections import defaultdict
+
     stats = defaultdict(lambda: {
         "count": 0,
         "ratings": [],

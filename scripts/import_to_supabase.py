@@ -17,6 +17,8 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 def chunked(df, size):
     for start in range(0, len(df), size):
@@ -54,6 +56,10 @@ def build_product_row(row):
 
 def import_dataset(file_path, batch_size=1000, run_sentiment=False):
     """Import a single dataset file into the products table."""
+    file_path_obj = Path(file_path)
+    if not file_path_obj.is_absolute():
+        file_path_obj = (PROJECT_ROOT / file_path_obj).resolve()
+
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
     from src.data.data_adapter import adapt_data
     from src.data.db import get_supabase_admin
@@ -131,7 +137,10 @@ def main():
     data_dir = PROJECT_ROOT / "datasets"
 
     if args.file:
-        files = [Path(args.file)]
+        file_path = Path(args.file)
+        if not file_path.is_absolute():
+            file_path = (PROJECT_ROOT / file_path).resolve()
+        files = [file_path]
     else:
         # Default: import all CSV/JSON files in datasets/
         files = []
