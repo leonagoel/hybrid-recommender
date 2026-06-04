@@ -7,8 +7,19 @@ Run with:
     streamlit run app.py
 """
 
+import os
+import sys
+from pathlib import Path
 import streamlit as st
 import pandas as pd
+
+# ── Dynamic Path Mapping Fix (#490) ──────────────────────────────────────────
+CURRENT_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
+
+# Ensure internal source packages can be imported without directory errors
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.data_adapter import adapt_data, read_file
 from src.model.content_model import ContentRecommender
@@ -46,7 +57,6 @@ with st.sidebar:
         min_value=5, max_value=20, value=10, step=1,
     )
 
-    
     enable_llm_explanations = st.checkbox(
         "🤖 Enable LLM Explanations",
         value=True,
@@ -95,32 +105,31 @@ with st.sidebar:
     gamma = st.slider("γ — Sentiment",      min_value=0.0, max_value=1.0, value=0.25, step=0.05)
     
     # Live Normalized Weight Preview
-weights = {
-    "Content-Based": alpha,
-    "Collaborative": beta,
-    "Sentiment": gamma,
-}
-
-total_weight = sum(weights.values())
-
-st.markdown("### Live Normalized Weight Preview")
-
-if total_weight <= 0:
-    st.warning("All weights are set to zero. Please increase at least one weight to see the normalized distribution.")
-else:
-    normalized_weights = {
-        name: value / total_weight
-        for name, value in weights.items()
+    weights = {
+        "Content-Based": alpha,
+        "Collaborative": beta,
+        "Sentiment": gamma,
     }
 
-    for name, value in normalized_weights.items():
-        st.write(f"**{name}:** {value:.2f}")
-        st.progress(value)
+    total_weight = sum(weights.values())
 
-    st.success(
-        f"Total Normalized Weight: {sum(normalized_weights.values()):.2f}"
-    )
+    st.markdown("### Live Normalized Weight Preview")
 
+    if total_weight <= 0:
+        st.warning("All weights are set to zero. Please increase at least one weight to see the normalized distribution.")
+    else:
+        normalized_weights = {
+            name: value / total_weight
+            for name, value in weights.items()
+        }
+
+        for name, value in normalized_weights.items():
+            st.write(f"**{name}:** {value:.2f}")
+            st.progress(value)
+
+        st.success(
+            f"Total Normalized Weight: {sum(normalized_weights.values()):.2f}"
+        )
 
     total_weight = alpha + beta + gamma
     if total_weight == 0:
@@ -143,7 +152,7 @@ else:
         col.metric(label, f"{value:.3f}")
         col.progress(value)
 
-    if st.button("Apply Weights", width='stretch'):
+    if st.button("Apply Weights", key="apply_weights_btn"):
         if st.session_state.hybrid_model is not None:
             st.session_state.hybrid_model.set_weights(alpha, beta, gamma)
             st.success("Weights updated!")
@@ -180,7 +189,7 @@ if uploaded_file is not None:
         st.success(f"✅ Dataset loaded — {len(adapted_df):,} rows detected.")
 
         with st.expander("Preview adapted data"):
-            st.dataframe(adapted_df.head(10), width='stretch')
+            st.dataframe(adapted_df.head(10))
 
         with st.expander("Detected columns"):
             detected = {k: v for k, v in meta.items() if k.endswith("_col") and v is not None}
@@ -193,7 +202,7 @@ st.header("2️⃣  Build Models")
 if st.session_state.adapted_df is None:
     st.info("Upload a dataset above to enable model building.")
 else:
-    if st.button("🔨 Build Models", width='stretch'):
+    if st.button("🔨 Build Models"):
         adapted_df = st.session_state.adapted_df
         meta       = st.session_state.meta
 
@@ -207,9 +216,7 @@ else:
                 if meta["has_user_data"] and adapted_df["user_id"].nunique() > 1:
                     collab_model = CollaborativeRecommender(adapted_df)
 
-                # Build CausalConfig from sidebar settings.
-                # CausalConfig.disabled() is used when the toggle is off so the
-                # debiaser is never constructed, keeping build time identical.
+                # Build CausalConfig from sidebar settings
                 causal_cfg = (
                     CausalConfig(enabled=True, blend_lambda=causal_lambda, clip_max=causal_clip)
                     if enable_causal
@@ -230,8 +237,7 @@ else:
                 if collab_model is not None:
                     st.success("✅ Content model and Collaborative model trained. Hybrid mode active.")
                 else:
-                    st.success("✅ Content model trained. "
-                               "Collaborative model skipped (dataset needs more than one unique user).")
+                    st.success("✅ Content model trained. Collaborative model skipped (dataset needs more than one unique user).")
 
                 # Show causal diagnostics immediately after build
                 if enable_causal and hybrid_model._debiaser is not None:
@@ -258,7 +264,7 @@ else:
         placeholder="e.g. Item Name or user_id",
     )
 
-    submitted = st.button("🚀 Get Recommendations", width='content')
+    submitted = st.button("🚀 Get Recommendations")
 
     if submitted:
         if not query.strip():
@@ -325,16 +331,16 @@ else:
                     else:
                         item_title = exact.iloc[0]
 
-                    recs = hybrid_model.recommend(item_title, top_n=top_n)
+                recs = hybrid_model.recommend(item_title,top_n=top_n,explain=True)
 
-                    if collab_model is None:
+                if collab_model is None:
                         badge       = "📄 CONTENT-BASED"
                         badge_color = "green"
-                    else:
+                else:
                         badge       = "🔀 HYBRID"
                         badge_color = "violet"
                     
-                    query_item_for_explanation = item_title
+                query_item_for_explanation = item_title
 
                 # ── Generate LLM explanations if enabled ──────────────────
                 if enable_llm_explanations and st.session_state.explainer and recs:
@@ -421,6 +427,28 @@ else:
                             st.write(f"**💡 Why this match:** {explanation}")
                         else:
                             st.write("*Explanation not available*")
+                        # Explainable AI Dashboard
+                        exp = rec.get("explanation")
+
+                        if exp:
+                            with st.expander("📊 Explainable AI Dashboard", expanded=False):
+
+                                st.subheader("Model Weights")
+                                st.json(exp.get("active_weights", {}))
+
+                                st.subheader("Component Scores")
+                                st.json(exp.get("component_scores", {}))
+
+                                st.subheader("Weighted Contributions")
+                                st.json(exp.get("weighted_components", {}))
+
+                                st.subheader("Signals")
+                                st.json(exp.get("signals", {}))
+
+                                terms = exp.get("top_content_terms", [])
+                                if terms:
+                                    st.subheader("Top Content Terms")
+                                    st.write(", ".join(map(str, terms)))
 
                         st.divider()
 

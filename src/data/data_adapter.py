@@ -5,7 +5,6 @@ used by all recommender models.
 """
 
 import pandas as pd
-import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
@@ -311,77 +310,9 @@ def read_file(path_or_buffer, file_format=None):
 def adapt_data(df):
     """
     Adapt any DataFrame into unified schema (case‑insensitive column matching).
-    """
-    """Adapt a preprocessed DataFrame into the unified schema used by all models.
 
-    This function handles schema adaptation ONLY: column detection,
-    renaming to canonical names, and filling missing required fields.
-
-    It does NOT run preprocessing (encoding, normalisation, deduplication).
-    DatasetManager.load_csv() already calls preprocess() before this
-    function. Running preprocessing a second time here caused:
-    raw_columns = df.columns
-    raw_title_col = detect_column(
-        raw_columns,
-        ['title', 'name', 'product_name', 'item_name']
-    )
-    raw_user_col = detect_column(
-        raw_columns,
-        ['user_id', 'user', 'reviewer', 'customer']
-    )
-    raw_rating_col = detect_column(
-        raw_columns,
-        ['rating', 'score', 'stars']
-    )
-    raw_item_id_col = detect_column(
-        raw_columns,
-        ['item_id', 'product_id', 'asin',
-         'isbn', 'book_id', 'movie_id']
-    )
-    if raw_user_col is not None or raw_rating_col is not None or raw_item_id_col is not None:
-        validate_recommender_inputs(
-            df,
-            user_col=raw_user_col,
-            item_id_col=raw_item_id_col,
-            title_col=raw_title_col,
-            rating_col=raw_rating_col,
-        )
-
-    # ── Decide which preprocessing pipeline to use (case‑insensitive) ──
-    columns = df.columns
-    # Books dataset detection
-    authors_col = detect_column(columns, ['authors'])
-    publisher_col = detect_column(columns, ['publisher'])
-    if authors_col is not None or publisher_col is not None:
-        df = preprocess_books_data(df)
-
-    # Ratings dataset detection (user_id and rating)
-    user_col = detect_column(columns, ['user_id', 'user', 'reviewer', 'customer'])
-    rating_col = detect_column(columns, ['rating', 'score', 'stars'])
-    if user_col is not None and rating_col is not None:
-        df = preprocess_ratings_data(df)
-
-    # Sentiment dataset detection
-    sentiment_col = detect_column(columns, ['sentiment'])
-    if sentiment_col is not None:
-        df = preprocess_sentiment_data(df)
-    # Apply preprocessing automatically
-
-    - LabelEncoder re-encoding already-integer columns with a different
-      mapping on every load (inconsistent encodings across sessions).
-    - MinMaxScaler re-scaling an already 0-1 ``rating_normalized`` column,
-      collapsing all rating variance to std == 0 (flat distribution).
-
-    Correct pipeline order enforced by DatasetManager.load_csv()::
-
-        raw_df -> preprocess(raw_df) -> adapt_data(preprocessed_df)
-
-    Args:
-        df: A preprocessed DataFrame (output of preprocess()).
-
-    Returns:
-        Tuple of (adapted_df, meta) where adapted_df uses canonical column
-        names and meta is a dict of detected mappings and dataset flags.
+    This function handles schema adaptation: column detection, renaming to
+    canonical names, and filling missing required fields.
     """
 
     # Apply early header case deduplication loop tracking array states
@@ -399,9 +330,14 @@ def adapt_data(df):
 
     desc_col = detect_column(
         columns,
-        ['desc', 'summary', 'overview', 'about']
+        [
+            'description',
+            'desc',
+            'summary',
+            'overview',
+            'about'
+        ]
     )
-
     user_col = detect_column(
         columns,
         ['user_id', 'user', 'reviewer', 'customer']
