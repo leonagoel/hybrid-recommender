@@ -757,6 +757,7 @@ Run:
 
 ```bash
 python scripts/generate_kg_embeddings.py
+```
 
 ---
 
