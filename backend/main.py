@@ -80,6 +80,7 @@ from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
+from src.model.trending_model import TrendingRecommender
 from src.model.issue_triage import triage_issue
 from src.model.federated_learning import train_federated_collaborative_model
 
@@ -472,6 +473,8 @@ def _require_admin_access(request: Request) -> None:
     )
     if not provided_token or not secrets.compare_digest(provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
+    def _admin_access_dep(request: Request):
+        _require_admin_access(request)
 
 
 CORS_ORIGINS_ENV = "CORS_ORIGINS"
@@ -2103,13 +2106,41 @@ def get_trending_products(
         .execute()
 
     rows = result.data or []
-
     if not rows:
-        response = {"results": [], "days": days, "limit": limit}
-        TRENDING_CACHE[cache_key] = (now, response)
-        return response
+        try:
+            trending_model = TrendingRecommender()
+
+            trending_products = trending_model.get_trending_products(
+                top_n=limit
+            )
+
+            response = {
+                "results": trending_products,
+                "days": days,
+                "limit": limit,
+                "source": "fallback_dataset"
+            }
+
+            TRENDING_CACHE[cache_key] = (now, response)
+            return response
+
+        except Exception as e:
+            logger.error(
+                "Trending fallback failed: %s",
+                e
+            )
+
+            response = {
+                "results": [],
+                "days": days,
+                "limit": limit
+            }
+
+            TRENDING_CACHE[cache_key] = (now, response)
+            return response
 
     from collections import defaultdict
+
     stats = defaultdict(lambda: {
         "count": 0,
         "ratings": [],
