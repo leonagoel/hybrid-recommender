@@ -184,7 +184,7 @@ MOCK_PRODUCTS = [
     },
 ]
 
-=======
+
 _model_lock = Lock()
 
 
@@ -2418,4 +2418,4 @@ if os.path.isdir(frontend_dir):
     @app.get("/dashboard.html")
     def serve_dashboard():
         return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
->>>>>>> 017b7da (Fix race condition in concurrent recommendation requests)
+
