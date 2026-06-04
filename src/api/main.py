@@ -181,8 +181,7 @@ def get_recommendations(req: RecommendationRequest):
 
         except Exception as fallback_exc:
             logger.critical(
-                f"Critical System Outage: Fallback engine failed: {
-                    str(fallback_exc)}")
+                f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
             raise HTTPException(
                 status_code=500,
                 detail="Recommendation engine completely offline.")

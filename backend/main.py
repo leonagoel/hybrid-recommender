@@ -1562,8 +1562,7 @@ def train_federated(
     except Exception as e:
         logger.error("Federated training execution failed: %s", e)
         raise HTTPException(
-            500, f"Federated training execution failed: {
-                str(e)}")
+            500, f"Federated training execution failed: {str(e)}")
 
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
