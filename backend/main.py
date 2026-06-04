@@ -1876,7 +1876,7 @@ import hashlib
 def _verify_github_signature(request_body: bytes, signature_header: str | None) -> None:
     secret = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
     if not secret:
-        return
+        raise HTTPException(status_code=500, detail="Webhook secret not configured.")
     if not signature_header:
         raise HTTPException(status_code=401, detail="Signature header X-Hub-Signature-256 missing.")
     if not signature_header.startswith("sha256="):
