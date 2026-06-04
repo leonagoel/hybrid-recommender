@@ -5,7 +5,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 
-    from src.data.dataset_manager import DatasetManager
+from src.data.dataset_manager import DatasetManager
     print("1. Loading dataset...")
     from dataset_manager import DatasetManager
 """Quick smoke test for the full pipeline."""
@@ -76,5 +76,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
     main()
