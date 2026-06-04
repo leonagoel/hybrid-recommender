@@ -10,6 +10,7 @@ tqdm
 fastapi
 uvicorn[standard]
 python-multipart
+bleach
 # Database & auth
 supabase
 python-dotenv
