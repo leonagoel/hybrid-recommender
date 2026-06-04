@@ -12,7 +12,6 @@ __all__ = ["CollaborativeRecommender"]
 
 import logging
 import numpy as np
-import pandas as pd
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import coo_matrix
@@ -34,8 +33,12 @@ class CollaborativeRecommender:
         self.users = self.df['user_id'].astype('category')
         self.titles = self.df['title'].astype('category')
 
-        self._user_to_idx = {u: i for i, u in enumerate(self.users.cat.categories)}
-        self._title_to_idx = {t: i for i, t in enumerate(self.titles.cat.categories)}
+        self._user_to_idx = {
+            u: i for i, u in enumerate(
+                self.users.cat.categories)}
+        self._title_to_idx = {
+            t: i for i, t in enumerate(
+                self.titles.cat.categories)}
         self.title_list = list(self.titles.cat.categories)
 
         # Build sparse user-item matrix
@@ -48,9 +51,11 @@ class CollaborativeRecommender:
         if use_implicit:
             alpha_implicit = 0.5
             if 'purchases' in self.df.columns:
-                data = data + alpha_implicit * self.df['purchases'].fillna(0).values
+                data = data + alpha_implicit * \
+                    self.df['purchases'].fillna(0).values
             if 'views' in self.df.columns:
-                data = data + (alpha_implicit * 0.5) * self.df['views'].fillna(0).values
+                data = data + (alpha_implicit * 0.5) * \
+                    self.df['views'].fillna(0).values
 
         n_users = len(self._user_to_idx)
         n_items = len(self._title_to_idx)
@@ -60,12 +65,15 @@ class CollaborativeRecommender:
 
         # Adaptive rank: reduce factors dynamically for sparse matrices
         min_dim = min(self.user_item_sparse.shape)
-        density = self.user_item_sparse.nnz / (n_users * n_items) if (n_users * n_items) > 0 else 0
+        density = self.user_item_sparse.nnz / \
+            (n_users * n_items) if (n_users * n_items) > 0 else 0
 
-        # FIX FOR ISSUE #483: Prevent array out-of-bounds collapse on small matrices
+        # FIX FOR ISSUE #483: Prevent array out-of-bounds collapse on small
+        # matrices
         if min_dim <= 2:
             self.svd = None
-            # Matching shapes perfectly to prevent slice dimensionality failures inside recommend()
+            # Matching shapes perfectly to prevent slice dimensionality
+            # failures inside recommend()
             self.user_factors = np.ones((n_users, 1))
             self.item_factors = np.ones((1, n_items))
         else:
@@ -76,16 +84,20 @@ class CollaborativeRecommender:
             else:
                 n_components = min(n_factors, min_dim - 1)
 
-            # Keep n_components safely below absolute matrix dimension boundaries
+            # Keep n_components safely below absolute matrix dimension
+            # boundaries
             n_components = min(n_components, n_users - 1, n_items - 1)
             n_components = max(1, n_components)
 
             try:
-                self.svd = TruncatedSVD(n_components=n_components, random_state=42)
-                self.user_factors = self.svd.fit_transform(self.user_item_sparse)
+                self.svd = TruncatedSVD(
+                    n_components=n_components, random_state=42)
+                self.user_factors = self.svd.fit_transform(
+                    self.user_item_sparse)
                 self.item_factors = self.svd.components_
             except ValueError:
-                # Safe baseline fallback if SVD initialization constraints fail on edge-case data shapes
+                # Safe baseline fallback if SVD initialization constraints fail
+                # on edge-case data shapes
                 self.svd = None
                 self.user_factors = np.ones((n_users, 1))
                 self.item_factors = np.ones((1, n_items))
@@ -93,7 +105,8 @@ class CollaborativeRecommender:
         # Build catalog map if catalog column is present in interaction_df
         self._catalog_map = {}
         if 'catalog' in self.df.columns:
-            self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+            self._catalog_map = self.df.groupby(
+                'title')['catalog'].first().to_dict()
 
     def recommend(self, title, top_n=10, target_catalog=None):
         """
@@ -147,9 +160,10 @@ class CollaborativeRecommender:
         top_n = min(top_n, 100)
 
         if user_id not in self._user_to_idx:
-            logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
+            logger.info(
+                "Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.",
+                user_id)
             return self._popularity_fallback(top_n)
-            
 
         u_idx = self._user_to_idx[user_id]
         user_vec = self.user_factors[u_idx]
@@ -183,31 +197,34 @@ class CollaborativeRecommender:
             return None
         u_idx = self._user_to_idx[user_id]
         i_idx = self._title_to_idx[title]
-        return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
-    
+        return float(
+            np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
+
     def _popularity_fallback(self, top_n=10):
-        # Fallback for cold-start users — top-N by interaction count (popularity)
+        # Fallback for cold-start users — top-N by interaction count
+        # (popularity)
         import logging
         logger = logging.getLogger(__name__)
         logger.info("Using popularity-based fallback for cold-start user.")
-    
-        item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
-    
+
+        item_counts = self.df.groupby('title')['rating'].agg(
+            ['mean', 'count']).reset_index()
+
         # Bayesian rating
         global_avg = item_counts['mean'].mean()
         m = 5
         item_counts['bayesian'] = (
-            (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +
+            (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +  # noqa: W504
             (m / (item_counts['count'] + m)) * global_avg
         )
-    
+
         top_items = item_counts.nlargest(top_n, 'bayesian')
-    
+
         return [
-        {
-            'title': row['title'],
-            'predicted_score': round(float(row['bayesian']), 4),
-            'fallback': True
-        }
-        for _, row in top_items.iterrows()
+            {
+                'title': row['title'],
+                'predicted_score': round(float(row['bayesian']), 4),
+                'fallback': True
+            }
+            for _, row in top_items.iterrows()
         ]

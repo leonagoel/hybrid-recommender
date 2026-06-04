@@ -38,7 +38,8 @@ def test_cors_origin_parser_rejects_unsafe_values(raw_value, expected_message):
 
 
 def test_cors_policy_uses_explicit_allowlists():
-    assert ALLOWED_CORS_METHODS == ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    assert ALLOWED_CORS_METHODS == [
+        "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
     assert ALLOWED_CORS_HEADERS == [
         "Accept",
         "Authorization",

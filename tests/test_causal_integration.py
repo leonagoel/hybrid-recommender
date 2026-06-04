@@ -11,6 +11,13 @@ Covers:
 
 Run with: pytest tests/test_causal_integration.py -v
 """
+from src.evaluation.causal_evaluation import compare_causal_vs_baseline, score_key_distribution
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.model.causal_config import CausalConfig
+from src.model.causal_model import CausalDebiaser
+from src.model.propensity_model import PropensityModel
 import sys
 import os
 
@@ -20,14 +27,6 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from src.model.propensity_model import PropensityModel
-from src.model.causal_model import CausalDebiaser
-from src.model.causal_config import CausalConfig
-from src.model.hybrid_model import HybridRecommender
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.evaluation.causal_evaluation import compare_causal_vs_baseline, score_key_distribution
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -36,13 +35,13 @@ from src.evaluation.causal_evaluation import compare_causal_vs_baseline, score_k
 @pytest.fixture
 def item_df():
     return pd.DataFrame({
-        "title":        ["Blockbuster A", "Blockbuster B", "Niche C", "Niche D", "Rare E"],
-        "review_count": [5000,             4000,            50,        30,         5],
-        "category":     ["Electronics",    "Electronics",   "Books",   "Books",    "Art"],
-        "rating":       [4.5,              4.2,             4.8,       4.7,        4.9],
-        "avg_sentiment":[0.6,              0.5,             0.7,       0.8,        0.9],
-        "description":  ["Popular gadget", "Another gadget","Rare book","Rare book","Art piece"],
-        "combined":     [
+        "title": ["Blockbuster A", "Blockbuster B", "Niche C", "Niche D", "Rare E"],
+        "review_count": [5000, 4000, 50, 30, 5],
+        "category": ["Electronics", "Electronics", "Books", "Books", "Art"],
+        "rating": [4.5, 4.2, 4.8, 4.7, 4.9],
+        "avg_sentiment": [0.6, 0.5, 0.7, 0.8, 0.9],
+        "description": ["Popular gadget", "Another gadget", "Rare book", "Rare book", "Art piece"],
+        "combined": [
             "Blockbuster A Popular gadget Electronics",
             "Blockbuster B Another gadget Electronics",
             "Niche C Rare book Books",
@@ -56,8 +55,8 @@ def item_df():
 def interaction_df():
     return pd.DataFrame({
         "user_id": ["u1", "u1", "u2", "u2", "u3"],
-        "title":   ["Blockbuster A", "Blockbuster B", "Niche C", "Niche D", "Rare E"],
-        "rating":  [5.0, 4.0, 5.0, 4.5, 5.0],
+        "title": ["Blockbuster A", "Blockbuster B", "Niche C", "Niche D", "Rare E"],
+        "rating": [5.0, 4.0, 5.0, 4.5, 5.0],
     })
 
 
@@ -149,7 +148,8 @@ class TestCausalDebiaserDelegation:
     def test_get_ips_weight_delegates(self, item_df):
         d = CausalDebiaser(item_df, clip_max=4.0)
         for title in item_df["title"]:
-            assert d.get_ips_weight(title) == d._propensity_model.get_ips_weight(title, 4.0)
+            assert d.get_ips_weight(
+                title) == d._propensity_model.get_ips_weight(title, 4.0)
 
     def test_summary_includes_lambda_and_clip(self, item_df):
         d = CausalDebiaser(item_df, blend_lambda=0.3, clip_max=7.0)
@@ -181,7 +181,10 @@ class TestScoreKeyWiring:
         content = ContentRecommender(item_df)
         collab = CollaborativeRecommender(interaction_df)
         # Inject a custom score_key — the debiaser should operate on it
-        cfg = CausalConfig(enabled=True, blend_lambda=0.5, score_key="hybrid_score")
+        cfg = CausalConfig(
+            enabled=True,
+            blend_lambda=0.5,
+            score_key="hybrid_score")
         model = HybridRecommender(content, collab, item_df, causal_config=cfg)
         assert model._causal_config.score_key == "hybrid_score"
         recs = model.recommend("Blockbuster A", top_n=3)
@@ -202,7 +205,8 @@ class TestRecommendForUserCausal:
             causal_config=CausalConfig(enabled=True, blend_lambda=0.5),
         )
         recs = model.recommend_for_user("u1", top_n=3)
-        # If causal is enabled and results are returned, causal keys must be present
+        # If causal is enabled and results are returned, causal keys must be
+        # present
         if recs:
             for r in recs:
                 assert "causal_score" in r, "causal_score missing from recommend_for_user output"
@@ -243,7 +247,8 @@ class TestAPIThreadSafety:
     so causal config is never shared across concurrent calls.
     """
 
-    def test_two_requests_with_different_causal_settings(self, item_df, interaction_df):
+    def test_two_requests_with_different_causal_settings(
+            self, item_df, interaction_df):
         """
         Simulate two concurrent requests: one with causal ON, one with causal OFF.
         Each must produce independent results without cross-contamination.
@@ -274,7 +279,8 @@ class TestAPIThreadSafety:
         # The two models must not share the same _debiaser instance
         assert model_causal._debiaser is not model_plain._debiaser
 
-    def test_causal_model_does_not_mutate_content_model(self, item_df, interaction_df):
+    def test_causal_model_does_not_mutate_content_model(
+            self, item_df, interaction_df):
         """ContentRecommender is shared read-only — causal layer must not modify it."""
         content = ContentRecommender(item_df)
         collab = CollaborativeRecommender(interaction_df)
@@ -298,7 +304,8 @@ class TestAPIThreadSafety:
 
 class TestCausalEvaluation:
 
-    def test_compare_returns_expected_keys(self, causal_model, baseline_model, item_df):
+    def test_compare_returns_expected_keys(
+            self, causal_model, baseline_model, item_df):
         query_titles = ["Blockbuster A", "Niche C"]
         result = compare_causal_vs_baseline(
             causal_model, baseline_model, item_df, query_titles, top_n=3
@@ -312,7 +319,8 @@ class TestCausalEvaluation:
         }
         assert expected_keys.issubset(result.keys())
 
-    def test_n_queries_matches_valid_queries(self, causal_model, baseline_model, item_df):
+    def test_n_queries_matches_valid_queries(
+            self, causal_model, baseline_model, item_df):
         query_titles = ["Blockbuster A", "Niche C", "nonexistent_item_xyz"]
         result = compare_causal_vs_baseline(
             causal_model, baseline_model, item_df, query_titles, top_n=3
@@ -320,34 +328,39 @@ class TestCausalEvaluation:
         # nonexistent_item_xyz returns no recs from either model — excluded
         assert result["n_queries"] <= len(query_titles)
 
-    def test_coverage_values_in_range(self, causal_model, baseline_model, item_df):
+    def test_coverage_values_in_range(
+            self, causal_model, baseline_model, item_df):
         result = compare_causal_vs_baseline(
             causal_model, baseline_model, item_df, ["Blockbuster A"], top_n=3
         )
         assert 0.0 <= result["causal_coverage"] <= 1.0
         assert 0.0 <= result["baseline_coverage"] <= 1.0
 
-    def test_diversity_values_in_range(self, causal_model, baseline_model, item_df):
+    def test_diversity_values_in_range(
+            self, causal_model, baseline_model, item_df):
         result = compare_causal_vs_baseline(
             causal_model, baseline_model, item_df, ["Blockbuster A"], top_n=3
         )
         assert 0.0 <= result["causal_diversity"] <= 1.0
         assert 0.0 <= result["baseline_diversity"] <= 1.0
 
-    def test_score_key_distribution_returns_expected_keys(self, causal_model, item_df):
+    def test_score_key_distribution_returns_expected_keys(
+            self, causal_model, item_df):
         result = score_key_distribution(
             causal_model, item_df, ["Blockbuster A"], top_n=3
         )
         for key in ("mean", "std", "min", "max", "n_scores"):
             assert key in result
 
-    def test_score_key_distribution_scores_in_bounds(self, causal_model, item_df):
+    def test_score_key_distribution_scores_in_bounds(
+            self, causal_model, item_df):
         result = score_key_distribution(
             causal_model, item_df, ["Blockbuster A", "Niche C"], top_n=3
         )
         assert 0.0 <= result["min"] <= result["max"] <= 1.0
 
-    def test_empty_query_list_returns_zero_queries(self, causal_model, baseline_model, item_df):
+    def test_empty_query_list_returns_zero_queries(
+            self, causal_model, baseline_model, item_df):
         result = compare_causal_vs_baseline(
             causal_model, baseline_model, item_df, [], top_n=3
         )

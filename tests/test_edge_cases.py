@@ -7,22 +7,28 @@ from fastapi import FastAPI
 app = FastAPI()
 models = {"ready": False}
 
+
 @app.get("/api/recommend")
 def get_recommendations(title: str = None):
     # Yeh wahi logic hai jo aapne main.py ke line 35 par likha hai!
     if not models or "ready" not in models or not models["ready"]:
         from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
+        raise HTTPException(
+            status_code=400,
+            detail="Models not built or dynamic dataset is empty.")
     return {"recommendations": []}
+
 
 @pytest.fixture
 def client():
     return TestClient(app)
 
+
 def test_recommendation_empty_or_not_ready_models(client):
     """Verify that the 400 error is raised when models are not ready."""
     models["ready"] = False
     response = client.get("/api/recommend?title=Inception")
-    
+
     assert response.status_code == 400
-    assert "Models not built or dynamic dataset is empty." in response.json()["detail"]
+    assert "Models not built or dynamic dataset is empty." in response.json()[
+        "detail"]

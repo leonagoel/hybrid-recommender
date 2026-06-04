@@ -2,13 +2,6 @@
 Unit tests for data_preprocessing module.
 Run with: pytest tests/ -v
 """
-import pytest
-import pandas as pd
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from src.data.data_preprocessing import (
     handle_missing_values,
     remove_duplicates,
@@ -16,6 +9,12 @@ from src.data.data_preprocessing import (
     encode_categorical,
     preprocess,
 )
+import pytest
+import pandas as pd
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -101,7 +100,7 @@ class TestPreprocess:
         assert 'rating_normalized' in result.columns
 
 
-# ─── Edge Cases ────────────────────────────────────────────────────────────────
+# ─── Edge Cases ─────────────────────────────────────────────────────────
 
 class TestHandleMissingValuesEdgeCases:
     def test_empty_dataframe(self):

@@ -2,15 +2,6 @@
 Unit tests for the data_adapter module.
 Tests CSV/JSON reading and schema adaptation functions.
 """
-import pytest
-import pandas as pd
-import json
-import tempfile
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from src.data.data_adapter import (
     detect_column,
     validate_dataframe,
@@ -21,6 +12,14 @@ from src.data.data_adapter import (
     preprocess_ratings_data,
     preprocess_sentiment_data,
 )
+import pytest
+import pandas as pd
+import json
+import tempfile
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
 class TestDetectColumn:
@@ -133,27 +132,30 @@ class TestValidateRecommenderInputs:
                 item_id_col="item_id",
                 rating_col="rating"
             )
+
+
 class TestHasBlankValues:
 
     def test_no_blanks_returns_false(self):
         from src.data.data_adapter import _has_blank_values
         s = pd.Series(['a', 'b', 'c'])
-        assert not _has_blank_values(s)   
+        assert not _has_blank_values(s)
 
     def test_nan_returns_true(self):
         from src.data.data_adapter import _has_blank_values
         s = pd.Series(['a', None, 'c'])
-        assert _has_blank_values(s)      
+        assert _has_blank_values(s)
 
     def test_empty_string_returns_true(self):
         from src.data.data_adapter import _has_blank_values
         s = pd.Series(['a', '', 'c'])
-        assert _has_blank_values(s)       
+        assert _has_blank_values(s)
 
     def test_whitespace_only_returns_true(self):
         from src.data.data_adapter import _has_blank_values
         s = pd.Series(['a', '   ', 'c'])
-        assert _has_blank_values(s)      
+        assert _has_blank_values(s)
+
 
 class TestReadFile:
     """Test read_file function."""

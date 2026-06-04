@@ -1,10 +1,11 @@
-import os
-os.environ["TESTING"] = "true" 
-
-from fastapi.testclient import TestClient
 from backend import main
+from fastapi.testclient import TestClient
+import os
+os.environ["TESTING"] = "true"
+
 
 client = TestClient(main.app)
+
 
 def get_csrf_token():
     """
@@ -15,6 +16,7 @@ def get_csrf_token():
     token = response.json()["csrfToken"]
     client.cookies.set("csrftoken", token)  # Cookie bhi set karo
     return token
+
 
 class _FakeInsertResult:
     def __init__(self, data):
@@ -69,21 +71,37 @@ class _FakeSupabase:
 
 
 def test_submit_feedback_validation_failures():
-    #Test: Invalid inputs should return 422 (Validation Error).Empty user_id, item, feedback — should fail.
+    # Test: Invalid inputs should return 422 (Validation Error).Empty user_id,
+    # item, feedback — should fail.
     token = get_csrf_token()
     headers = {"x-csrf-token": token}
     print("Token:", token)  # debug
     print("Headers:", headers)  # debug
     # Empty user_id should fail
-    response = client.post("/api/feedback", json={"user_id": "", "item": "item1", "feedback": "Good"})
+    response = client.post(
+        "/api/feedback",
+        json={
+            "user_id": "",
+            "item": "item1",
+            "feedback": "Good"})
     assert response.status_code == 422
 
     # Empty item should fail
-    response = client.post("/api/feedback", json={"user_id": "user123", "item": "", "feedback": "Good"})
+    response = client.post(
+        "/api/feedback",
+        json={
+            "user_id": "user123",
+            "item": "",
+            "feedback": "Good"})
     assert response.status_code == 422
 
     # Empty feedback should fail
-    response = client.post("/api/feedback", json={"user_id": "user123", "item": "item1", "feedback": ""})
+    response = client.post(
+        "/api/feedback",
+        json={
+            "user_id": "user123",
+            "item": "item1",
+            "feedback": ""})
     assert response.status_code == 422
 
 
@@ -93,11 +111,15 @@ def test_submit_feedback_success(monkeypatch):
 
     response = client.post(
         "/api/feedback",
-        json={"user_id": "user123", "item": "item1", "feedback": "Excellent service!","thumbs": "up"}
+        json={
+            "user_id": "user123",
+            "item": "item1",
+            "feedback": "Excellent service!",
+            "thumbs": "up"}
     )
-    print("Response:", response.json()) 
+    print("Response:", response.json())
     assert response.status_code == 200
-    
+
     payload = response.json()
     assert "message" in payload
     assert payload["message"] == "Feedback submitted successfully"
@@ -116,7 +138,10 @@ def test_submit_feedback_fails_when_storage_unavailable(monkeypatch):
 
     response = client.post(
         "/api/feedback",
-        json={"user_id": "user123", "item": "item1", "feedback": "Excellent service!"}
+        json={
+            "user_id": "user123",
+            "item": "item1",
+            "feedback": "Excellent service!"}
     )
     assert response.status_code == 500
     assert response.json()["detail"] == "Feedback storage is unavailable."

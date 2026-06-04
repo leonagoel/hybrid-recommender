@@ -1,43 +1,18 @@
 from __future__ import annotations
-
-"""
-FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
-Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
-"""
-import os
-import re
-import sys
-import io
-import time
-import logging
-import math
-import secrets
-from urllib.parse import urlsplit
-import json
-from redis import Redis
-from redis.exceptions import RedisError
-
-try:
-    import bleach
-except ModuleNotFoundError:
-    class bleach:
-        @staticmethod
-        def clean(value, strip=True):
-            if not strip:
-                return str(value)
-            return re.sub(r"<[^>]*>", "", str(value))
-
-from collections import deque, Counter
-from threading import Lock
-from datetime import datetime, timezone, timedelta
-
-from collections import defaultdict
-
-import nltk
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
+from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
+from src.model.federated_learning import train_federated_collaborative_model
+from src.model.hybrid_model import HybridRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.content_model import ContentRecommender
+from src.data.data_adapter import adapt_data, read_file
+from src.data.db import get_supabase, get_supabase_admin
+from dotenv import load_dotenv
+from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional  # noqa: F811
+from pydantic import BaseModel  # noqa: F811
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import (
     FastAPI,
     Depends,
@@ -51,14 +26,43 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
-from typing import Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
-from dotenv import load_dotenv
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+import nltk
+from datetime import datetime, timezone, timedelta
+from threading import Lock
+from collections import deque, Counter
+from redis.exceptions import RedisError
+import json
+from urllib.parse import urlsplit
+import secrets
+import math
+import logging
+import time
+import io
+import sys
+import re
+
+"""
+FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
+Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
+"""
+import os
+_redis_client = None
+_redis_client = None
+
+try:
+    import bleach
+except ModuleNotFoundError:
+    class bleach:
+        @staticmethod
+        def clean(value, strip=True):
+            if not strip:
+                return str(value)
+            return re.sub(r"<[^>]*>", "", str(value))
+
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
 
 load_dotenv()
 
@@ -68,24 +72,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from celery.result import AsyncResult
-from celery_app import celery_app
-from tasks import compute_recommendations
-
 
 # backend/main.py — corrected imports
-from src.data.db import get_supabase, get_supabase_admin
-from src.data.data_adapter import adapt_data, read_file
-from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.hybrid_model import HybridRecommender
-from src.model.issue_triage import triage_issue
-from src.model.federated_learning import train_federated_collaborative_model
-
-from functools import lru_cache
-
-from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
 
 
 # ── OpenAPI CSRF header dependency ────────────────────────────────────
@@ -128,6 +116,7 @@ from src.api.exceptions import register_exception_handlers
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 register_exception_handlers(app)
 
+
 @app.on_event("startup")
 def download_nltk_assets():
     """
@@ -147,7 +136,10 @@ RESPONSE_TIME_HEADER = "X-Response-Time-ms"
 DEFAULT_SLOW_RESPONSE_THRESHOLD_MS = 1000.0
 CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
-MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
+MAX_UPLOAD_BYTES = int(
+    os.environ.get(
+        "MAX_UPLOAD_BYTES", str(
+            5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
 _response_cache: dict = {}
 _cache_hits = 0
@@ -193,7 +185,8 @@ MOCK_PRODUCTS = [
 
 def _get_slow_response_threshold_ms() -> float:
     try:
-        return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
+        return float(os.environ.get("RESPONSE_TIME_SLOW_MS",
+                     DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
@@ -206,9 +199,10 @@ def _get_cached_response(key: str):
     global _cache_hits, _cache_misses   # Move globals to the top
 
     try:
-        cached = _redis_client.get(key)
-        if cached is not None:
-            return json.loads(cached)
+        if _redis_client:
+            cached = _redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
     except (RedisError, json.JSONDecodeError):
         pass
 
@@ -229,12 +223,14 @@ def _get_cached_response(key: str):
         _cache_hits += 1
         return value
 
+
 def _set_cached_response(key: str, value: Any) -> None:
     try:
         with _cache_lock:
             _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
     except (RedisError, TypeError):
         pass
+
 
 def _clear_response_cache() -> None:
     with _cache_lock:
@@ -258,13 +254,15 @@ def get_cache_metrics():
 def _build_tfidf_for_items(item_df):
     """Build and return a TF-IDF matrix and vectorizer for the given item_df."""
     from sklearn.feature_extraction.text import TfidfVectorizer
-    texts = (item_df.get('combined') or item_df.get('title')).fillna('').astype(str).tolist()
+    texts = (item_df.get('combined') or item_df.get(
+        'title')).fillna('').astype(str).tolist()
     vec = TfidfVectorizer(max_features=16384, stop_words='english')
     matrix = vec.fit_transform(texts)
     return vec, matrix
 
 
-def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tuple[float, float, float] = (0.6, 0.3, 0.1), target_catalog: Optional[str] = None):
+def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tuple[float, float, float] = (
+        0.6, 0.3, 0.1), target_catalog: Optional[str] = None):
     """Cold-start blending of content similarity (TF-IDF) and simple popularity/rating signals.
 
     Returns list of dicts with blended score and components.
@@ -290,13 +288,19 @@ def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tupl
         pop_norm = np.zeros_like(scores)
     else:
         max_rc = float(max(1, int(review_counts.max())))
-        pop_norm = (np.array(item_df.get('review_count').fillna(0).astype(float)) / max_rc)
+        pop_norm = (
+            np.array(
+                item_df.get('review_count').fillna(0).astype(float)) /  # noqa: W504
+            max_rc)
 
     ratings = item_df.get('rating')
     if ratings is None or len(ratings) == 0:
         rating_norm = np.zeros_like(scores)
     else:
-        rating_norm = (np.array(item_df.get('rating').fillna(0).astype(float)) / 5.0)
+        rating_norm = (
+            np.array(
+                item_df.get('rating').fillna(0).astype(float)) /  # noqa: W504
+            5.0)
 
     alpha, beta, gamma = weights
 
@@ -325,6 +329,7 @@ def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tupl
             break
 
     return results
+
 
 def _precompute_recommendation_cache(
     top_n: int = 10,
@@ -404,7 +409,8 @@ def _get_rate_limit(limit_env: str, default_limit: int) -> int:
     return max(1, limit)
 
 
-def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
+def _rate_limit_exceeded_response(
+        rate_limit: int, reset_time: int) -> JSONResponse:
     return JSONResponse(
         status_code=429,
         content={
@@ -433,7 +439,9 @@ def _apply_rate_limit(
 
     with _rate_limit_lock:
         timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+        timestamps[:] = [
+            timestamp for timestamp in timestamps if now -  # noqa: W504
+            timestamp < 60]
 
         reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
         reset_time = max(0, reset_time)
@@ -450,7 +458,6 @@ def _apply_rate_limit(
     response.headers["x-ratelimit-remaining"] = str(remaining)
     response.headers["x-ratelimit-reset"] = str(reset_time)
     return None
-
 
 
 def _extract_bearer_token(value: str | None) -> str:
@@ -474,14 +481,20 @@ def _require_admin_access(request: Request) -> None:
         request.headers.get("x-admin-token", "").strip()
         or _extract_bearer_token(request.headers.get("authorization"))
     )
-    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
+    if not provided_token or not secrets.compare_digest(
+            provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
 
 
 CORS_ORIGINS_ENV = "CORS_ORIGINS"
 DEFAULT_CORS_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
 ALLOWED_CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-ALLOWED_CORS_HEADERS = ["Accept", "Authorization", "Content-Type", "X-Admin-Token", "X-CSRF-Token"]
+ALLOWED_CORS_HEADERS = [
+    "Accept",
+    "Authorization",
+    "Content-Type",
+    "X-Admin-Token",
+    "X-CSRF-Token"]
 
 
 def _normalize_cors_origin(origin: str) -> str:
@@ -489,7 +502,8 @@ def _normalize_cors_origin(origin: str) -> str:
     if not normalized:
         raise RuntimeError("CORS_ORIGINS cannot contain empty entries.")
     if normalized == "*":
-        raise RuntimeError("CORS_ORIGINS must not include wildcard origin '*'.")
+        raise RuntimeError(
+            "CORS_ORIGINS must not include wildcard origin '*'.")
 
     parsed = urlsplit(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -501,7 +515,9 @@ def _normalize_cors_origin(origin: str) -> str:
 
 
 def _parse_cors_origins(raw_value: str | None = None) -> list[str]:
-    configured_value = os.environ.get(CORS_ORIGINS_ENV, "") if raw_value is None else raw_value
+    configured_value = os.environ.get(
+        CORS_ORIGINS_ENV,
+        "") if raw_value is None else raw_value
     if not configured_value.strip():
         return list(DEFAULT_CORS_ORIGINS)
 
@@ -565,16 +581,16 @@ def record_response_metric(endpoint, method, status_code, response_time_ms):
         if status_code >= 400:
             response_metrics["error_requests"] += 1
         response_time_samples.append(
-          (time.time(), response_time_ms)
+            (time.time(), response_time_ms)
         )
 
         current_time = time.time()
 
         while (
-          response_time_samples
-          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
+            response_time_samples
+            and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
         ):
-          response_time_samples.popleft()
+            response_time_samples.popleft()
     log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
     if log_level == logging.WARNING:
         logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
@@ -597,7 +613,8 @@ def get_response_metrics_snapshot():
         total_requests = response_metrics["total_requests"]
         error_requests = response_metrics["error_requests"]
     avg_response_time = sum(samples) / len(samples) if samples else 0.0
-    error_rate = (error_requests / total_requests) * 100 if total_requests else 0.0
+    error_rate = (error_requests / total_requests) * \
+        100 if total_requests else 0.0
     return {
         "avg_response_time": round(avg_response_time, 2),
         "p95_response_time": round(_percentile(samples, 95), 2),
@@ -619,7 +636,11 @@ async def response_time_middleware(request, call_next):
         response_time_ms = (time.perf_counter() - start_time) * 1000
         if response is not None:
             response.headers["X-Response-Time"] = f"{response_time_ms:.2f}ms"
-        record_response_metric(request.url.path, request.method, status_code, response_time_ms)
+        record_response_metric(
+            request.url.path,
+            request.method,
+            status_code,
+            response_time_ms)
 
 
 # ── State ─────────────────────────────────────────────────────────────
@@ -639,6 +660,7 @@ SHADOW_MODEL_VERSION = None
 STAGING_MODEL_VERSION = None
 
 SHADOW_LOGS = []
+
 
 def generate_model_version():
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -669,6 +691,7 @@ class RealtimeConnectionHub:
         for connection in disconnected:
             self.disconnect(connection)
 
+
 realtime_hub = RealtimeConnectionHub()
 
 
@@ -682,7 +705,8 @@ class WeightsUpdate(BaseModel):
 
 class PurchaseCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    user_id: str = Field(..., min_length=1, max_length=128,
+                         pattern=r"^[a-zA-Z0-9_\-\.@]+$")
     product_id: int = Field(..., gt=0)
     rating: float = Field(0.0, ge=0.0, le=5.0)
     review_text: str = Field("", max_length=1000)
@@ -690,10 +714,12 @@ class PurchaseCreate(BaseModel):
 
 class FeedbackCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    user_id: str = Field(..., min_length=1, max_length=128,
+                         pattern=r"^[a-zA-Z0-9_\-\.@]+$")
     item: str = Field(..., min_length=1, max_length=500)
     feedback: str = Field(..., min_length=1, max_length=2000)
     thumbs: str = Field(..., pattern=r"^(up|down)$")
+
 
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -747,20 +773,25 @@ def health_check():
         sb = get_supabase()
         response = sb.table("products").select("id").limit(1).execute()
         if response.data is not None:
-            result["components"]["database"] = {"status": "healthy", "details": "connected"}
+            result["components"]["database"] = {
+                "status": "healthy", "details": "connected"}
         else:
-            result["components"]["database"] = {"status": "unhealthy", "details": "query returned no data"}
+            result["components"]["database"] = {
+                "status": "unhealthy", "details": "query returned no data"}
             result["status"] = "degraded"
     except Exception as e:
-        result["components"]["database"] = {"status": "unhealthy", "details": str(e)}
+        result["components"]["database"] = {
+            "status": "unhealthy", "details": str(e)}
         result["status"] = "degraded"
 
     # 2. Model readiness check
     try:
         if models.get("ready"):
-            result["components"]["model"] = {"status": "ready", "details": "models loaded"}
+            result["components"]["model"] = {
+                "status": "ready", "details": "models loaded"}
         else:
-            result["components"]["model"] = {"status": "not_ready", "details": "models not built"}
+            result["components"]["model"] = {
+                "status": "not_ready", "details": "models not built"}
             result["status"] = "degraded"
     except Exception as e:
         result["components"]["model"] = {"status": "error", "details": str(e)}
@@ -773,12 +804,16 @@ def health_check():
             from redis import Redis
             r = Redis.from_url(redis_url, decode_responses=True)
             if r.ping():
-                result["components"]["cache"] = {"status": "healthy", "details": "redis ping successful"}
+                result["components"]["cache"] = {
+                    "status": "healthy", "details": "redis ping successful"}
             else:
-                result["components"]["cache"] = {"status": "unhealthy", "details": "redis ping failed"}
+                result["components"]["cache"] = {
+                    "status": "unhealthy", "details": "redis ping failed"}
                 result["status"] = "degraded"
         else:
-            result["components"]["cache"] = {"status": "not_configured", "details": "REDIS_URL not set"}
+            result["components"]["cache"] = {
+                "status": "not_configured",
+                "details": "REDIS_URL not set"}
     except Exception as e:
         result["components"]["cache"] = {"status": "error", "details": str(e)}
         result["status"] = "degraded"
@@ -825,13 +860,15 @@ def dashboard(request: Request):
     _require_admin_access(request)
     sb = get_supabase()
     try:
-        product_count = sb.table('products').select('id', count='exact').limit(0).execute().count or 0
+        product_count = sb.table('products').select(
+            'id', count='exact').limit(0).execute().count or 0
     except Exception as e:
         logger.warning("Dashboard: product count failed: %s", e)
         product_count = 0
 
     try:
-        interaction_count = sb.table('purchases').select('id', count='exact').limit(0).execute().count or 0
+        interaction_count = sb.table('purchases').select(
+            'id', count='exact').limit(0).execute().count or 0
     except Exception as e:
         logger.warning("Dashboard: interaction count failed: %s", e)
         interaction_count = 0
@@ -854,9 +891,12 @@ def dashboard(request: Request):
     avg_recommendation_score = 0.0
     avg_sentiment_score = 0.0
     try:
-        prod_stats = sb.table('products').select('rating, avg_sentiment').limit(50000).execute().data or []
-        ratings = [float(p['rating']) for p in prod_stats if p.get('rating') not in (None, 0)]
-        sentiments = [float(p['avg_sentiment']) for p in prod_stats if p.get('avg_sentiment') is not None]
+        prod_stats = sb.table('products').select(
+            'rating, avg_sentiment').limit(50000).execute().data or []
+        ratings = [float(p['rating'])
+                   for p in prod_stats if p.get('rating') not in (None, 0)]
+        sentiments = [float(p['avg_sentiment'])
+                      for p in prod_stats if p.get('avg_sentiment') is not None]
         if ratings:
             avg_recommendation_score = round(sum(ratings) / len(ratings), 4)
         if sentiments:
@@ -868,7 +908,8 @@ def dashboard(request: Request):
     try:
         if purchase_counts:
             top_ids = [pid for pid, _ in purchase_counts.most_common(5)]
-            prod_result = sb.table('products').select('id, title, category, rating').in_('id', top_ids).execute().data or []
+            prod_result = sb.table('products').select(
+                'id, title, category, rating').in_('id', top_ids).execute().data or []
             prod_map = {p['id']: p for p in prod_result}
             for pid in top_ids:
                 p = prod_map.get(pid)
@@ -880,7 +921,8 @@ def dashboard(request: Request):
                         'interactions': purchase_counts[pid],
                     })
         if not top_products:
-            fallback = sb.table('products').select('id, title, category, rating').order('rating', desc=True).limit(5).execute().data or []
+            fallback = sb.table('products').select('id, title, category, rating').order(
+                'rating', desc=True).limit(5).execute().data or []
             for p in fallback:
                 top_products.append({
                     'id': p['id'], 'title': p.get('title', ''),
@@ -934,7 +976,6 @@ def search_items(
 
     is_fuzzy_fallback = False
 
-
     try:
         sb = get_supabase()
 
@@ -946,16 +987,16 @@ def search_items(
                     'match_count': limit,
                     'offset_val': offset,
                 }).execute()
-    
+
                 products = result.data or []
-    
+
             except Exception as e:
                 logger.warning(
                     "Full-text search failed for query '%s': %s",
                     query.strip(),
                     e
                 )
-    
+
                 # Fallback: LIKE search
                 result = sb.table('products') \
                     .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -963,34 +1004,34 @@ def search_items(
                     .order('rating', desc=True) \
                     .limit(limit) \
                     .execute()
-    
+
                 products = result.data or []
-    
+
             # 2. Fuzzy fallback
             if len(products) < 3:
                 is_fuzzy_fallback = True
-    
+
                 fuzzy_res = sb.rpc('fuzzy_search_products', {
                     'q': query,
                     'threshold': 0.3
                 }).execute()
-    
+
                 products = fuzzy_res.data or []
-    
+
         else:
             query_builder = sb.table('products').select(
                 'id, title, description, category, rating, avg_sentiment, review_count, metadata'
             )
-    
+
             if sort == "rating":
                 query_builder = query_builder.order('rating', desc=True)
             else:
                 query_builder = query_builder.order('rating', desc=True) \
-                .order('review_count', desc=True)
-    
+                    .order('review_count', desc=True)
+
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
-    
+
     except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
 
@@ -1009,40 +1050,39 @@ def search_items(
         for p in products:
             p['rank'] = 0.0
 
-
     # Format response
     results = []
-    
+
     for p in products:
-    
+
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
+
         # Newly added products may still have the default
         # sentiment value before the NLP batch pipeline runs.
         # Recompute dynamically so the UI never shows misleading 0.0.
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
-    
+
                 computed_sentiment = compute_product_sentiment(reviews)
-    
+
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
                     else "N/A"
                 )
-    
+
             except Exception:
                 sentiment_value = "N/A"
-    
+
         else:
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment != 0.0
                 else "N/A"
             )
-    
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
@@ -1053,69 +1093,66 @@ def search_items(
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-    
-    
+
     def _product_price(product):
         metadata = product.get('metadata') or {}
-    
+
         raw_price = (
             product.get('price')
             if product.get('price') is not None
             else metadata.get('price')
         )
-    
+
         try:
             return float(raw_price or 0)
-    
+
         except (TypeError, ValueError):
             return 0.0
-    
-    
+
     if sort == "price-low":
         products = sorted(products, key=_product_price)
-    
+
     elif sort == "price-high":
         products = sorted(products, key=_product_price, reverse=True)
-    
+
     elif sort == "rating":
         products = sorted(
             products,
             key=lambda p: float(p.get('rating') or 0),
             reverse=True
         )
-    
-    
+
     results = []
-    
+
     for p in products:
-    
+
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
+
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
-    
+
                 computed_sentiment = compute_product_sentiment(reviews)
-    
+
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
                     else "N/A"
                 )
-    
+
             except Exception:
                 sentiment_value = "N/A"
-    
+
         else:
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment != 0.0
                 else "N/A"
             )
-    
+
         price = _product_price(p)
-    
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
@@ -1127,10 +1164,9 @@ def search_items(
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-    
-    
+
     result_count = len(results)
-    
+
     payload = {
         "results": results,
         "count": result_count,
@@ -1139,10 +1175,10 @@ def search_items(
         "sort": sort,
         "is_fallback": not query or is_fuzzy_fallback,
     }
-    
+
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
-    
+
     return payload
 
 
@@ -1187,7 +1223,7 @@ def fuzzy_search_items(
     threshold: float = Query(0.3, ge=0.0, le=1.0),
 ):
     """
-    Task 3: Executes a typo-tolerant string similarity lookup 
+    Task 3: Executes a typo-tolerant string similarity lookup
     using the PostgreSQL pg_trgm extension via Supabase RPC.
     """
     query = _normalize_search_query(q)
@@ -1197,28 +1233,29 @@ def fuzzy_search_items(
     try:
         sb = get_supabase()
         result = sb.rpc('fuzzy_search_products', {
-            'q': query, 
+            'q': query,
             'threshold': threshold
         }).execute()
-        
+
         products = result.data or []
-        
+
         results = []
         for p in products:
             metadata = p.get('metadata') or {}
-            price = float(p.get('price') if p.get('price') is not None else metadata.get('price', 0.0))
+            price = float(p.get('price') if p.get('price')
+                          is not None else metadata.get('price', 0.0))
             results.append({
-                'id': p.get('id'), 
+                'id': p.get('id'),
                 'title': p.get('title', ''),
                 'description': str(p.get('description', ''))[:200],
-                'category': p.get('category', ''), 
+                'category': p.get('category', ''),
                 'rating': p.get('rating', 0.0),
                 'price': price,
                 'avg_sentiment': p.get('avg_sentiment', 0.0),
-                'review_count': p.get('review_count', 0), 
+                'review_count': p.get('review_count', 0),
                 'rank': p.get('rank', 0.0),
             })
-            
+
         return {
             "results": results,
             "count": len(results),
@@ -1235,30 +1272,40 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
+        raise HTTPException(
+            status_code=413,
+            detail=f"Uploaded file exceeds {MAX_UPLOAD_BYTES} bytes.")
     if b"\x00" in contents[:4096]:
-        raise HTTPException(status_code=400, detail="Uploaded file appears to be binary.")
+        raise HTTPException(status_code=400,
+                            detail="Uploaded file appears to be binary.")
     try:
         decoded = contents.decode("utf-8")
     except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Uploaded file must be UTF-8 encoded.")
+        raise HTTPException(status_code=400,
+                            detail="Uploaded file must be UTF-8 encoded.")
 
     stripped = decoded.strip()
     lowered_name = filename.lower()
     if ext == ".csv":
         lowered_sample = stripped[:128].lower()
-        if lowered_sample.startswith(("{", "[", "<!doctype", "<html", "<?xml")):
-            raise HTTPException(status_code=400, detail="CSV uploads must contain CSV content.")
+        if lowered_sample.startswith(
+                ("{", "[", "<!doctype", "<html", "<?xml")):
+            raise HTTPException(status_code=400,
+                                detail="CSV uploads must contain CSV content.")
         if not lowered_name.endswith(".csv"):
-            raise HTTPException(status_code=400, detail="CSV uploads must use a .csv filename.")
+            raise HTTPException(status_code=400,
+                                detail="CSV uploads must use a .csv filename.")
     elif ext == ".json":
         if not (stripped.startswith("{") or stripped.startswith("[")):
-            raise HTTPException(status_code=400, detail="JSON uploads must contain JSON content.")
+            raise HTTPException(
+                status_code=400,
+                detail="JSON uploads must contain JSON content.")
         import json
         try:
             json.loads(stripped)
         except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="JSON uploads must contain valid JSON.")
+            raise HTTPException(status_code=400,
+                                detail="JSON uploads must contain valid JSON.")
 
 
 # ── Upload ────────────────────────────────────────────────────────────
@@ -1321,10 +1368,12 @@ async def upload_dataset(
             if not rows:
                 continue
             try:
-                sb.table('products').upsert(rows, on_conflict='title', ignore_duplicates=True).execute()
+                sb.table('products').upsert(
+                    rows, on_conflict='title', ignore_duplicates=True).execute()
                 imported += len(rows)
             except Exception as e:
-                errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
+                errors.append(
+                    f"Batch {start}-{start + len(rows)}: {str(e)[:100]}")
         models["ready"] = False
         _clear_response_cache()
         result = {
@@ -1339,25 +1388,27 @@ async def upload_dataset(
         raise
     except Exception as e:
         logger.error("Upload failed for %s: %s", filename, e, exc_info=True)
-        raise HTTPException(400, "Upload failed. Check file format and try again.")
+        raise HTTPException(
+            400, "Upload failed. Check file format and try again.")
 
 
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
 def build_models(
     _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     global STAGING_MODEL_VERSION
     try:
-       sb = get_supabase_admin()
+        sb = get_supabase_admin()
     except RuntimeError:
         sb = get_supabase()
     all_products = []
     page_size = 1000
     offset = 0
     while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(
+            offset, offset + page_size - 1).execute()
         batch = result.data or []
         all_products.extend(batch)
         if len(batch) < page_size:
@@ -1368,8 +1419,8 @@ def build_models(
     import pandas as pd
     item_df = pd.DataFrame(all_products)
     item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
+        item_df['title'].astype(str) + ' ' +  # noqa: W504
+        item_df['description'].fillna('').astype(str) + ' ' +  # noqa: W504
         item_df['category'].fillna('').astype(str)
     )
     item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
@@ -1377,7 +1428,8 @@ def build_models(
     content_model = ContentRecommender(item_df)
     collab_model = None
     try:
-        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+        purchases_result = sb.table('purchases').select(
+            'user_id, product_id, rating').limit(50000).execute()
         purchases = purchases_result.data or []
         if len(purchases) > 10:
             product_title_map = {p['id']: p['title'] for p in all_products}
@@ -1385,7 +1437,8 @@ def build_models(
             for p in purchases:
                 title = product_title_map.get(p['product_id'])
                 if title:
-                    interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
+                    interaction_rows.append(
+                        {'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
             if len(interaction_rows) > 10:
                 interaction_df = pd.DataFrame(interaction_rows)
                 if interaction_df['user_id'].nunique() > 1:
@@ -1394,7 +1447,7 @@ def build_models(
         logger.warning("Collaborative model data load failed: %s", e)
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
-    
+
     version = generate_model_version()
 
     MODEL_REGISTRY[version] = {
@@ -1417,7 +1470,7 @@ def build_models(
     }
 
     STAGING_MODEL_VERSION = version
-    
+
     models["content"] = content_model
     models["collab"] = collab_model
     models["hybrid"] = hybrid_model
@@ -1426,7 +1479,8 @@ def build_models(
     models["build_time"] = build_time
     models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
     _clear_response_cache()
-    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
+    precomputed_count = _precompute_recommendation_cache(
+        top_n=10, explain=False)
     return {
         "message": "Models built successfully!",
         "model_version": version,
@@ -1434,20 +1488,22 @@ def build_models(
         "items": len(item_df),
         "has_collaborative": collab_model is not None,
         "build_time_seconds": build_time,
-	"precomputed_recommendations": precomputed_count,
+        "precomputed_recommendations": precomputed_count,
     }
+
 
 @app.post("/api/train/federated")
 def train_federated(
     req: FederatedTrainRequest,
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     sb = get_supabase()
     all_products = []
     page_size = 1000
     offset = 0
     while True:
-        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(
+            offset, offset + page_size - 1).execute()
         batch = result.data or []
         all_products.extend(batch)
         if len(batch) < page_size:
@@ -1459,8 +1515,8 @@ def train_federated(
     import pandas as pd
     item_df = pd.DataFrame(all_products)
     item_df['combined'] = (
-        item_df['title'].astype(str) + ' ' +
-        item_df['description'].fillna('').astype(str) + ' ' +
+        item_df['title'].astype(str) + ' ' +  # noqa: W504
+        item_df['description'].fillna('').astype(str) + ' ' +  # noqa: W504
         item_df['category'].fillna('').astype(str)
     )
     item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
@@ -1469,28 +1525,35 @@ def train_federated(
     content_model = ContentRecommender(item_df)
 
     try:
-        purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
+        purchases_result = sb.table('purchases').select(
+            'user_id, product_id, rating').limit(50000).execute()
         purchases = purchases_result.data or []
     except Exception as e:
         logger.error("Federated training: purchases load failed: %s", e)
-        raise HTTPException(500, f"Failed to retrieve purchases from database: {str(e)}")
+        raise HTTPException(
+            500, f"Failed to retrieve purchases from database: {str(e)}")
 
     if len(purchases) <= 10:
-        raise HTTPException(400, "Not enough interaction data for federated training. Need at least 11 interactions.")
+        raise HTTPException(
+            400,
+            "Not enough interaction data for federated training. Need at least 11 interactions.")
 
     product_title_map = {p['id']: p['title'] for p in all_products}
     interaction_rows = []
     for p in purchases:
         title = product_title_map.get(p['product_id'])
         if title:
-            interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
+            interaction_rows.append(
+                {'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
 
     if len(interaction_rows) <= 10:
-        raise HTTPException(400, "Not enough valid interaction rows matching product catalog.")
+        raise HTTPException(
+            400, "Not enough valid interaction rows matching product catalog.")
 
     interaction_df = pd.DataFrame(interaction_rows)
     if interaction_df['user_id'].nunique() <= 1:
-        raise HTTPException(400, "Federated training requires at least 2 unique users.")
+        raise HTTPException(
+            400, "Federated training requires at least 2 unique users.")
 
     try:
         collab_model = train_federated_collaborative_model(
@@ -1502,7 +1565,8 @@ def train_federated(
         )
     except Exception as e:
         logger.error("Federated training execution failed: %s", e)
-        raise HTTPException(500, f"Federated training execution failed: {str(e)}")
+        raise HTTPException(
+            500, f"Federated training execution failed: {str(e)}")
 
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
@@ -1537,7 +1601,7 @@ def get_recommendations(
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
-    strategy: Optional[str] = Query(None), 
+    strategy: Optional[str] = Query(None),
 ):
     rate_limited = _apply_rate_limit(
         request,
@@ -1552,7 +1616,9 @@ def get_recommendations(
 # ----- EDGE CASES SAFE CHECK -----
     # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
-        raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
+        raise HTTPException(
+            status_code=400,
+            detail="Models not built or dynamic dataset is empty.")
     # ---------------------------------
     query_title = title or item_title
     if not query_title:
@@ -1597,7 +1663,8 @@ def get_recommendations(
     # Cold-start fallback: blend content similarity with popularity/rating
     if not recs and (strategy == "cold"):
         combined_text = query_title
-        cold_recs = cold_start_recommendation(combined_text, top_n=top_n, target_catalog=target_catalog)
+        cold_recs = cold_start_recommendation(
+            combined_text, top_n=top_n, target_catalog=target_catalog)
         if cold_recs:
             recs = cold_recs
 
@@ -1673,7 +1740,6 @@ def get_recommendations(
     return payload
 
 
-
 @app.get("/api/recommend/cold_start")
 def recommend_cold_start(
     response: Response,
@@ -1693,7 +1759,8 @@ def recommend_cold_start(
     blended recommendations based on content TF-IDF similarity and popularity.
     """
     if not models or not models.get('item_df'):
-        raise HTTPException(400, "Models not built or no item catalog available.")
+        raise HTTPException(
+            400, "Models not built or no item catalog available.")
 
     parts = []
     if title:
@@ -1707,38 +1774,49 @@ def recommend_cold_start(
 
     combined_text = " ".join(parts).strip()
     if not combined_text:
-        raise HTTPException(400, "Provide at least one of title, description, category or tags.")
+        raise HTTPException(
+            400, "Provide at least one of title, description, category or tags.")
 
     weights = (float(alpha), float(beta), float(gamma))
-    recs = cold_start_recommendation(combined_text, top_n=top_n, weights=weights, target_catalog=target_catalog)
+    recs = cold_start_recommendation(
+        combined_text,
+        top_n=top_n,
+        weights=weights,
+        target_catalog=target_catalog)
     if not recs:
         raise HTTPException(404, "No cold-start recommendations available.")
 
-    # Do not cache cold-start responses by default (content depends on input metadata)
+    # Do not cache cold-start responses by default (content depends on input
+    # metadata)
     _set_cache_headers(response, "MISS")
-    return {"query": combined_text, "recommendations": recs, "weights": {"alpha": weights[0], "beta": weights[1], "gamma": weights[2]}}
+    return {"query": combined_text, "recommendations": recs, "weights": {
+        "alpha": weights[0], "beta": weights[1], "gamma": weights[2]}}
 
 
 @app.get("/api/user_recommend")
-def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
+def get_user_recommendations(
+        user_id: str, top_n: int = 10, explain: bool = Query(False)):
     """Get hybrid recommendations for a user."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
-    
+        raise HTTPException(
+            400, "Models not built. Build first via /api/build.")
+
     is_fallback = False
     collab = models["hybrid"].collab_model
     if collab is None or user_id not in getattr(collab, "_user_to_idx", {}):
         is_fallback = True
 
-    recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
-        
+    recs = models["hybrid"].recommend_for_user(
+        user_id, top_n=top_n, explain=explain)
+
     return {
         "query_user": user_id,
         "recommendations": recs,
         "fallback": is_fallback,
         "weights": models["hybrid"].get_weights(),
     }
+
 
 @app.websocket("/ws/recommendations")
 async def websocket_recommendations(websocket: WebSocket):
@@ -1758,7 +1836,8 @@ async def websocket_recommendations(websocket: WebSocket):
                 })
                 continue
 
-            recs = models["hybrid"].recommend(item_title, user_id=user_id, top_n=top_n, explain=explain)
+            recs = models["hybrid"].recommend(
+                item_title, user_id=user_id, top_n=top_n, explain=explain)
             await websocket.send_json({
                 "type": "recommendations",
                 "query_item": item_title,
@@ -1780,9 +1859,14 @@ def realtime_behavior(
     _csrf: None = Depends(csrf_header_dep),
 ):
     if not models.get("ready") or not models.get("hybrid"):
-        raise HTTPException(status_code=400, detail="Models not built yet. Train the models first.")
+        raise HTTPException(
+            status_code=400,
+            detail="Models not built yet. Train the models first.")
 
-    recs = models["hybrid"].recommend(req.item_title, top_n=req.top_n, explain=req.explain)
+    recs = models["hybrid"].recommend(
+        req.item_title,
+        top_n=req.top_n,
+        explain=req.explain)
     return {
         "type": "recommendations",
         "query_item": req.item_title,
@@ -1817,7 +1901,8 @@ def get_similar_items(
         return rate_limited
 
     if not models["ready"] or models["item_df"] is None:
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
+        raise HTTPException(
+            400, "Models not built. Build first via /api/build.")
     item_df = models["item_df"]
     if "id" not in item_df.columns:
         raise HTTPException(400, "Model data does not include product ids.")
@@ -1828,10 +1913,18 @@ def get_similar_items(
     source_title = str(source.get("title", ""))
     source_category = source.get("category", "")
     requested_category = category.strip() if category else None
-    candidate_limit = top_n if requested_category is None else min(top_n * 5, 100)
-    recs = models["hybrid"].recommend(source_title, top_n=candidate_limit, explain=explain)
+    candidate_limit = top_n if requested_category is None else min(
+        top_n * 5, 100)
+    recs = models["hybrid"].recommend(
+        source_title,
+        top_n=candidate_limit,
+        explain=explain)
     if requested_category is not None:
-        recs = [r for r in recs if str(r.get("category", "")).casefold() == requested_category.casefold()]
+        recs = [
+            r for r in recs if str(
+                r.get(
+                    "category",
+                    "")).casefold() == requested_category.casefold()]
     recs = recs[:top_n]
     if not recs:
         raise HTTPException(404, "No similar items found.")
@@ -1852,10 +1945,12 @@ def get_similar_items(
 @app.get("/api/similarity-matrix")
 def similarity_matrix(items: str = Query(...)):
     if not models["ready"] or models["content"] is None:
-        raise HTTPException(400, "Models not built. Build first via /api/build.")
+        raise HTTPException(
+            400, "Models not built. Build first via /api/build.")
     titles = [t.strip() for t in items.split(",") if t.strip()]
     if len(titles) < 2:
-        raise HTTPException(400, "Provide at least 2 comma-separated item titles.")
+        raise HTTPException(
+            400, "Provide at least 2 comma-separated item titles.")
     if len(titles) > 20:
         raise HTTPException(400, "Maximum 20 items allowed per request.")
     content_model = models["content"]
@@ -1871,16 +1966,23 @@ def similarity_matrix(items: str = Query(...)):
         else:
             not_found.append(title)
     if len(valid_titles) < 2:
-        raise HTTPException(404, f"Need at least 2 valid items. Not found: {not_found}")
+        raise HTTPException(
+            404, f"Need at least 2 valid items. Not found: {not_found}")
     sub_matrix = content_model.matrix[indices]
     sim = cos_sim(sub_matrix, sub_matrix)
-    matrix = [[round(float(sim[i][j]), 4) for j in range(len(valid_titles))] for i in range(len(valid_titles))]
-    result = {"labels": valid_titles, "matrix": matrix, "size": len(valid_titles)}
+    matrix = [[round(float(sim[i][j]), 4) for j in range(
+        len(valid_titles))] for i in range(len(valid_titles))]
+    result = {
+        "labels": valid_titles,
+        "matrix": matrix,
+        "size": len(valid_titles)}
     if not_found:
         result["not_found"] = not_found
     return result
 
 # ── Weights ───────────────────────────────────────────────────────────
+
+
 @app.get("/api/models")
 def list_models():
     return {
@@ -1898,11 +2000,13 @@ def list_models():
             for version, data in MODEL_REGISTRY.items()
         ],
     }
+
+
 @app.post("/api/models/{version}/promote")
 def promote_model(
     version: str,
     _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     global ACTIVE_MODEL_VERSION, SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
 
@@ -1941,11 +2045,12 @@ def promote_model(
         "rollback_time_seconds": round(time.time() - start_time, 4),
     }
 
+
 @app.post("/api/models/{version}/shadow")
 def move_model_to_shadow(
     version: str,
     _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     global SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
 
@@ -1953,7 +2058,8 @@ def move_model_to_shadow(
         raise HTTPException(404, "Model version not found.")
 
     MODEL_REGISTRY[version]["status"] = "shadow"
-    MODEL_REGISTRY[version]["shadow_started_at"] = datetime.now(timezone.utc).isoformat()
+    MODEL_REGISTRY[version]["shadow_started_at"] = datetime.now(
+        timezone.utc).isoformat()
 
     SHADOW_MODEL_VERSION = version
     if STAGING_MODEL_VERSION == version:
@@ -1964,6 +2070,7 @@ def move_model_to_shadow(
         "version": version,
         "status": "shadow",
     }
+
 
 @app.get("/api/weights")
 def get_weights():
@@ -1976,18 +2083,20 @@ def get_weights():
 def update_weights(
     w: WeightsUpdate,
     _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
+    _admin: None = Depends(_require_admin_access),
 ):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
     models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
     _clear_response_cache()
-    return {"message": "Weights updated", "weights": models["hybrid"].get_weights()}
+    return {"message": "Weights updated",
+            "weights": models["hybrid"].get_weights()}
 
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = Query(1, ge=1),
+               limit: int = Query(20, ge=1, le=100)):
     sb = get_supabase()
     offset = (page - 1) * limit
     result = sb.table('products') \
@@ -1996,8 +2105,10 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
         .range(offset, offset + limit - 1) \
         .execute()
 
-    result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).range(offset, offset + limit - 1).execute()
-    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+    result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order(
+        'rating', desc=True).range(offset, offset + limit - 1).execute()
+    count_result = sb.table('products').select(
+        'id', count='exact').limit(0).execute()
     total = count_result.count or 0
     items = []
     for p in (result.data or []):
@@ -2008,7 +2119,8 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
             'avg_sentiment': round(float(p.get('avg_sentiment', 0)), 4),
             'description': str(p.get('description', ''))[:200],
         })
-    return {"items": items, "total": total, "page": page, "limit": limit, "has_more": (offset + len(items)) < total}
+    return {"items": items, "total": total, "page": page,
+            "limit": limit, "has_more": (offset + len(items)) < total}
 
 
 # ── Categories ────────────────────────────────────────────────────────
@@ -2023,7 +2135,8 @@ def get_categories():
         pass
     try:
         result = sb.table('products').select('category').limit(5000).execute()
-        cats = list(set(p['category'] for p in (result.data or []) if p.get('category')))
+        cats = list(set(p['category']
+                    for p in (result.data or []) if p.get('category')))
         cats.sort()
         return {"categories": cats}
     except Exception as e:
@@ -2063,6 +2176,7 @@ def create_purchase(
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 
+
 TRENDING_CACHE = {
     "data": None,
     "timestamp": None,
@@ -2079,7 +2193,7 @@ def get_trending_products(
     """
     cache_key = (days, limit)
     now = datetime.now(timezone.utc)
-    
+
     # Check cache
     if isinstance(TRENDING_CACHE, dict) and cache_key in TRENDING_CACHE:
         timestamp, cached_data = TRENDING_CACHE[cache_key]

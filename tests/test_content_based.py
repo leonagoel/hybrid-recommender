@@ -2,25 +2,25 @@
 Unit tests for Content-Based Recommender
 Run with: pytest tests/ -v
 """
+from src.model.content_model import ContentRecommender
 import pytest
 import pandas as pd
-import numpy as np
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from src.model.content_model import ContentRecommender
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def sample_item_df():
     """Sample DataFrame for testing ContentRecommender."""
     return pd.DataFrame({
         'title': [
-            'Harry Potter', 
-            'Lord of the Rings', 
+            'Harry Potter',
+            'Lord of the Rings',
             'The Hobbit',
             'Game of Thrones',
             'Dune'
@@ -43,6 +43,7 @@ def sample_item_df():
             'Dune A desert planet holds the most valuable resource SciFi',
         ],
     })
+
 
 @pytest.fixture
 def content_model(sample_item_df):
@@ -149,25 +150,31 @@ class TestContentRecommender:
         assert isinstance(results_upper, list)
 
     def test_explain_similarity_valid_titles(self, content_model):
-        explanation = content_model.explain_similarity('Harry Potter', 'Lord of the Rings')
+        explanation = content_model.explain_similarity(
+            'Harry Potter', 'Lord of the Rings')
         assert isinstance(explanation, list)
         assert len(explanation) == 1
         assert explanation[0]['term'] == 'semantic_similarity'
         assert 0.0 <= explanation[0]['score'] <= 1.0
 
     def test_explain_similarity_invalid_source(self, content_model):
-        explanation = content_model.explain_similarity('Nonexistent', 'Lord of the Rings')
+        explanation = content_model.explain_similarity(
+            'Nonexistent', 'Lord of the Rings')
         assert explanation == []
 
     def test_explain_similarity_invalid_candidate(self, content_model):
-        explanation = content_model.explain_similarity('Harry Potter', 'Nonexistent')
+        explanation = content_model.explain_similarity(
+            'Harry Potter', 'Nonexistent')
         assert explanation == []
 
     def test_recommend_with_catalog_filtering(self, sample_item_df):
         df = sample_item_df.copy()
         df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
         model = ContentRecommender(df)
-        recs = model.recommend('Harry Potter', top_n=5, target_catalog='movies')
+        recs = model.recommend(
+            'Harry Potter',
+            top_n=5,
+            target_catalog='movies')
         for r in recs:
             # Lord of the Rings and Game of Thrones are movies
             assert r['title'] in ['Lord of the Rings', 'Game of Thrones']
@@ -184,4 +191,3 @@ class TestContentRecommender:
         # Using a batch size of 2 to exercise sequentially encoded slices loop
         model = ContentRecommender(sample_item_df, batch_size=2)
         assert model.matrix.shape[0] == len(sample_item_df)
-

@@ -54,7 +54,10 @@ def test_fallback_when_hnswlib_missing(monkeypatch):
     # Reload module so the import behavior is evaluated
     content_model = reload_content_module()
     # Replace SentenceTransformer with dummy
-    monkeypatch.setattr(content_model, 'SentenceTransformer', DummySentenceTransformer)
+    monkeypatch.setattr(
+        content_model,
+        'SentenceTransformer',
+        DummySentenceTransformer)
 
     df = _make_df()
     recomm = content_model.ContentRecommender(df)
@@ -101,7 +104,10 @@ def test_ann_index_creation(monkeypatch):
     monkeypatch.setitem(sys.modules, 'hnswlib', fake_module)
 
     content_model = reload_content_module()
-    monkeypatch.setattr(content_model, 'SentenceTransformer', DummySentenceTransformer)
+    monkeypatch.setattr(
+        content_model,
+        'SentenceTransformer',
+        DummySentenceTransformer)
 
     df = _make_df()
     recomm = content_model.ContentRecommender(df)
@@ -143,7 +149,10 @@ def test_ann_recommendation_parity(monkeypatch):
     monkeypatch.setitem(sys.modules, 'hnswlib', fake_module)
 
     content_model = reload_content_module()
-    monkeypatch.setattr(content_model, 'SentenceTransformer', DummySentenceTransformer)
+    monkeypatch.setattr(
+        content_model,
+        'SentenceTransformer',
+        DummySentenceTransformer)
     df = _make_df()
     recomm_ann = content_model.ContentRecommender(df)
     res_ann = [r['title'] for r in recomm_ann.recommend('A', top_n=3)]
@@ -151,7 +160,10 @@ def test_ann_recommendation_parity(monkeypatch):
     # Now simulate missing hnswlib
     monkeypatch.delitem(sys.modules, 'hnswlib', raising=False)
     content_model_noann = reload_content_module()
-    monkeypatch.setattr(content_model_noann, 'SentenceTransformer', DummySentenceTransformer)
+    monkeypatch.setattr(
+        content_model_noann,
+        'SentenceTransformer',
+        DummySentenceTransformer)
     recomm_noann = content_model_noann.ContentRecommender(df)
     res_noann = [r['title'] for r in recomm_noann.recommend('A', top_n=3)]
 
@@ -172,7 +184,10 @@ def test_ann_failure_fallback(monkeypatch):
     monkeypatch.setitem(sys.modules, 'hnswlib', fake_module)
 
     content_model = reload_content_module()
-    monkeypatch.setattr(content_model, 'SentenceTransformer', DummySentenceTransformer)
+    monkeypatch.setattr(
+        content_model,
+        'SentenceTransformer',
+        DummySentenceTransformer)
     df = _make_df()
     recomm = content_model.ContentRecommender(df)
 

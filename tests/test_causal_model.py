@@ -2,19 +2,17 @@
 Unit tests for CausalDebiaser (IPS causal inference layer).
 Run with: pytest tests/ -v
 """
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.model.causal_config import CausalConfig
+from src.model.causal_model import CausalDebiaser
 import pytest
 import pandas as pd
-import numpy as np
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from src.model.causal_model import CausalDebiaser
-from src.model.causal_config import CausalConfig
-from src.model.hybrid_model import HybridRecommender
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -23,17 +21,17 @@ from src.model.collaborative_model import CollaborativeRecommender
 def item_df():
     """Item catalog with clear popularity and category skew for testing."""
     return pd.DataFrame({
-        'title':        ['Blockbuster A', 'Blockbuster B', 'Niche C', 'Niche D', 'Rare E'],
-        'review_count': [5000,            4000,            50,        30,         5],
-        'category':     ['Electronics',   'Electronics',   'Books',   'Books',    'Art'],
-        'rating':       [4.5,             4.2,             4.8,       4.7,        4.9],
-        'avg_sentiment':[0.6,             0.5,             0.7,       0.8,        0.9],
-        'description':  ['Popular gadget','Another gadget','Rare book','Rare book','Art piece'],
-        'combined':     ['Blockbuster A Popular gadget Electronics',
-                         'Blockbuster B Another gadget Electronics',
-                         'Niche C Rare book Books',
-                         'Niche D Rare book Books',
-                         'Rare E Art piece Art'],
+        'title': ['Blockbuster A', 'Blockbuster B', 'Niche C', 'Niche D', 'Rare E'],
+        'review_count': [5000, 4000, 50, 30, 5],
+        'category': ['Electronics', 'Electronics', 'Books', 'Books', 'Art'],
+        'rating': [4.5, 4.2, 4.8, 4.7, 4.9],
+        'avg_sentiment': [0.6, 0.5, 0.7, 0.8, 0.9],
+        'description': ['Popular gadget', 'Another gadget', 'Rare book', 'Rare book', 'Art piece'],
+        'combined': ['Blockbuster A Popular gadget Electronics',
+                     'Blockbuster B Another gadget Electronics',
+                     'Niche C Rare book Books',
+                     'Niche D Rare book Books',
+                     'Rare E Art piece Art'],
     })
 
 
@@ -46,15 +44,15 @@ def debiaser(item_df):
 def interaction_df():
     return pd.DataFrame({
         'user_id': ['u1', 'u1', 'u2', 'u2', 'u3'],
-        'title':   ['Blockbuster A', 'Blockbuster B', 'Niche C', 'Niche D', 'Rare E'],
-        'rating':  [5.0, 4.0, 5.0, 4.5, 5.0],
+        'title': ['Blockbuster A', 'Blockbuster B', 'Niche C', 'Niche D', 'Rare E'],
+        'rating': [5.0, 4.0, 5.0, 4.5, 5.0],
     })
 
 
 @pytest.fixture
 def hybrid_model_with_causal(item_df, interaction_df):
     content = ContentRecommender(item_df)
-    collab  = CollaborativeRecommender(interaction_df)
+    collab = CollaborativeRecommender(interaction_df)
     return HybridRecommender(
         content, collab, item_df,
         use_causal_debiasing=True,
@@ -66,8 +64,9 @@ def hybrid_model_with_causal(item_df, interaction_df):
 @pytest.fixture
 def hybrid_model_no_causal(item_df, interaction_df):
     content = ContentRecommender(item_df)
-    collab  = CollaborativeRecommender(interaction_df)
-    return HybridRecommender(content, collab, item_df, use_causal_debiasing=False)
+    collab = CollaborativeRecommender(interaction_df)
+    return HybridRecommender(content, collab, item_df,
+                             use_causal_debiasing=False)
 
 
 # ─── CausalConfig ────────────────────────────────────────────────────────────
@@ -126,7 +125,8 @@ class TestDebiaserFromConfig:
         assert d.clip_max == 4.0
 
     def test_from_config_validates_config(self, item_df):
-        bad_cfg = CausalConfig(blend_lambda=2.0)  # invalid but not yet validated
+        # invalid but not yet validated
+        bad_cfg = CausalConfig(blend_lambda=2.0)
         with pytest.raises(ValueError):
             CausalDebiaser.from_config(item_df, bad_cfg)
 
@@ -142,10 +142,11 @@ class TestDebiaserFromConfig:
 
 class TestHybridCausalConfigPath:
 
-    def test_causal_config_takes_precedence_over_raw_params(self, item_df, interaction_df):
+    def test_causal_config_takes_precedence_over_raw_params(
+            self, item_df, interaction_df):
         """When causal_config is provided, use_causal_debiasing raw param is ignored."""
         content = ContentRecommender(item_df)
-        collab  = CollaborativeRecommender(interaction_df)
+        collab = CollaborativeRecommender(interaction_df)
         cfg = CausalConfig(enabled=True, blend_lambda=0.7)
         model = HybridRecommender(
             content, collab, item_df,
@@ -156,9 +157,10 @@ class TestHybridCausalConfigPath:
         assert model._debiaser is not None
         assert model._debiaser.blend_lambda == 0.7
 
-    def test_causal_config_disabled_preset_no_debiaser(self, item_df, interaction_df):
+    def test_causal_config_disabled_preset_no_debiaser(
+            self, item_df, interaction_df):
         content = ContentRecommender(item_df)
-        collab  = CollaborativeRecommender(interaction_df)
+        collab = CollaborativeRecommender(interaction_df)
         model = HybridRecommender(
             content, collab, item_df,
             causal_config=CausalConfig.disabled(),
@@ -168,14 +170,15 @@ class TestHybridCausalConfigPath:
 
     def test_causal_config_stored_on_model(self, item_df, interaction_df):
         content = ContentRecommender(item_df)
-        collab  = CollaborativeRecommender(interaction_df)
+        collab = CollaborativeRecommender(interaction_df)
         cfg = CausalConfig.conservative()
         model = HybridRecommender(content, collab, item_df, causal_config=cfg)
         assert model._causal_config is cfg
 
-    def test_recommend_via_causal_config_returns_causal_keys(self, item_df, interaction_df):
+    def test_recommend_via_causal_config_returns_causal_keys(
+            self, item_df, interaction_df):
         content = ContentRecommender(item_df)
-        collab  = CollaborativeRecommender(interaction_df)
+        collab = CollaborativeRecommender(interaction_df)
         model = HybridRecommender(
             content, collab, item_df,
             causal_config=CausalConfig(enabled=True, blend_lambda=0.5),
@@ -224,27 +227,29 @@ class TestCausalDebiaserInit:
         assert d.get_propensity('A') > d.get_propensity('B')
 
 
-# ─── Propensity direction ─────────────────────────────────────────────────────
+# ─── Propensity direction ───────────────────────────────────────────────
 
 class TestPropensityDirection:
 
     def test_popular_item_has_higher_propensity_than_niche(self, debiaser):
         """Blockbuster A (5000 reviews) must have higher propensity than Rare E (5 reviews)."""
-        assert debiaser.get_propensity('Blockbuster A') > debiaser.get_propensity('Rare E')
+        assert debiaser.get_propensity(
+            'Blockbuster A') > debiaser.get_propensity('Rare E')
 
     def test_dominant_category_item_has_higher_propensity(self, debiaser):
         """Electronics (2 items) should dominate Books (2 items) and Art (1 item)."""
         # Electronics items have both high review_count AND category dominance
-        assert debiaser.get_propensity('Blockbuster A') > debiaser.get_propensity('Rare E')
+        assert debiaser.get_propensity(
+            'Blockbuster A') > debiaser.get_propensity('Rare E')
 
     def test_ips_weight_inverts_propensity(self, debiaser):
         """IPS weight must be inversely proportional to propensity."""
         w_popular = debiaser.get_ips_weight('Blockbuster A')
-        w_niche   = debiaser.get_ips_weight('Rare E')
+        w_niche = debiaser.get_ips_weight('Rare E')
         assert w_niche > w_popular
 
 
-# ─── debias() single-item ─────────────────────────────────────────────────────
+# ─── debias() single-item ───────────────────────────────────────────────
 
 class TestDebiasSingle:
 
@@ -282,12 +287,12 @@ class TestDebiasSingle:
         })
         d_full = CausalDebiaser(df, blend_lambda=1.0)
         score_popular = d_full.debias('Popular', 0.8)
-        score_niche   = d_full.debias('Niche', 0.8)
+        score_niche = d_full.debias('Niche', 0.8)
         # Niche item should score higher after full debiasing
         assert score_niche >= score_popular
 
 
-# ─── debias_batch() ───────────────────────────────────────────────────────────
+# ─── debias_batch() ─────────────────────────────────────────────────────
 
 class TestDebiasBatch:
 
@@ -313,7 +318,8 @@ class TestDebiasBatch:
             assert 'original_score' in item
             assert item['original_score'] == 0.8
 
-    def test_niche_item_scores_higher_than_popular_after_debiasing(self, item_df):
+    def test_niche_item_scores_higher_than_popular_after_debiasing(
+            self, item_df):
         """
         Core correctness test: given equal raw scores, a niche item must
         rank above a popular item after IPS debiasing.
@@ -321,7 +327,7 @@ class TestDebiasBatch:
         d = CausalDebiaser(item_df, blend_lambda=1.0)
         items = [
             {'title': 'Blockbuster A', 'hybrid_score': 0.8},
-            {'title': 'Rare E',        'hybrid_score': 0.8},
+            {'title': 'Rare E', 'hybrid_score': 0.8},
         ]
         out = d.debias_batch(items)
         scores = {i['title']: i['hybrid_score'] for i in out}
@@ -352,19 +358,28 @@ class TestDebiasBatch:
         d = CausalDebiaser(item_df, blend_lambda=0.8)
         items = [
             {'title': 'Blockbuster A', 'hybrid_score': 0.9},
-            {'title': 'Rare E',        'hybrid_score': 0.7},
+            {'title': 'Rare E', 'hybrid_score': 0.7},
         ]
-        out_before = sorted(items, key=lambda x: x['hybrid_score'], reverse=True)
-        out_after  = d.debias_batch([
+        out_before = sorted(
+            items,
+            key=lambda x: x['hybrid_score'],
+            reverse=True)
+        out_after = d.debias_batch([
             {'title': 'Blockbuster A', 'hybrid_score': 0.9},
-            {'title': 'Rare E',        'hybrid_score': 0.7},
+            {'title': 'Rare E', 'hybrid_score': 0.7},
         ])
-        out_after_sorted = sorted(out_after, key=lambda x: x['hybrid_score'], reverse=True)
-        # After debiasing, Rare E should close the gap or overtake Blockbuster A
-        rare_after  = next(i['hybrid_score'] for i in out_after if i['title'] == 'Rare E')
-        block_after = next(i['hybrid_score'] for i in out_after if i['title'] == 'Blockbuster A')
+        out_after_sorted = sorted(
+            out_after,
+            key=lambda x: x['hybrid_score'],
+            reverse=True)
+        # After debiasing, Rare E should close the gap or overtake Blockbuster
+        # A
+        rare_after = next(i['hybrid_score']
+                          for i in out_after if i['title'] == 'Rare E')
+        block_after = next(i['hybrid_score']
+                           for i in out_after if i['title'] == 'Blockbuster A')
         gap_before = 0.9 - 0.7
-        gap_after  = block_after - rare_after
+        gap_after = block_after - rare_after
         assert gap_after < gap_before, "Debiasing should reduce the gap between popular and niche items"
 
 
@@ -390,37 +405,43 @@ class TestDebiaserSummary:
 
 class TestHybridCausalIntegration:
 
-    def test_causal_flag_true_attaches_debiaser(self, hybrid_model_with_causal):
+    def test_causal_flag_true_attaches_debiaser(
+            self, hybrid_model_with_causal):
         assert hybrid_model_with_causal._debiaser is not None
         assert isinstance(hybrid_model_with_causal._debiaser, CausalDebiaser)
 
     def test_causal_flag_false_no_debiaser(self, hybrid_model_no_causal):
         assert hybrid_model_no_causal._debiaser is None
 
-    def test_recommend_with_causal_returns_list(self, hybrid_model_with_causal):
+    def test_recommend_with_causal_returns_list(
+            self, hybrid_model_with_causal):
         recs = hybrid_model_with_causal.recommend('Blockbuster A', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
 
-    def test_recommend_with_causal_has_required_keys(self, hybrid_model_with_causal):
+    def test_recommend_with_causal_has_required_keys(
+            self, hybrid_model_with_causal):
         recs = hybrid_model_with_causal.recommend('Blockbuster A', top_n=3)
         required = {'title', 'hybrid_score', 'content_score', 'collab_score',
                     'sentiment_score', 'causal_score', 'original_score'}
         for r in recs:
             assert required.issubset(r.keys()), f"Missing keys in: {r.keys()}"
 
-    def test_recommend_with_causal_scores_in_bounds(self, hybrid_model_with_causal):
+    def test_recommend_with_causal_scores_in_bounds(
+            self, hybrid_model_with_causal):
         recs = hybrid_model_with_causal.recommend('Blockbuster A', top_n=4)
         for r in recs:
             assert 0.0 <= r['hybrid_score'] <= 1.0
             assert 0.0 <= r['causal_score'] <= 1.0
 
-    def test_recommend_sorted_by_hybrid_score_after_debiasing(self, hybrid_model_with_causal):
+    def test_recommend_sorted_by_hybrid_score_after_debiasing(
+            self, hybrid_model_with_causal):
         recs = hybrid_model_with_causal.recommend('Blockbuster A', top_n=4)
         scores = [r['hybrid_score'] for r in recs]
         assert scores == sorted(scores, reverse=True)
 
-    def test_recommend_without_causal_has_no_causal_keys(self, hybrid_model_no_causal):
+    def test_recommend_without_causal_has_no_causal_keys(
+            self, hybrid_model_no_causal):
         recs = hybrid_model_no_causal.recommend('Blockbuster A', top_n=3)
         for r in recs:
             assert 'causal_score' not in r
@@ -434,7 +455,7 @@ class TestHybridCausalIntegration:
         the non-causal baseline when the catalog has strong popularity skew.
         """
         content = ContentRecommender(item_df)
-        collab  = CollaborativeRecommender(interaction_df)
+        collab = CollaborativeRecommender(interaction_df)
 
         model_causal = HybridRecommender(
             content, collab, item_df,
@@ -446,19 +467,21 @@ class TestHybridCausalIntegration:
         )
 
         recs_causal = model_causal.recommend('Blockbuster A', top_n=4)
-        recs_plain  = model_plain.recommend('Blockbuster A', top_n=4)
+        recs_plain = model_plain.recommend('Blockbuster A', top_n=4)
 
         titles_causal = [r['title'] for r in recs_causal]
-        titles_plain  = [r['title'] for r in recs_plain]
+        titles_plain = [r['title'] for r in recs_plain]
 
         # Rankings must differ when debiasing is aggressive
         assert titles_causal != titles_plain, (
             "Causal and non-causal rankings should differ with λ=1.0 on a skewed catalog"
         )
 
-    def test_existing_recommend_keys_preserved_with_causal(self, hybrid_model_with_causal):
+    def test_existing_recommend_keys_preserved_with_causal(
+            self, hybrid_model_with_causal):
         """Causal layer must not remove any existing result keys."""
-        recs_causal = hybrid_model_with_causal.recommend('Blockbuster A', top_n=2)
+        recs_causal = hybrid_model_with_causal.recommend(
+            'Blockbuster A', top_n=2)
         existing_keys = {'title', 'hybrid_score', 'content_score', 'collab_score',
                          'sentiment_score', 'rating', 'category', 'description'}
         for r in recs_causal:
@@ -477,4 +500,3 @@ class TestHybridCausalIntegration:
         assert d.clip_max == 100.0
         w = d.get_ips_weight('Rare E')
         assert w <= 100.0
-

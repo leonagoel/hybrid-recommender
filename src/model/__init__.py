@@ -7,6 +7,7 @@ causal inference layer without needing to know internal module paths.
 
 import importlib.util
 
+
 def _load_safe(module_name, class_name):
     try:
         module = importlib.import_module(module_name)
@@ -14,8 +15,13 @@ def _load_safe(module_name, class_name):
     except Exception:
         return None
 
-ContentRecommender = _load_safe("src.model.content_model", "ContentRecommender")
-CollaborativeRecommender = _load_safe("src.model.collaborative_model", "CollaborativeRecommender")
+
+ContentRecommender = _load_safe(
+    "src.model.content_model",
+    "ContentRecommender")
+CollaborativeRecommender = _load_safe(
+    "src.model.collaborative_model",
+    "CollaborativeRecommender")
 HybridRecommender = _load_safe("src.model.hybrid_model", "HybridRecommender")
 CausalDebiaser = _load_safe("src.model.causal_model", "CausalDebiaser")
 CausalConfig = _load_safe("src.model.causal_config", "CausalConfig")

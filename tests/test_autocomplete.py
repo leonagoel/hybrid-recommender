@@ -50,16 +50,18 @@ def test_autocomplete_success(monkeypatch):
 
     response = client.get("/api/autocomplete?q=naruto&limit=3")
     assert response.status_code == 200
-    
+
     payload = response.json()
     assert "suggestions" in payload
     # Stripped and deduplicated
-    assert payload["suggestions"] == ["Anime Naruto", "Naruto Shippuden", "Naruto"]
+    assert payload["suggestions"] == [
+        "Anime Naruto", "Naruto Shippuden", "Naruto"]
 
 
 def test_autocomplete_empty_query(monkeypatch):
     monkeypatch.setattr(main, "get_supabase", lambda: FakeSupabase())
-    # If q is empty, min_length=1 constraint on Query will trigger 422 Unprocessable Entity
+    # If q is empty, min_length=1 constraint on Query will trigger 422
+    # Unprocessable Entity
     response = client.get("/api/autocomplete?q=")
     assert response.status_code == 422
 

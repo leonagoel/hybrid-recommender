@@ -17,16 +17,18 @@ def remove_duplicate_headers(df):
     cols_to_drop = []
 
     for col in df.columns:
-        # Convert to lowercase and strip spaces to detect duplicates like 'Product_ID' and 'product_id'
+        # Convert to lowercase and strip spaces to detect duplicates like
+        # 'Product_ID' and 'product_id'
         norm_name = str(col).strip().lower()
-        
+
         if norm_name in normalized_cols:
             existing_col = normalized_cols[norm_name]
             # Compare missing/null value counts between the duplicates
             existing_nulls = df[existing_col].isnull().sum()
             current_nulls = df[col].isnull().sum()
-            
-            # Keep the one with fewer null values, drop the other from the array
+
+            # Keep the one with fewer null values, drop the other from the
+            # array
             if current_nulls < existing_nulls:
                 cols_to_drop.append(existing_col)
                 normalized_cols[norm_name] = col
@@ -38,7 +40,7 @@ def remove_duplicate_headers(df):
     # Drop duplicate column fields gracefully before parsing mapping states
     if cols_to_drop:
         df = df.drop(columns=cols_to_drop)
-        
+
     return df
 
 
@@ -168,16 +170,18 @@ def detect_column(columns, keywords):
         for col in columns:
             if col.lower() == key:
                 return col
-                
+
     # Second pass: substring matches
     for key in keywords:
         for col in columns:
             if key in col.lower():
-                # Avoid false positive where customer_rating is matched as user column
-                if key == 'customer' and ('rating' in col.lower() or 'score' in col.lower()):
+                # Avoid false positive where customer_rating is matched as user
+                # column
+                if key == 'customer' and (
+                        'rating' in col.lower() or 'score' in col.lower()):
                     continue
                 return col
-                
+
     return None
 
 
@@ -202,7 +206,8 @@ def _has_blank_values(series):
     return series.isna().any() or series.astype(str).str.strip().eq('').any()
 
 
-def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=None, rating_col=None):
+def validate_recommender_inputs(
+        df, user_col=None, item_id_col=None, title_col=None, rating_col=None):
     """
     Validate columns that feed the recommender pipeline before normalization.
     """
@@ -221,7 +226,8 @@ def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=N
         )
 
     corrupted = []
-    for label, col in (('user_id', user_col), ('item_id', item_id_col), ('title', title_col)):
+    for label, col in (('user_id', user_col), ('item_id',
+                       item_id_col), ('title', title_col)):
         if col is not None and _has_blank_values(df[col]):
             corrupted.append(label)
 
@@ -282,7 +288,8 @@ def read_file(path_or_buffer, file_format=None):
                     encoding=encoding,
                 )
 
-                # Deduplicate raw column configurations early upon reading CSV file buffers
+                # Deduplicate raw column configurations early upon reading CSV
+                # file buffers
                 df = remove_duplicate_headers(df)
                 break
 
@@ -301,7 +308,8 @@ def read_file(path_or_buffer, file_format=None):
                 encoding='utf-8',
                 encoding_errors='replace',
             )
-            # Deduplicate raw column configurations early upon fallback processing loop strings
+            # Deduplicate raw column configurations early upon fallback
+            # processing loop strings
             df = remove_duplicate_headers(df)
 
     return df
@@ -470,8 +478,8 @@ def adapt_data(df):
     # Combined text feature
 
     df['combined'] = (
-        df['title'].astype(str) + ' ' +
-        df['description'].astype(str) + ' ' +
+        df['title'].astype(str) + ' ' +  # noqa: W504
+        df['description'].astype(str) + ' ' +  # noqa: W504
         df['category'].astype(str)
     )
 

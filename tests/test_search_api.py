@@ -1,6 +1,7 @@
 """
 Integration tests for the /api/search endpoint.
 """
+from backend import main
 import os
 import sys
 from types import SimpleNamespace
@@ -8,8 +9,6 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from backend import main
 
 
 PRODUCTS = [
@@ -68,7 +67,8 @@ class FakeQuery:
 class FakeSupabase:
     def __init__(self, rpc_data=None, table_data=None, rpc_error=None):
         self.rpc_data = rpc_data if rpc_data is not None else PRODUCTS[:1]
-        self.table_query = FakeQuery(table_data if table_data is not None else PRODUCTS)
+        self.table_query = FakeQuery(
+            table_data if table_data is not None else PRODUCTS)
         self.rpc_error = rpc_error
         self.rpc_calls = []
 
@@ -123,7 +123,8 @@ def test_search_query_uses_postgres_rpc(monkeypatch):
 
 
 def test_search_query_falls_back_to_title_match_when_rpc_fails(monkeypatch):
-    fake_supabase = FakeSupabase(table_data=PRODUCTS[1:], rpc_error=RuntimeError("rpc unavailable"))
+    fake_supabase = FakeSupabase(
+        table_data=PRODUCTS[1:], rpc_error=RuntimeError("rpc unavailable"))
     monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
     client = TestClient(main.app)
 
@@ -133,7 +134,8 @@ def test_search_query_falls_back_to_title_match_when_rpc_fails(monkeypatch):
     payload = response.json()
     assert payload["results"][0]["title"] == "Laptop Stand"
     assert payload["results"][0]["rank"] == 0.0
-    assert ("ilike", ("title", "%stand%"), {}) in fake_supabase.table_query.calls
+    assert ("ilike", ("title", "%stand%"), {}
+            ) in fake_supabase.table_query.calls
 
 
 def test_search_rejects_oversized_query(monkeypatch):
@@ -141,10 +143,12 @@ def test_search_rejects_oversized_query(monkeypatch):
     monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
     client = TestClient(main.app)
 
-    response = client.get("/api/search", params={"q": "a" * (main.MAX_SEARCH_QUERY_LENGTH + 1)})
+    response = client.get("/api/search",
+                          params={"q": "a" * (main.MAX_SEARCH_QUERY_LENGTH + 1)})
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Search query must be 120 characters or fewer."
+    assert response.json()[
+        "detail"] == "Search query must be 120 characters or fewer."
     assert fake_supabase.rpc_calls == []
 
 
@@ -153,7 +157,10 @@ def test_search_normalizes_query_before_cache_and_rpc(monkeypatch):
     monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
     client = TestClient(main.app)
 
-    response = client.get("/api/search", params={"q": "  wireless   headphones  "})
+    response = client.get(
+        "/api/search",
+        params={
+            "q": "  wireless   headphones  "})
 
     assert response.status_code == 200
     assert response.json()["query"] == "wireless headphones"
@@ -161,14 +168,16 @@ def test_search_normalizes_query_before_cache_and_rpc(monkeypatch):
 
 
 def test_search_fallback_escapes_like_wildcards(monkeypatch):
-    fake_supabase = FakeSupabase(table_data=PRODUCTS[1:], rpc_error=RuntimeError("rpc unavailable"))
+    fake_supabase = FakeSupabase(
+        table_data=PRODUCTS[1:], rpc_error=RuntimeError("rpc unavailable"))
     monkeypatch.setattr(main, "get_supabase", lambda: fake_supabase)
     client = TestClient(main.app)
 
     response = client.get("/api/search", params={"q": r"50%_off\sale"})
 
     assert response.status_code == 200
-    assert ("ilike", ("title", r"%50\%\_off\\sale%"), {}) in fake_supabase.table_query.calls
+    assert ("ilike", ("title", r"%50\%\_off\\sale%"),
+            {}) in fake_supabase.table_query.calls
 
 
 def test_search_rejects_oversized_offset(monkeypatch):
@@ -179,4 +188,3 @@ def test_search_rejects_oversized_offset(monkeypatch):
     response = client.get("/api/search", params={"offset": 10001})
 
     assert response.status_code == 422
-

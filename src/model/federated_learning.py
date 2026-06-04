@@ -38,10 +38,13 @@ class FederatedClient:
 
         # Extract global vectors for the rated items
         indices = [title_to_idx[t] for t in rated_titles]
-        V_u = global_item_factors[:, indices]  # Shape: [n_factors, len(rated_titles)]
-        ratings_vec = np.array([self.private_ratings[t] for t in rated_titles], dtype=float)
+        # Shape: [n_factors, len(rated_titles)]
+        V_u = global_item_factors[:, indices]
+        ratings_vec = np.array([self.private_ratings[t]
+                               for t in rated_titles], dtype=float)
 
-        # Solve Ridge Regression: (V_u * V_u.T + reg * I) * user_factor = V_u * ratings
+        # Solve Ridge Regression: (V_u * V_u.T + reg * I) * user_factor = V_u *
+        # ratings
         A = np.dot(V_u, V_u.T) + reg * np.eye(n_factors)
         b = np.dot(V_u, ratings_vec)
         self.user_factor = np.linalg.solve(A, b)
@@ -70,7 +73,8 @@ class FederatedClient:
             pred_rating = np.dot(self.user_factor, v_i)
             error = rating - pred_rating
 
-            # Update vector = error * user_factor - regularization * item_factor
+            # Update vector = error * user_factor - regularization *
+            # item_factor
             updates[title] = error * self.user_factor - reg * v_i
         return updates
 
@@ -81,7 +85,8 @@ class FederatedServer:
     and updates the global collaborative model parameters.
     """
 
-    def __init__(self, item_list: list, n_factors: int = 20, learning_rate: float = 0.05, reg: float = 0.05):
+    def __init__(self, item_list: list, n_factors: int = 20,
+                 learning_rate: float = 0.05, reg: float = 0.05):
         """
         item_list: List of all unique item titles.
         n_factors: Number of SVD latent dimensions.
@@ -94,7 +99,7 @@ class FederatedServer:
         self.reg = reg
 
         self.title_to_idx = {t: i for i, t in enumerate(self.item_list)}
-        
+
         # Initialize global item factors randomly
         np.random.seed(42)
         self.global_item_factors = np.random.normal(
@@ -158,7 +163,7 @@ def train_federated_collaborative_model(
     # 3. Federated Training Loop
     for _ in range(epochs):
         client_updates = []
-        
+
         # Phase 1: Local computations on each client
         for client in clients:
             # Client updates its local user vector based on global item factors
@@ -174,7 +179,8 @@ def train_federated_collaborative_model(
         # Phase 2: Central server aggregates updates and updates global factors
         server.aggregate_updates(client_updates)
 
-    # Final iteration to ensure local user factors are synced with final global factors
+    # Final iteration to ensure local user factors are synced with final
+    # global factors
     user_factors_list = []
     for client in clients:
         client.compute_local_user_factor(
@@ -185,7 +191,7 @@ def train_federated_collaborative_model(
     # 4. Construct final CollaborativeRecommender
     # We create a mock/empty instance and populate its SVD matrix factors
     recommender = CollaborativeRecommender(interaction_df, n_factors=n_factors)
-    
+
     # Overwrite matrix factors and lookups
     recommender.title_list = list(unique_items)
     recommender._user_to_idx = {u: i for i, u in enumerate(unique_users)}

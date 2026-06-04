@@ -59,7 +59,10 @@ def test_import_dataset_sends_review_count_to_supabase(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     fake_supabase = FakeSupabase()
-    monkeypatch.setattr(import_to_supabase, "get_supabase_admin", lambda: fake_supabase)
+    monkeypatch.setattr(
+        import_to_supabase,
+        "get_supabase_admin",
+        lambda: fake_supabase)
 
     imported = import_to_supabase.import_dataset(str(csv_path), batch_size=2)
 

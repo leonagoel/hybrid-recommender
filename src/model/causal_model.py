@@ -145,7 +145,8 @@ class CausalDebiaser:
         Debiased score clipped to [0, 1].
         """
         w_i = self._propensity_model.get_ips_weight(title, self.clip_max)
-        debiased = score * (self.blend_lambda * w_i + (1.0 - self.blend_lambda))
+        debiased = score * (self.blend_lambda * w_i +  # noqa: W504
+                            (1.0 - self.blend_lambda))
         return float(np.clip(debiased, 0.0, 1.0))
 
     def debias_batch(
@@ -194,13 +195,15 @@ class CausalDebiaser:
 
         # Batch-level normalization: divide by mean so E[w_normalized] = 1
         mean_w = weights_arr.mean()
-        normalized_weights = weights_arr / mean_w if mean_w > 0 else np.ones(len(raw_weights))
+        normalized_weights = weights_arr / \
+            mean_w if mean_w > 0 else np.ones(len(raw_weights))
 
         for i, item in enumerate(items):
             original = float(item.get(score_key, 0.0))
             w_norm = float(normalized_weights[i])
 
-            causal = original * (self.blend_lambda * w_norm + (1.0 - self.blend_lambda))
+            causal = original * \
+                (self.blend_lambda * w_norm + (1.0 - self.blend_lambda))
             causal = float(np.clip(causal, 0.0, 1.0))
 
             item["original_score"] = round(original, 4)
@@ -214,7 +217,8 @@ class CausalDebiaser:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_config(cls, item_df: pd.DataFrame, config: CausalConfig) -> "CausalDebiaser":
+    def from_config(cls, item_df: pd.DataFrame,
+                    config: CausalConfig) -> "CausalDebiaser":
         """
         Construct a CausalDebiaser from a CausalConfig instance.
 
