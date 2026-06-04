@@ -5,16 +5,13 @@ Run with: pytest tests/test_schemas.py -v
 Extended with comprehensive HybridWeightsSchema weight normalization
 validation tests as part of issue #618.
 """
-import math
+from src.model.schemas import ModelHyperparametersSchema, HybridWeightsSchema
+from pydantic import ValidationError
 import pytest
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from pydantic import ValidationError
-
-from src.model.schemas import ModelHyperparametersSchema, HybridWeightsSchema
 
 
 class TestModelHyperparametersSchema:
@@ -119,12 +116,12 @@ class TestHybridWeightsSchema:
         assert abs(total - 1.0) < 1e-9
 
     def test_dominant_single_weight(self):
-        """One weight dominates while others are near-zero (but positive total)."""
+        """One weight dominates while others are near-zero (but positive total)."""  # noqa: E501
         schema = HybridWeightsSchema(alpha=0.98, beta=0.01, gamma=0.01)
         assert schema.alpha == 0.98
 
     def test_weights_sum_less_than_one_accepted(self):
-        """Sum < 1 is valid — the schema does not require normalisation to 1."""
+        """Sum < 1 is valid — the schema does not require normalisation to 1."""  # noqa: E501
         schema = HybridWeightsSchema(alpha=0.2, beta=0.2, gamma=0.2)
         assert schema.alpha + schema.beta + schema.gamma == pytest.approx(0.6)
 
@@ -198,7 +195,7 @@ class TestHybridWeightsSchema:
                "blending" in str(exc_info.value).lower()
 
     def test_all_zero_error_message_content(self):
-        """Validation error message should reference the normalization constraint."""
+        """Validation error message should reference the normalization constraint."""  # noqa: E501
         with pytest.raises(ValidationError) as exc_info:
             HybridWeightsSchema(alpha=0.0, beta=0.0, gamma=0.0)
         errors = exc_info.value.errors()
@@ -213,19 +210,19 @@ class TestHybridWeightsSchema:
             HybridWeightsSchema(alpha=0.0, beta=0.0, gamma=0.0)
 
     def test_very_small_positive_weight_accepted(self):
-        """A very small but strictly positive total should pass the validator."""
+        """A very small but strictly positive total should pass the validator."""  # noqa: E501
         schema = HybridWeightsSchema(alpha=1e-9, beta=0.0, gamma=0.0)
         assert schema.alpha == pytest.approx(1e-9)
 
     def test_floating_point_precision_sum_close_to_one(self):
-        """IEEE 754 additions may not equal 1.0 exactly — schema should not care."""
+        """IEEE 754 additions may not equal 1.0 exactly — schema should not care."""  # noqa: E501
         a, b, g = 0.1, 0.2, 0.7
         schema = HybridWeightsSchema(alpha=a, beta=b, gamma=g)
         total = schema.alpha + schema.beta + schema.gamma
         assert abs(total - 1.0) < 1e-9
 
     def test_repeating_decimal_weights(self):
-        """1/3 is a repeating decimal in binary — schema must handle it cleanly."""
+        """1/3 is a repeating decimal in binary — schema must handle it cleanly."""  # noqa: E501
         schema = HybridWeightsSchema(
             alpha=round(1 / 3, 10),
             beta=round(1 / 3, 10),
@@ -256,7 +253,7 @@ class TestHybridWeightsSchema:
 
     def test_string_numeric_coerced_or_rejected(self):
         """Pydantic v2 coerces '0.5' to 0.5 for float fields by default."""
-        # Either coercion succeeds or a ValidationError is raised — both are fine.
+        # Either coercion succeeds or a ValidationError is raised — both are fine.  # noqa: E501
         try:
             schema = HybridWeightsSchema(alpha="0.5", beta=0.3, gamma=0.2)
             assert schema.alpha == pytest.approx(0.5)
@@ -276,7 +273,7 @@ class TestHybridWeightsSchema:
             HybridWeightsSchema(alpha={"value": 0.4}, beta=0.3, gamma=0.2)
 
     def test_boolean_weight_coerced_or_rejected(self):
-        """bool is a subclass of int in Python; Pydantic may coerce True → 1.0."""
+        """bool is a subclass of int in Python; Pydantic may coerce True → 1.0."""  # noqa: E501
         try:
             schema = HybridWeightsSchema(alpha=True, beta=0.0, gamma=0.0)
             # If coerced, True → 1.0 which is within [0, 1]
@@ -329,7 +326,7 @@ class TestHybridWeightsSchema:
         assert hash(s) == hash(s)
 
     def test_repeated_instantiation_consistent(self):
-        """Repeated construction with the same args always returns the same values."""
+        """Repeated construction with the same args always returns the same values."""  # noqa: E501
         results = [
             HybridWeightsSchema(alpha=0.3, beta=0.4, gamma=0.3)
             for _ in range(10)
