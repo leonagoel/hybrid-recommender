@@ -80,6 +80,7 @@ from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
+from src.model.two_tower_retrieval import TwoTowerRetrievalEngine
 from src.model.issue_triage import triage_issue
 from src.model.federated_learning import train_federated_collaborative_model
 
@@ -623,6 +624,7 @@ models = {
     "content": None,
     "collab": None,
     "hybrid": None,
+    "neural": None,
     "ready": False,
     "item_df": None,
     "build_time": None,
@@ -1372,6 +1374,8 @@ def build_models(
     start_time = time.time()
     content_model = ContentRecommender(item_df)
     collab_model = None
+    neural_model = None
+    neural_interaction_df = None
     try:
         purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
         purchases = purchases_result.data or []
@@ -1386,9 +1390,38 @@ def build_models(
                 interaction_df = pd.DataFrame(interaction_rows)
                 if interaction_df['user_id'].nunique() > 1:
                     collab_model = CollaborativeRecommender(interaction_df)
+
+            neural_rows = [
+                {
+                    "user_id": p.get("user_id"),
+                    "item_id": p.get("product_id"),
+                }
+                for p in purchases
+                if p.get("user_id") and p.get("product_id") in product_title_map
+            ]
+            if len(neural_rows) > 10:
+                neural_interaction_df = pd.DataFrame(neural_rows)
+                if (
+                    neural_interaction_df["user_id"].nunique() > 1
+                    and neural_interaction_df["item_id"].nunique() > 1
+                ):
+                    neural_items_df = item_df.rename(columns={"id": "item_id"})[
+                        ["item_id"]
+                    ].dropna().drop_duplicates()
+                    neural_model = TwoTowerRetrievalEngine()
+                    neural_model.fit_and_index(
+                        neural_interaction_df,
+                        neural_items_df,
+                        epochs=int(os.environ.get("TWO_TOWER_EPOCHS", "1")),
+                    )
     except Exception as e:
-        logger.warning("Collaborative model data load failed: %s", e)
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
+        logger.warning("Interaction model data load failed: %s", e)
+    hybrid_model = HybridRecommender(
+        content_model,
+        collab_model,
+        item_df,
+        retrieval_model=neural_model,
+    )
     build_time = round(time.time() - start_time, 2)
     
     version = generate_model_version()
@@ -1397,11 +1430,13 @@ def build_models(
         "content": content_model,
         "collab": collab_model,
         "hybrid": hybrid_model,
+        "neural": neural_model,
         "item_df": item_df,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "training_metadata": {
             "items": len(item_df),
             "has_collaborative": collab_model is not None,
+            "has_neural_retrieval": neural_model is not None,
             "build_time_seconds": build_time,
         },
         "status": "staging",
@@ -1417,6 +1452,7 @@ def build_models(
     models["content"] = content_model
     models["collab"] = collab_model
     models["hybrid"] = hybrid_model
+    models["neural"] = neural_model
     models["item_df"] = item_df
     models["ready"] = True
     models["build_time"] = build_time
@@ -1429,6 +1465,7 @@ def build_models(
         "status": "staging",
         "items": len(item_df),
         "has_collaborative": collab_model is not None,
+        "has_neural_retrieval": neural_model is not None,
         "build_time_seconds": build_time,
 	"precomputed_recommendations": precomputed_count,
     }
@@ -1534,6 +1571,7 @@ def get_recommendations(
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
     strategy: Optional[str] = Query(None), 
+    candidate_source: str = Query("hybrid", pattern="^(hybrid|neural|mixed)$"),
 ):
     rate_limited = _apply_rate_limit(
         request,
@@ -1576,15 +1614,31 @@ def get_recommendations(
         target_catalog or "",
         model_version or "",
         strategy or "",
+        candidate_source,
     )
     cached = _get_cached_response(cache_key)
     if cached is not None:
         _set_cache_headers(response, "HIT")
         return cached
 
-    recs = selected_models["hybrid"].recommend(
-        query_title, top_n=top_n, explain=explain, target_catalog=target_catalog
-    )
+    recommend_kwargs = {
+        "top_n": top_n,
+        "explain": explain,
+        "target_catalog": target_catalog,
+        "user_id": user_id,
+        "candidate_source": candidate_source,
+    }
+    try:
+        recs = selected_models["hybrid"].recommend(query_title, **recommend_kwargs)
+    except TypeError as exc:
+        if "candidate_source" not in str(exc) and "user_id" not in str(exc):
+            raise
+        recs = selected_models["hybrid"].recommend(
+            query_title,
+            top_n=top_n,
+            explain=explain,
+            target_catalog=target_catalog,
+        )
 
     # Popularity fallback (existing behaviour)
     if not recs and strategy == "popularity" and models["collab"]:
@@ -1615,6 +1669,18 @@ def get_recommendations(
         "target_catalog": target_catalog,
         "model_version": model_version or ACTIVE_MODEL_VERSION,
         "has_history": has_history,
+        "candidate_source": candidate_source,
+        "candidate_source_context": getattr(
+            selected_models["hybrid"],
+            "last_candidate_context",
+            {
+                "requested": candidate_source,
+                "effective": candidate_source,
+                "fallback": False,
+                "neural_candidate_count": 0,
+            },
+        ),
+        "neural_retrieval_available": selected_models.get("neural") is not None,
     }
 
     if (
@@ -1627,12 +1693,22 @@ def get_recommendations(
         shadow_start = time.time()
 
         try:
-            shadow_recs = shadow_model["hybrid"].recommend(
-                query_title,
-                top_n=top_n,
-                explain=explain,
-                target_catalog=target_catalog,
-            )
+            try:
+                shadow_recs = shadow_model["hybrid"].recommend(
+                    query_title,
+                    top_n=top_n,
+                    explain=explain,
+                    target_catalog=target_catalog,
+                    user_id=user_id,
+                    candidate_source=candidate_source,
+                )
+            except TypeError:
+                shadow_recs = shadow_model["hybrid"].recommend(
+                    query_title,
+                    top_n=top_n,
+                    explain=explain,
+                    target_catalog=target_catalog,
+                )
 
             shadow_latency = round(
                 (time.time() - shadow_start) * 1000,
@@ -1716,7 +1792,12 @@ def recommend_cold_start(
 
 
 @app.get("/api/user_recommend")
-def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
+def get_user_recommendations(
+    user_id: str,
+    top_n: int = 10,
+    explain: bool = Query(False),
+    candidate_source: str = Query("hybrid", pattern="^(hybrid|neural|mixed)$"),
+):
     """Get hybrid recommendations for a user."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
@@ -1727,13 +1808,35 @@ def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Quer
     if collab is None or user_id not in getattr(collab, "_user_to_idx", {}):
         is_fallback = True
 
-    recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
+    try:
+        recs = models["hybrid"].recommend_for_user(
+            user_id,
+            top_n=top_n,
+            explain=explain,
+            candidate_source=candidate_source,
+        )
+    except TypeError as exc:
+        if "candidate_source" not in str(exc):
+            raise
+        recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
         
     return {
         "query_user": user_id,
         "recommendations": recs,
         "fallback": is_fallback,
         "weights": models["hybrid"].get_weights(),
+        "candidate_source": candidate_source,
+        "candidate_source_context": getattr(
+            models["hybrid"],
+            "last_candidate_context",
+            {
+                "requested": candidate_source,
+                "effective": candidate_source,
+                "fallback": False,
+                "neural_candidate_count": 0,
+            },
+        ),
+        "neural_retrieval_available": models.get("neural") is not None,
     }
 
 @app.websocket("/ws/recommendations")
@@ -1923,6 +2026,7 @@ def promote_model(
     models["content"] = selected["content"]
     models["collab"] = selected["collab"]
     models["hybrid"] = selected["hybrid"]
+    models["neural"] = selected.get("neural")
     models["item_df"] = selected["item_df"]
     models["ready"] = True
     models["build_time"] = selected["training_metadata"]["build_time_seconds"]

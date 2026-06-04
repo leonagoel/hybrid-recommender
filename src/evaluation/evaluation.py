@@ -20,9 +20,9 @@ Usage as importable module (new — used by /api/evaluate endpoint):
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -33,7 +33,15 @@ import pandas as pd
 # Types
 # ---------------------------------------------------------------------------
 
-Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
+Mode = Literal[
+    "content",
+    "collaborative",
+    "sentiment",
+    "hybrid",
+    "neural",
+    "mixed",
+    "all",
+]
 
 MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
 ResultsDict = dict[str, MetricsDict]    # {"content": {...}, "hybrid": {...}, ...}
@@ -283,6 +291,7 @@ def _get_hybrid_recs(
     beta: float,
     gamma: float,
     k: int,
+    candidate_titles: list[str] | None = None,
 ) -> list[str]:
     """Return top-K titles using weighted hybrid score (α·content + β·collab + γ·sentiment)."""
     from sklearn.metrics.pairwise import cosine_similarity
@@ -307,8 +316,138 @@ def _get_hybrid_recs(
     hybrid_scores = alpha * content_scores + beta * collab_scores + gamma * sentiment_scores
     hybrid_scores[idx] = -1  # exclude self
 
+    if candidate_titles is not None:
+        allowed = set(candidate_titles)
+        mask = df["title"].isin(allowed).to_numpy()
+        hybrid_scores = np.where(mask, hybrid_scores, -np.inf)
+
     top_indices = np.argsort(hybrid_scores)[::-1][:k]
-    return df.iloc[top_indices]["title"].tolist()
+    return [
+        title
+        for title in df.iloc[top_indices]["title"].tolist()
+        if candidate_titles is None or title in allowed
+    ]
+
+
+def _prepare_neural_frames(df: pd.DataFrame):
+    """Create user-item frames for two-tower evaluation when interaction data exists."""
+    if "user_id" not in df.columns:
+        return None, None, {}
+
+    item_id_col = None
+    for candidate in ("item_id", "product_id", "id"):
+        if candidate in df.columns:
+            item_id_col = candidate
+            break
+
+    eval_df = df.copy()
+    if item_id_col is None:
+        eval_df["_eval_item_id"] = eval_df["title"]
+        item_id_col = "_eval_item_id"
+
+    interactions = (
+        eval_df[["user_id", item_id_col]]
+        .dropna()
+        .rename(columns={item_id_col: "item_id"})
+        .drop_duplicates()
+    )
+    items = (
+        eval_df[["title", item_id_col]]
+        .dropna()
+        .rename(columns={item_id_col: "item_id"})
+        .drop_duplicates("item_id")
+    )
+    item_id_to_title = {
+        row["item_id"]: row["title"]
+        for _, row in items.iterrows()
+    }
+    item_id_to_title.update({str(k): v for k, v in item_id_to_title.items()})
+    return interactions, items[["item_id"]], item_id_to_title
+
+
+def _build_neural_retrieval_engine(df: pd.DataFrame):
+    interactions, items, item_id_to_title = _prepare_neural_frames(df)
+    if interactions is None or items is None:
+        return None, {}
+    if interactions["user_id"].nunique() <= 1 or interactions["item_id"].nunique() <= 1:
+        return None, {}
+
+    try:
+        from src.model.two_tower_retrieval import TwoTowerRetrievalEngine
+
+        engine = TwoTowerRetrievalEngine()
+        engine.fit_and_index(interactions, items, epochs=1)
+        return engine, item_id_to_title
+    except Exception:
+        return None, {}
+
+
+def _get_neural_candidate_titles(user_id, engine, item_id_to_title, k: int) -> list[str]:
+    if engine is None:
+        return []
+    item_ids = engine.retrieve_candidates_for_user(user_id, top_k=k)
+    titles = []
+    seen = set()
+    for item_id in item_ids:
+        title = item_id_to_title.get(item_id) or item_id_to_title.get(str(item_id))
+        if title and title not in seen:
+            titles.append(title)
+            seen.add(title)
+    return titles
+
+
+def _get_neural_hybrid_recs(
+    seed_title: str,
+    user_id,
+    df: pd.DataFrame,
+    tfidf_matrix,
+    svd_matrix,
+    engine,
+    item_id_to_title,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    k: int,
+    mixed: bool = False,
+) -> list[str]:
+    neural_titles = _get_neural_candidate_titles(user_id, engine, item_id_to_title, k * 5)
+    if not neural_titles:
+        return _get_hybrid_recs(
+            seed_title,
+            df,
+            tfidf_matrix,
+            svd_matrix,
+            alpha,
+            beta,
+            gamma,
+            k,
+        )
+
+    candidate_titles = neural_titles
+    if mixed:
+        hybrid_titles = _get_hybrid_recs(
+            seed_title,
+            df,
+            tfidf_matrix,
+            svd_matrix,
+            alpha,
+            beta,
+            gamma,
+            k * 5,
+        )
+        candidate_titles = list(dict.fromkeys(hybrid_titles + neural_titles))
+
+    return _get_hybrid_recs(
+        seed_title,
+        df,
+        tfidf_matrix,
+        svd_matrix,
+        alpha,
+        beta,
+        gamma,
+        k,
+        candidate_titles=candidate_titles,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -324,9 +463,6 @@ def run_evaluation(
     """
     Run Precision@K, Recall@K, NDCG@K evaluation for the requested mode(s).
     """
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.decomposition import TruncatedSVD
-
     # --- resolve weights ---
     w = {"alpha": 0.4, "beta": 0.4, "gamma": 0.2}
     if weights:
@@ -389,16 +525,21 @@ def run_evaluation(
     sample_size = min(200, len(df))
     sample_indices = np.random.choice(len(df), size=sample_size, replace=False)
 
-    modes_to_run = (
-        ["content", "collaborative", "sentiment", "hybrid"]
-        if mode == "all"
-        else [mode]
-    )
-
     results: ResultsDict = {}
     
     # Check out if user interaction signals exist in the dataset
     has_user_data = "user_id" in df.columns and len(df["user_id"].dropna().unique()) > 1
+    neural_engine, neural_item_map = (
+        _build_neural_retrieval_engine(df)
+        if has_user_data
+        else (None, {})
+    )
+
+    modes_to_run = (
+        ["content", "collaborative", "sentiment", "hybrid", "neural", "mixed"]
+        if mode == "all"
+        else [mode]
+    )
 
     if has_user_data:
         # User-based Evaluation Profile
@@ -409,6 +550,7 @@ def run_evaluation(
         sample_indices = np.random.choice(len(df), size=min(100, len(df)), replace=False)
 
     for m in modes_to_run:
+        mode_started_at = time.perf_counter()
         precisions, recalls, ndcgs = [], [], []
         mrrs, hits, ilds = [], [], []
         all_recs = []
@@ -440,6 +582,20 @@ def run_evaluation(
                             recs_raw = _get_collab_recs(seed_title, df, svd_matrix, k)
                         elif m == "sentiment":
                             recs_raw = _get_sentiment_recs(seed_title, df, k)
+                        elif m == "neural":
+                            recs_raw = _get_neural_hybrid_recs(
+                                seed_title, current_user, df, tfidf_matrix, svd_matrix,
+                                neural_engine, neural_item_map,
+                                w["alpha"], w["beta"], w["gamma"], k,
+                                mixed=False,
+                            )
+                        elif m == "mixed":
+                            recs_raw = _get_neural_hybrid_recs(
+                                seed_title, current_user, df, tfidf_matrix, svd_matrix,
+                                neural_engine, neural_item_map,
+                                w["alpha"], w["beta"], w["gamma"], k,
+                                mixed=True,
+                            )
                         else:  # hybrid
                             recs_raw = _get_hybrid_recs(
                                 seed_title, df, tfidf_matrix, svd_matrix,
@@ -487,6 +643,13 @@ def run_evaluation(
                     recs = _get_collab_recs(title, df, svd_matrix, k)
                 elif m == "sentiment":
                     recs = _get_sentiment_recs(title, df, k)
+                elif m in {"neural", "mixed"}:
+                    # Without user history, neural candidate generation is unavailable;
+                    # keep evaluation comparable by measuring the hybrid fallback.
+                    recs = _get_hybrid_recs(
+                        title, df, tfidf_matrix, svd_matrix,
+                        w["alpha"], w["beta"], w["gamma"], k,
+                    )
                 else:
                     recs = _get_hybrid_recs(
                         title, df, tfidf_matrix, svd_matrix,
@@ -508,11 +671,18 @@ def run_evaluation(
         avg_hit = float(np.mean(hits)) if hits else 0.0
         avg_ild = float(np.mean(ilds)) if ilds else 0.0
         cov = _catalog_coverage(all_recs, len(df)) if all_recs else 0.0
+        latency_ms = (time.perf_counter() - mode_started_at) * 1000
+        evaluated_queries = max(len(all_recs), 1)
 
         results[m] = {
-            "precision": round(float(np.mean(precisions)), 4) if precisions else 0.0,
-            "recall":    round(float(np.mean(recalls)),    4) if recalls    else 0.0,
-            "ndcg":      round(float(np.mean(ndcgs)),      4) if ndcgs      else 0.0,
+            "precision": round(avg_precision, 4),
+            "recall": round(avg_recall, 4),
+            "ndcg": round(avg_ndcg, 4),
+            "mrr": round(avg_mrr, 4),
+            "hit_rate": round(avg_hit, 4),
+            "catalog_coverage": round(cov, 4),
+            "intra_list_diversity": round(avg_ild, 4),
+            "latency_ms": round(latency_ms / evaluated_queries, 4),
         }
 
     return results
@@ -577,7 +747,15 @@ def _cli() -> None:
     parser = argparse.ArgumentParser(description="Evaluate hybrid recommender models.")
     parser.add_argument("--k",    type=int,   default=10,   help="Number of recommendations (default: 10)")
     parser.add_argument("--mode", type=str,   default="all",
-                        choices=["content", "collaborative", "sentiment", "hybrid", "all"],
+                        choices=[
+                            "content",
+                            "collaborative",
+                            "sentiment",
+                            "hybrid",
+                            "neural",
+                            "mixed",
+                            "all",
+                        ],
                         help="Which model(s) to evaluate (default: all)")
     parser.add_argument("--alpha", type=float, default=0.4, help="Content weight (default: 0.4)")
     parser.add_argument("--beta",  type=float, default=0.4, help="Collaborative weight (default: 0.4)")

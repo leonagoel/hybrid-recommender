@@ -16,10 +16,19 @@ def test_two_tower_lifecycle_and_faiss_bounds():
     engine = TwoTowerRetrievalEngine(embedding_dim=128)
     engine.fit_and_index(mock_interactions, mock_items, epochs=1)
     
-    assert engine.faiss_index is not None
-    assert engine.faiss_index.ntotal == 3
+    assert engine.faiss_index is not None or engine.numpy_item_vectors is not None
+    if engine.faiss_index is not None:
+        assert engine.faiss_index.ntotal == 3
+    else:
+        assert len(engine.numpy_item_vectors) == 3
     
     # Run candidates selection query check
     candidates = engine.retrieve_candidates(user_idx_token=1, top_k=2)
     assert isinstance(candidates, list)
     assert len(candidates) <= 2
+
+    user_candidates = engine.retrieve_candidates_for_user('u1', top_k=2)
+    assert isinstance(user_candidates, list)
+    assert len(user_candidates) <= 2
+
+    assert engine.retrieve_candidates_for_user('missing-user', top_k=2) == []

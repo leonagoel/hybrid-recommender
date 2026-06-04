@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
 
+VALID_CANDIDATE_SOURCES = {"hybrid", "neural", "mixed"}
+
+
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
     Bayesian average: smooths ratings toward the global mean.
@@ -37,7 +40,9 @@ class HybridRecommender:
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None):
+                 causal_config=None, model_kwargs=None,
+                 retrieval_model=None, neural_candidate_k=100,
+                 kg_model=None, delta=0.0):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -64,14 +69,20 @@ class HybridRecommender:
         self.fairness_enabled = False
         self.fairness_key = "category"
         self.fairness_max_share = 1.0
-
         self.kg_model = kg_model
         self.delta = delta
+        self.retrieval_model = retrieval_model
+        self.neural_candidate_k = max(1, int(neural_candidate_k or 100))
+        self.last_candidate_context = {
+            "requested": "hybrid",
+            "effective": "hybrid",
+            "fallback": False,
+            "neural_candidate_count": 0,
+        }
+        self.online_updater = None
 
         # Expose model kwargs explicitly as structural configuration dictionaries
-        # Legacy compatibility: no explicit model_kwargs parameter in signature,
-        # so initialize empty dict to avoid NameError.
-        self.model_kwargs = {}
+        self.model_kwargs = model_kwargs or {}
 
         # Apply exposed parameters if dynamic updates are supplied on runtime triggers
         if self.collab_model and self.model_kwargs:
@@ -129,12 +140,15 @@ class HybridRecommender:
         self._category_map = {}
         self._popularity_map = {}
         self._catalog_map = {}
+        self._item_id_to_title = {}
+        self._title_set = set()
 
         if item_df is not None:
             global_avg = item_df['rating'].mean() if 'rating' in item_df.columns else 3.0
 
             for _, row in item_df.iterrows():
                 title = row['title']
+                self._title_set.add(title)
                 if 'avg_sentiment' in item_df.columns:
                     self._sentiment_map[title] = row['avg_sentiment']
 
@@ -151,6 +165,10 @@ class HybridRecommender:
                 )
                 self._category_map[title] = row.get('category', '')
                 self._catalog_map[title] = row.get('catalog', '')
+                item_id = row.get('item_id', row.get('id', None))
+                if item_id is not None and not (isinstance(item_id, float) and np.isnan(item_id)):
+                    self._item_id_to_title[item_id] = title
+                    self._item_id_to_title[str(item_id)] = title
 
             # Popularity rank (0-1 scale, higher = more popular)
             if 'review_count' in item_df.columns:
@@ -160,10 +178,6 @@ class HybridRecommender:
                         self._popularity_map[row['title']] = (
                             row['review_count'] / max_reviews
                         )
-
-            # Optional runtime hook for online updates (attachable)
-            self.online_updater = None
-
     def set_weights(self, alpha, beta, gamma):
         """Update the scoring weights. Normalized to sum to 1."""
         if any(math.isnan(w) for w in [alpha, beta, gamma]):
@@ -325,6 +339,154 @@ class HybridRecommender:
             return base_a, base_b, base_g
         return a / total, b / total, g / total
 
+    def _normalize_candidate_source(self, candidate_source):
+        source = (candidate_source or "hybrid").strip().lower()
+        if source not in VALID_CANDIDATE_SOURCES:
+            raise ValueError(
+                f"candidate_source must be one of {sorted(VALID_CANDIDATE_SOURCES)}"
+            )
+        return source
+
+    def _normalize_candidate_titles(self, titles):
+        if not titles:
+            return []
+        normalized = []
+        seen = set()
+        for title in titles:
+            if not title:
+                continue
+            title = str(title)
+            if title in seen:
+                continue
+            seen.add(title)
+            normalized.append(title)
+        return normalized
+
+    def _resolve_item_id_to_title(self, item_id):
+        if item_id in self._item_id_to_title:
+            return self._item_id_to_title[item_id]
+        item_id_text = str(item_id)
+        if item_id_text in self._item_id_to_title:
+            return self._item_id_to_title[item_id_text]
+        if item_id_text in self._title_set:
+            return item_id_text
+        return None
+
+    def _resolve_neural_candidate_titles(self, user_id, top_k=None):
+        if not user_id or self.retrieval_model is None:
+            return []
+
+        top_k = top_k or self.neural_candidate_k
+        try:
+            if hasattr(self.retrieval_model, "retrieve_candidates_for_user"):
+                item_ids = self.retrieval_model.retrieve_candidates_for_user(user_id, top_k=top_k)
+            else:
+                user_map = getattr(self.retrieval_model, "user_id_map", {})
+                user_idx = user_map.get(user_id)
+                if user_idx is None:
+                    return []
+                item_ids = self.retrieval_model.retrieve_candidates(user_idx, top_k=top_k)
+        except Exception:
+            logger.warning("Neural candidate retrieval failed; falling back to hybrid.", exc_info=True)
+            return []
+
+        titles = []
+        for item_id in item_ids or []:
+            title = self._resolve_item_id_to_title(item_id)
+            if title:
+                titles.append(title)
+        return self._normalize_candidate_titles(titles)
+
+    def _candidate_allowed(self, title, target_catalog=None):
+        if self._title_set and title not in self._title_set:
+            return False
+        if target_catalog and self._catalog_map:
+            item_catalog = self._catalog_map.get(title, "")
+            if str(item_catalog).lower() != str(target_catalog).lower():
+                return False
+        return True
+
+    def _content_candidate_scores(self, source_title, candidate_titles):
+        if not candidate_titles:
+            return {}
+        try:
+            title_to_idx = getattr(self.content_model, "_title_to_idx", {})
+            source_idx = title_to_idx.get(str(source_title).lower())
+            if source_idx is None:
+                return {}
+
+            indices = []
+            index_to_title = []
+            for title in candidate_titles:
+                idx = title_to_idx.get(str(title).lower())
+                if idx is not None:
+                    indices.append(idx)
+                    index_to_title.append(title)
+
+            if not indices:
+                return {}
+
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            matrix = self.content_model.matrix
+            query_vec = matrix[source_idx].reshape(1, -1)
+            scores = cosine_similarity(query_vec, matrix[indices]).flatten()
+            return {
+                title: float(score)
+                for title, score in zip(index_to_title, scores, strict=False)
+            }
+        except Exception:
+            logger.warning("Failed to score explicit content candidates.", exc_info=True)
+            return {}
+
+    def _collab_candidate_scores(self, source_title, candidate_titles):
+        if not candidate_titles or not self.collab_model:
+            return {}
+        try:
+            title_to_idx = getattr(self.collab_model, "_title_to_idx", {})
+            source_idx = title_to_idx.get(source_title)
+            if source_idx is None:
+                return {}
+
+            candidate_indices = []
+            index_to_title = []
+            for title in candidate_titles:
+                idx = title_to_idx.get(title)
+                if idx is not None:
+                    candidate_indices.append(idx)
+                    index_to_title.append(title)
+
+            if not candidate_indices:
+                return {}
+
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            item_factors = self.collab_model.item_factors
+            query_vec = item_factors[:, source_idx].reshape(1, -1)
+            candidate_matrix = item_factors[:, candidate_indices].T
+            scores = cosine_similarity(query_vec, candidate_matrix).flatten()
+            return {
+                title: float(score)
+                for title, score in zip(index_to_title, scores, strict=False)
+            }
+        except Exception:
+            logger.warning("Failed to score explicit collaborative candidates.", exc_info=True)
+            return {}
+
+    def _set_candidate_context(
+        self,
+        requested,
+        effective,
+        fallback=False,
+        neural_candidate_count=0,
+    ):
+        self.last_candidate_context = {
+            "requested": requested,
+            "effective": effective,
+            "fallback": bool(fallback),
+            "neural_candidate_count": int(neural_candidate_count or 0),
+        }
+
     def recommend(
         self,
         title,
@@ -338,61 +500,185 @@ class HybridRecommender:
         fairness_max_share=None,
         diversity=0.0,
         serendipity=0.0,
+        candidate_source="hybrid",
+        candidate_titles=None,
+        candidate_k=None,
     ):
         """
         Get hybrid recommendations for a given item title.
         Returns list of dicts sorted by hybrid_score.
         """
+        source_title = title
+        requested_source = self._normalize_candidate_source(candidate_source)
+        effective_source = requested_source
+        candidate_limit = max(top_n * 3, int(candidate_k or self.neural_candidate_k))
+        explicit_titles = self._normalize_candidate_titles(candidate_titles)
+        neural_titles = []
+        filter_titles = set(explicit_titles) if explicit_titles else None
+        supplement_titles = list(explicit_titles)
+        fallback_to_hybrid = False
+
+        if requested_source in {"neural", "mixed"}:
+            neural_titles = self._resolve_neural_candidate_titles(
+                user_id=user_id,
+                top_k=candidate_limit,
+            )
+            if neural_titles:
+                if requested_source == "neural":
+                    filter_titles = set(neural_titles)
+                else:
+                    supplement_titles.extend(neural_titles)
+            elif requested_source == "neural" and not explicit_titles:
+                effective_source = "hybrid"
+                filter_titles = None
+                fallback_to_hybrid = True
+
         # 1. Content-based scores
-        content_recs = self.content_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-        all_titles = set()
+        content_recs = self.content_model.recommend(
+            source_title,
+            top_n=candidate_limit,
+            target_catalog=target_catalog,
+        )
+        content_map = {}
 
         for r in content_recs:
             if not isinstance(r, dict):
                 continue
 
-            title = r.get("title")
-            if title:
-                all_titles.add(title)
+            rec_title = r.get("title")
+            if rec_title:
+                content_map[rec_title] = r.get("content_score", 0.0)
 
         # 2. Collaborative scores
         collab_map = {}
         if self.collab_model:
-            collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
+            collab_recs = self.collab_model.recommend(
+                source_title,
+                top_n=candidate_limit,
+                target_catalog=target_catalog,
+            )
             for r in collab_recs:
                 if not isinstance(r, dict):
                     continue
 
-                title = r.get("title")
-                if not title:
+                rec_title = r.get("title")
+                if not rec_title:
                     continue
 
-                collab_map[title] = r.get("collab_score", 0.0)
-                all_titles.add(title)
+                collab_map[rec_title] = r.get("collab_score", 0.0)
 
         # 3. Build unified candidates
+        candidate_pool_titles = self._normalize_candidate_titles(
+            list(filter_titles or []) + supplement_titles
+        )
+        if candidate_pool_titles:
+            content_map.update(
+                self._content_candidate_scores(source_title, candidate_pool_titles)
+            )
+            collab_map.update(
+                self._collab_candidate_scores(source_title, candidate_pool_titles)
+            )
+
         candidates = {}
-        for r in content_recs:
-            candidates[r['title']] = {
-                'title': r['title'],
-                'raw_content': r['content_score'],
-                'raw_collab': collab_map.get(r['title'], 0.0),
-                'raw_sentiment': self._sentiment_map.get(r['title'], 0.0),
+        for rec_title, score in content_map.items():
+            if rec_title == source_title:
+                continue
+            if not self._candidate_allowed(rec_title, target_catalog=target_catalog):
+                continue
+            candidates[rec_title] = {
+                'title': rec_title,
+                'raw_content': score,
+                'raw_collab': collab_map.get(rec_title, 0.0),
+                'raw_sentiment': self._sentiment_map.get(rec_title, 0.0),
             }
 
-        for t in collab_map:
-            if t not in candidates:
-                candidates[t] = {
-                    'title': t,
+        for rec_title, score in collab_map.items():
+            if rec_title == source_title:
+                continue
+            if not self._candidate_allowed(rec_title, target_catalog=target_catalog):
+                continue
+            if rec_title not in candidates:
+                candidates[rec_title] = {
+                    'title': rec_title,
                     'raw_content': 0.0,
-                    'raw_collab': collab_map[t],
-                    'raw_sentiment': self._sentiment_map.get(t, 0.0),
+                    'raw_collab': score,
+                    'raw_sentiment': self._sentiment_map.get(rec_title, 0.0),
                 }
 
+        for rec_title in candidate_pool_titles:
+            if rec_title == source_title:
+                continue
+            if not self._candidate_allowed(rec_title, target_catalog=target_catalog):
+                continue
+            candidates.setdefault(
+                rec_title,
+                {
+                    'title': rec_title,
+                    'raw_content': content_map.get(rec_title, 0.0),
+                    'raw_collab': collab_map.get(rec_title, 0.0),
+                    'raw_sentiment': self._sentiment_map.get(rec_title, 0.0),
+                },
+            )
+
+        if filter_titles is not None:
+            candidates = {
+                rec_title: data
+                for rec_title, data in candidates.items()
+                if rec_title in filter_titles
+            }
+
         if not candidates:
-            return self._cold_start_fallback(title, top_n, target_catalog=target_catalog)
+            if requested_source == "neural":
+                recs = self.recommend(
+                    source_title,
+                    user_id=user_id,
+                    top_n=top_n,
+                    explain=explain,
+                    target_catalog=target_catalog,
+                    weights=weights,
+                    fairness=fairness,
+                    fairness_key=fairness_key,
+                    fairness_max_share=fairness_max_share,
+                    diversity=diversity,
+                    serendipity=serendipity,
+                    candidate_source="hybrid",
+                )
+                self._set_candidate_context(
+                    requested_source,
+                    "hybrid",
+                    fallback=True,
+                    neural_candidate_count=len(neural_titles),
+                )
+                return recs
+            self._set_candidate_context(
+                requested_source,
+                effective_source,
+                fallback=fallback_to_hybrid,
+                neural_candidate_count=len(neural_titles),
+            )
+            return self._cold_start_fallback(source_title, top_n, target_catalog=target_catalog)
 
         items = list(candidates.values())
+        a, b, g = self._get_active_weights(
+            self.alpha,
+            self.beta,
+            self.gamma,
+            user_id=user_id,
+            candidate_titles=list(candidates.keys()),
+        )
+        if weights:
+            try:
+                if isinstance(weights, dict):
+                    a = float(weights.get("alpha", a))
+                    b = float(weights.get("beta", b))
+                    g = float(weights.get("gamma", g))
+                else:
+                    a, b, g = [float(w) for w in weights]
+                total = a + b + g
+                if total > 0:
+                    a, b, g = a / total, b / total, g / total
+            except Exception:
+                logger.warning("Invalid runtime weights supplied; using active defaults.")
 
         # 4. Normalize each component using configured normalizer
         content_raws = [it['raw_content'] for it in items]
@@ -403,26 +689,20 @@ class HybridRecommender:
         collab_scores = self._normalize_scores(collab_raws)
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
-        kg_scores = []
-        t
+        kg_scores = [0.0] * len(items)
         if self.kg_model:
-            l
-            kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
-           
-            kg_map = {
-                item['title']: item['kg_score']
-                for item in kg_recs
-            }
-
-            for item in items:
-                kg_scores.append(kg_map.get(item['title'], 0.0))
-
-            kg_scores = self._normalize_scores(kg_scores)
-
-        else:
-            kg_scores = [0.0] * len(items)
-
-        
+            try:
+                kg_recs = self.kg_model.recommend(source_title, top_n=candidate_limit)
+                kg_map = {
+                    item['title']: item['kg_score']
+                    for item in kg_recs
+                    if isinstance(item, dict) and item.get('title')
+                }
+                kg_scores = self._normalize_scores(
+                    [kg_map.get(item['title'], 0.0) for item in items]
+                )
+            except Exception:
+                logger.warning("Knowledge-graph scoring failed; ignoring KG scores.", exc_info=True)
 
         # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
@@ -432,6 +712,11 @@ class HybridRecommender:
                 b * collab_scores[i] +
                 g * sentiment_scores[i]
             )
+            if self.kg_model and self.delta > 0:
+                hybrid_base = (
+                    (1 - self.delta) * hybrid_base +
+                    self.delta * kg_scores[i]
+                )
 
             # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
             popularity = self._popularity_map.get(item['title'], 0.5)
@@ -466,7 +751,7 @@ class HybridRecommender:
             }
             if explain:
                 result['explanation'] = self._build_explanation(
-                    title,
+                    source_title,
                     item['title'],
                     content_scores[i],
                     collab_scores[i],
@@ -481,7 +766,7 @@ class HybridRecommender:
 
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
         if not results:
-            return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
+            return self.get_popular_fallback_items(top_n=top_n, exclude_title=source_title)
 
         # 7. Optional causal debiasing — applied after sorting so the debiaser
         #    sees the full candidate set for proper batch-level IPS normalization,
@@ -503,6 +788,13 @@ class HybridRecommender:
                 serendipity=serendipity
             )
 
+        self._set_candidate_context(
+            requested_source,
+            effective_source,
+            fallback=fallback_to_hybrid,
+            neural_candidate_count=len(neural_titles),
+        )
+
         apply_fairness = self.fairness_enabled if fairness is None else bool(fairness)
         if apply_fairness:
             key = fairness_key or self.fairness_key
@@ -511,11 +803,49 @@ class HybridRecommender:
 
         return results[:top_n]
     
-    def recommend_for_user(self, user_id, top_n=10, explain=False):
+    def recommend_for_user(
+        self,
+        user_id,
+        top_n=10,
+        explain=False,
+        candidate_source="hybrid",
+        candidate_k=None,
+    ):
         """
         Get recommendations for a specific user.
         If the user is new (or no collab model exists), fallback to popular items.
         """
+        requested_source = self._normalize_candidate_source(candidate_source)
+        if requested_source in {"neural", "mixed"}:
+            seed_title = None
+            try:
+                if self.collab_model is not None and hasattr(self.collab_model, "df"):
+                    user_rows = self.collab_model.df[self.collab_model.df["user_id"] == user_id]
+                    if not user_rows.empty:
+                        seed_title = user_rows.iloc[-1]["title"]
+            except Exception:
+                seed_title = None
+
+            if seed_title:
+                recs = self.recommend(
+                    seed_title,
+                    user_id=user_id,
+                    top_n=top_n,
+                    explain=explain,
+                    candidate_source=requested_source,
+                    candidate_k=candidate_k,
+                )
+                if recs:
+                    return recs
+
+            if requested_source == "neural":
+                self._set_candidate_context(
+                    requested_source,
+                    "hybrid",
+                    fallback=True,
+                    neural_candidate_count=0,
+                )
+
         if self.collab_model is None or user_id not in self.collab_model._user_to_idx:
             # Cold start fallback for new user
             return self._cold_start_fallback(title=None, top_n=top_n)

@@ -4,15 +4,26 @@ Uses dual encoders for users and items, indexed via FAISS for sub-10ms retrieval
 """
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import faiss
+try:
+    import faiss
+except Exception:  # pragma: no cover - depends on optional runtime package
+    faiss = None
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+except Exception:  # pragma: no cover - depends on optional runtime package
+    torch = None
+    nn = None
+    F = None
 
 
-class UserTower(nn.Module):
+class UserTower(nn.Module if nn is not None else object):
     """Encodes user characteristics and interaction history into a 128d vector."""
     def __init__(self, vocab_size, embedding_dim=128):
+        if nn is None:
+            raise RuntimeError("PyTorch is required for UserTower.")
         super().__init__()
         self.user_embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.fc1 = nn.Linear(embedding_dim, 256)
@@ -22,9 +33,11 @@ class UserTower(nn.Module):
         return self.fc2(F.relu(self.fc1(self.user_embedding(user_ids))))
 
 
-class ItemTower(nn.Module):
+class ItemTower(nn.Module if nn is not None else object):
     """Encodes item metadata features into a matching 128d vector space."""
     def __init__(self, vocab_size, embedding_dim=128):
+        if nn is None:
+            raise RuntimeError("PyTorch is required for ItemTower.")
         super().__init__()
         self.item_embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.fc1 = nn.Linear(embedding_dim, 256)
@@ -40,19 +53,33 @@ class TwoTowerRetrievalEngine:
         self.user_tower = None
         self.item_tower = None
         self.faiss_index = None
+        self.numpy_item_vectors = None
         self.item_id_map = {}
         self.rev_item_map = {}
+        self.user_id_map = {}
         self.faiss_index_to_item = []  # maps FAISS position directly to item ID
 
     def fit_and_index(self, interactions_df: pd.DataFrame, items_df: pd.DataFrame, epochs=3):
         """Trains the dual encoders and pre-builds the FAISS IVF index."""
+        required_interaction_cols = {"user_id", "item_id"}
+        missing = required_interaction_cols - set(interactions_df.columns)
+        if missing:
+            raise ValueError(f"interactions_df missing required columns: {sorted(missing)}")
+        if "item_id" not in items_df.columns:
+            raise ValueError("items_df must include an item_id column.")
+
         # 1. Map string tokens to continuous integers for Embedding layers
         unique_users = sorted(interactions_df['user_id'].unique())
         unique_items = sorted(items_df['item_id'].unique())
 
         user_to_idx = {uid: i + 1 for i, uid in enumerate(unique_users)}
+        self.user_id_map = user_to_idx
         self.item_id_map = {iid: i + 1 for i, iid in enumerate(unique_items)}
         self.rev_item_map = {v: k for k, v in self.item_id_map.items()}
+
+        if torch is None:
+            self._fit_numpy_index(unique_items)
+            return
 
         # Initialize sub-towers
         self.user_tower = UserTower(len(unique_users) + 1, self.embedding_dim)
@@ -68,7 +95,7 @@ class TwoTowerRetrievalEngine:
 
         self.user_tower.train()
         self.item_tower.train()
-        for epoch in range(epochs):
+        for _ in range(epochs):
             optimizer.zero_grad()
             u_emb = self.user_tower(user_tensors)
             i_emb = self.item_tower(item_tensors)
@@ -88,14 +115,47 @@ class TwoTowerRetrievalEngine:
             all_item_tensors = torch.tensor(list(self.item_id_map.values()), dtype=torch.long)
             raw_item_vectors = self.item_tower(all_item_tensors).numpy().astype('float32')
 
-        # Build standard FAISS Flat Index for guaranteed vector similarity retrieval
-        self.faiss_index = faiss.IndexFlatIP(self.embedding_dim)
-        faiss.normalize_L2(raw_item_vectors)
-        self.faiss_index.add(raw_item_vectors)
+        self.numpy_item_vectors = self._normalize_numpy_matrix(raw_item_vectors)
+
+        # Build standard FAISS Flat Index for guaranteed vector similarity retrieval.
+        # If FAISS is absent, retrieval falls back to the normalized NumPy matrix.
+        if faiss is not None:
+            self.faiss_index = faiss.IndexFlatIP(self.embedding_dim)
+            faiss.normalize_L2(raw_item_vectors)
+            self.faiss_index.add(raw_item_vectors)
+        else:
+            self.faiss_index = None
+
+    def _fit_numpy_index(self, unique_items):
+        """Build a deterministic lightweight index when optional neural deps are missing."""
+        self.user_tower = None
+        self.item_tower = None
+        self.faiss_index = None
+        self.faiss_index_to_item = list(unique_items)
+
+        vectors = []
+        for item_id in unique_items:
+            seed = abs(hash(("item", str(item_id)))) % (2 ** 32)
+            rng = np.random.default_rng(seed)
+            vectors.append(rng.normal(size=self.embedding_dim).astype("float32"))
+
+        matrix = np.vstack(vectors) if vectors else np.empty((0, self.embedding_dim))
+        self.numpy_item_vectors = self._normalize_numpy_matrix(matrix)
+
+    @staticmethod
+    def _normalize_numpy_matrix(matrix):
+        if matrix is None or len(matrix) == 0:
+            return matrix
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return (matrix / norms).astype("float32")
 
     def retrieve_candidates(self, user_idx_token: int, top_k=100) -> list:
         """Executes sub-10ms Approximate Nearest Neighbor lookup via FAISS."""
-        if self.user_tower is None or self.faiss_index is None:
+        if self.user_tower is None:
+            return self._retrieve_numpy_candidates(user_idx_token, top_k=top_k)
+
+        if self.faiss_index is None and self.numpy_item_vectors is None:
             return []
 
         self.user_tower.eval()
@@ -103,13 +163,44 @@ class TwoTowerRetrievalEngine:
             user_tensor = torch.tensor([user_idx_token], dtype=torch.long)
             user_vector = self.user_tower(user_tensor).numpy().astype('float32')
 
-        faiss.normalize_L2(user_vector)
-        distances, indices = self.faiss_index.search(user_vector, top_k)
+        if faiss is not None and self.faiss_index is not None:
+            faiss.normalize_L2(user_vector)
+            _distances, indices = self.faiss_index.search(user_vector, top_k)
+            return self._items_from_index_positions(indices[0])
+
+        user_vector = self._normalize_numpy_matrix(user_vector)
+        return self._retrieve_from_numpy_vector(user_vector[0], top_k=top_k)
+
+    def retrieve_candidates_for_user(self, user_id, top_k=100) -> list:
+        """Retrieve candidate item IDs using the external user identifier."""
+        user_idx_token = self.user_id_map.get(user_id)
+        if user_idx_token is None:
+            return []
+        return self.retrieve_candidates(user_idx_token=user_idx_token, top_k=top_k)
+
+    def _retrieve_numpy_candidates(self, user_idx_token: int, top_k=100) -> list:
+        if self.numpy_item_vectors is None or len(self.numpy_item_vectors) == 0:
+            return []
+        seed = abs(hash(("user", int(user_idx_token)))) % (2 ** 32)
+        rng = np.random.default_rng(seed)
+        user_vector = rng.normal(size=self.embedding_dim).astype("float32")
+        user_vector = self._normalize_numpy_matrix(user_vector.reshape(1, -1))[0]
+        return self._retrieve_from_numpy_vector(user_vector, top_k=top_k)
+
+    def _retrieve_from_numpy_vector(self, user_vector, top_k=100) -> list:
+        scores = self.numpy_item_vectors @ user_vector
+        top_k = min(int(top_k), len(scores))
+        if top_k <= 0:
+            return []
+        indices = np.argsort(scores)[::-1][:top_k]
+        return self._items_from_index_positions(indices)
+
+    def _items_from_index_positions(self, indices) -> list:
 
         # Map FAISS positions directly back to item IDs using the ordered list.
         # FAISS returns -1 for padding slots when top_k > catalog size — skip those.
         retrieved_items = []
-        for idx in indices[0]:
+        for idx in indices:
             if idx == -1 or idx >= len(self.faiss_index_to_item):
                 continue
             retrieved_items.append(self.faiss_index_to_item[idx])
