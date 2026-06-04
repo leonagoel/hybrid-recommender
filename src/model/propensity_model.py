@@ -95,7 +95,8 @@ class PropensityModel:
         """Relative category frequency in catalog. Falls back to uniform if absent."""
         if "category" in df.columns:
             freq_map = (
-                df["category"].fillna("").value_counts(normalize=True).to_dict()
+                df["category"].fillna("").value_counts(
+                    normalize=True).to_dict()
             )
             return (
                 df["category"].fillna("").map(freq_map).fillna(1.0 / n).values

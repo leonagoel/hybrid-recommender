@@ -27,29 +27,50 @@ class FakeSupabase:
 
 def test_create_purchase_validation_failures():
     # Empty user_id should fail
-    response = client.post("/api/purchases", json={"user_id": "", "product_id": 123})
+    response = client.post(
+        "/api/purchases",
+        json={
+            "user_id": "",
+            "product_id": 123})
     assert response.status_code == 422
 
     # Negative product_id should fail
-    response = client.post("/api/purchases", json={"user_id": "user123", "product_id": -5})
+    response = client.post(
+        "/api/purchases",
+        json={
+            "user_id": "user123",
+            "product_id": -5})
     assert response.status_code == 422
 
     # Out of bounds rating should fail
-    response = client.post("/api/purchases", json={"user_id": "user123", "product_id": 123, "rating": 6.0})
+    response = client.post(
+        "/api/purchases",
+        json={
+            "user_id": "user123",
+            "product_id": 123,
+            "rating": 6.0})
     assert response.status_code == 422
 
 
 def test_create_purchase_success(monkeypatch):
-    mock_response = [{"id": 1, "user_id": "user123", "product_id": 123, "rating": 4.5, "review_text": "Good!"}]
+    mock_response = [{"id": 1,
+                      "user_id": "user123",
+                      "product_id": 123,
+                      "rating": 4.5,
+                      "review_text": "Good!"}]
     query_mock = FakeQuery(mock_response)
     monkeypatch.setattr(main, "get_supabase", lambda: FakeSupabase(query_mock))
 
     response = client.post(
         "/api/purchases",
-        json={"user_id": "user123", "product_id": 123, "rating": 4.5, "review_text": "Good!"}
+        json={
+            "user_id": "user123",
+            "product_id": 123,
+            "rating": 4.5,
+            "review_text": "Good!"}
     )
     assert response.status_code == 200
-    
+
     payload = response.json()
     assert "purchase" in payload
     assert payload["purchase"][0]["user_id"] == "user123"

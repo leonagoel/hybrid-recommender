@@ -2,13 +2,12 @@
 Unit tests for the bayesian_rating function in hybrid_model module.
 Tests rating bias prevention using Bayesian smoothing.
 """
+from src.model.hybrid_model import bayesian_rating
 import pytest
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from src.model.hybrid_model import bayesian_rating
 
 
 class TestBayesianRating:
@@ -18,14 +17,22 @@ class TestBayesianRating:
         """Test that items with many votes retain most of their actual rating."""
         rating = 4.5
         review_count = 100
-        result = bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10)
+        result = bayesian_rating(
+            rating,
+            review_count,
+            global_avg=3.0,
+            min_votes=10)
         assert 4.0 < result < 4.7
 
     def test_items_with_few_votes_pulled_toward_global_average(self):
         """Test that items with few votes are pulled toward global average."""
         rating = 5.0
         review_count = 1
-        result = bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10)
+        result = bayesian_rating(
+            rating,
+            review_count,
+            global_avg=3.0,
+            min_votes=10)
         assert 3.0 < result < 5.0
 
     def test_items_with_zero_votes_get_global_average(self):
@@ -37,7 +44,11 @@ class TestBayesianRating:
         """Test items with few votes near the threshold."""
         rating = 4.0
         review_count = 5
-        result = bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10)
+        result = bayesian_rating(
+            rating,
+            review_count,
+            global_avg=3.0,
+            min_votes=10)
         assert 3.0 < result < 4.0
 
     def test_global_average_influence_with_min_votes(self):
@@ -48,7 +59,11 @@ class TestBayesianRating:
         C = 3.0
         v = review_count
         expected = (v / (v + m)) * rating + (m / (v + m)) * C
-        result = bayesian_rating(rating, review_count, global_avg=C, min_votes=m)
+        result = bayesian_rating(
+            rating,
+            review_count,
+            global_avg=C,
+            min_votes=m)
         assert abs(result - expected) < 0.001
 
     def test_extreme_rating_values(self):
@@ -62,7 +77,11 @@ class TestBayesianRating:
         """Test with very high review count."""
         rating = 3.5
         review_count = 10000
-        result = bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10)
+        result = bayesian_rating(
+            rating,
+            review_count,
+            global_avg=3.0,
+            min_votes=10)
         assert abs(result - 3.5) < 0.01
 
     def test_bayesian_rating_negative_rating(self):

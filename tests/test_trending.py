@@ -1,6 +1,5 @@
 from fastapi.testclient import TestClient
 from types import SimpleNamespace
-from datetime import datetime
 from backend import main
 
 client = TestClient(main.app)
@@ -56,13 +55,13 @@ def test_trending_validation_bounds():
 def test_trending_empty_db(monkeypatch):
     # Reset cache
     main.TRENDING_CACHE = {"data": None, "timestamp": None}
-    
+
     query_mock = FakeQuery([])
     monkeypatch.setattr(main, "get_supabase", lambda: FakeSupabase(query_mock))
 
     response = client.get("/api/trending")
     assert response.status_code == 200
-    
+
     payload = response.json()
     assert "results" in payload
     assert payload["results"] == []
@@ -71,7 +70,7 @@ def test_trending_empty_db(monkeypatch):
 def test_trending_success(monkeypatch):
     # Reset cache
     main.TRENDING_CACHE = {"data": None, "timestamp": None}
-    
+
     mock_purchases = [
         {
             "product_id": 101,
@@ -103,7 +102,7 @@ def test_trending_success(monkeypatch):
 
     response = client.get("/api/trending?days=30&limit=5")
     assert response.status_code == 200
-    
+
     payload = response.json()
     assert "results" in payload
     results = payload["results"]
@@ -116,7 +115,7 @@ def test_trending_success(monkeypatch):
 def test_trending_cache_hits(monkeypatch):
     # Reset cache
     main.TRENDING_CACHE = {"data": None, "timestamp": None}
-    
+
     mock_purchases = [
         {
             "product_id": 101,
@@ -137,11 +136,11 @@ def test_trending_cache_hits(monkeypatch):
     # First call will populate cache because results are not empty
     first_response = client.get("/api/trending")
     assert first_response.status_code == 200
-    
+
     # Second call should use cache even if get_supabase raises error
     def failing_supabase():
         raise RuntimeError("Should not be called because of cache!")
-        
+
     monkeypatch.setattr(main, "get_supabase", failing_supabase)
     second_response = client.get("/api/trending")
     assert second_response.status_code == 200
@@ -151,7 +150,7 @@ def test_trending_cache_hits(monkeypatch):
 def test_trending_negative_ratings(monkeypatch):
     # Reset cache
     main.TRENDING_CACHE = {"data": None, "timestamp": None}
-    
+
     mock_purchases = [
         {
             "product_id": 101,
@@ -179,7 +178,7 @@ def test_trending_negative_ratings(monkeypatch):
 def test_trending_missing_product_details(monkeypatch):
     # Reset cache
     main.TRENDING_CACHE = {"data": None, "timestamp": None}
-    
+
     mock_purchases = [
         {
             "product_id": 101,
@@ -200,4 +199,3 @@ def test_trending_missing_product_details(monkeypatch):
     assert len(results) > 0
     assert results[0]["category"] == ""
     assert results[0]["rating"] == 0
-

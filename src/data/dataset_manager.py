@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from src.data.data_adapter import adapt_data
 from src.data.data_preprocessing import preprocess
 
@@ -17,19 +17,27 @@ class DatasetManager:
         self._datasets = {}  # id → { 'name': str, 'raw': df, 'adapted': df, 'meta': dict }
 
     # ------------------------------------------------------------------
-    def load_csv(self, file_path_or_buffer: Any, name: Optional[str] = None, catalog: Optional[str] = None) -> str:
+    def load_csv(self, file_path_or_buffer: Any,
+                 name: Optional[str] = None, catalog: Optional[str] = None) -> str:
         """
         Load a CSV file (path string or file-like object) into the manager.
         Returns the dataset ID.
         """
         if isinstance(file_path_or_buffer, str):
             if not os.path.exists(file_path_or_buffer):
-                raise FileNotFoundError(f"File not found: {file_path_or_buffer}")
-            raw_df = pd.read_csv(file_path_or_buffer, on_bad_lines='skip', low_memory=False)
+                raise FileNotFoundError(
+                    f"File not found: {file_path_or_buffer}")
+            raw_df = pd.read_csv(
+                file_path_or_buffer,
+                on_bad_lines='skip',
+                low_memory=False)
             if name is None:
                 name = os.path.basename(file_path_or_buffer)
         else:
-            raw_df = pd.read_csv(file_path_or_buffer, on_bad_lines='skip', low_memory=False)
+            raw_df = pd.read_csv(
+                file_path_or_buffer,
+                on_bad_lines='skip',
+                low_memory=False)
             if name is None:
                 name = 'uploaded_dataset'
 
@@ -39,7 +47,7 @@ class DatasetManager:
         raw_df = preprocess(raw_df)
         adapted_df, meta = adapt_data(raw_df)
         adapted_df['catalog'] = catalog
-        
+
         ds_id = str(uuid.uuid4())[:8]
 
         self._datasets[ds_id] = {
@@ -81,7 +89,8 @@ class DatasetManager:
     # ------------------------------------------------------------------
     def get_stats(self):
         """Aggregate statistics across all loaded datasets."""
-        total_rows = sum(ds['meta']['total_rows'] for ds in self._datasets.values())
+        total_rows = sum(ds['meta']['total_rows']
+                         for ds in self._datasets.values())
         return {
             'dataset_count': len(self._datasets),
             'total_rows': total_rows,
@@ -106,37 +115,45 @@ class DatasetManager:
 
         # Deduplicate items — aggregate per unique title
         # Keep first description/category, average rating, concat reviews
-        
+
         # Ensure only columns that actually exist in merged are in the agg dict
         agg_dict = {
-            'item_id':      'first',
-            'description':  'first',
-            'category':     'first',
-            'combined':     'first',
-            'user_id':      'first',
-            'rating':       'mean',
-            'review_text':  lambda x: ' '.join(x.astype(str)),
-            'views':        'sum',
-            'purchases':    'sum',
-            'catalog':      'first',
+            'item_id': 'first',
+            'description': 'first',
+            'category': 'first',
+            'combined': 'first',
+            'user_id': 'first',
+            'rating': 'mean',
+            'review_text': lambda x: ' '.join(x.astype(str)),
+            'views': 'sum',
+            'purchases': 'sum',
+            'catalog': 'first',
         }
-        
+
         # Filter agg_dict to only include columns present in merged
-        valid_agg_dict = {k: v for k, v in agg_dict.items() if k in merged.columns}
+        valid_agg_dict = {
+            k: v for k,
+            v in agg_dict.items() if k in merged.columns}
 
         grouped = merged.groupby('title', as_index=False).agg(valid_agg_dict)
 
         # Add top 2 reviews list
         if 'review_text' in merged.columns:
             def get_reviews(series):
-                valid = [s for s in series.astype(str) if s and str(s).strip() and len(str(s)) > 8]
+                valid = [s for s in series.astype(str) if s and str(
+                    s).strip() and len(str(s)) > 8]
                 return valid[:2]
-            
-            reviews_df = merged.groupby('title')['review_text'].agg(get_reviews).reset_index()
-            reviews_df.rename(columns={'review_text': 'top_reviews'}, inplace=True)
+
+            reviews_df = merged.groupby('title')['review_text'].agg(
+                get_reviews).reset_index()
+            reviews_df.rename(
+                columns={
+                    'review_text': 'top_reviews'},
+                inplace=True)
             grouped = grouped.merge(reviews_df, on='title', how='left')
 
-        # But we also keep the full interaction-level data for collaborative model
+        # But we also keep the full interaction-level data for collaborative
+        # model
         return merged, grouped
 
     # ------------------------------------------------------------------

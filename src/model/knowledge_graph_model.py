@@ -147,5 +147,3 @@ class KnowledgeGraphRecommender:
             })
 
         return recommendations
-
-

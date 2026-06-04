@@ -36,15 +36,16 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── Constants ───────────────────────────────────────────────────────────
 
 CSRF_COOKIE_NAME = "csrftoken"
-CSRF_HEADER_NAME = "x-csrf-token"          # HTTP headers are lowercased by Starlette
+# HTTP headers are lowercased by Starlette
+CSRF_HEADER_NAME = "x-csrf-token"
 CSRF_TOKEN_BYTES = 32                       # 256-bit token → 64 hex chars
 CSRF_COOKIE_MAX_AGE = 60 * 60 * 8          # 8 hours in seconds
 
 
-# ── Response schema ───────────────────────────────────────────────────────────
+# ── Response schema ─────────────────────────────────────────────────────
 
 class CSRFTokenResponse(BaseModel):
     """
@@ -57,6 +58,7 @@ class CSRFTokenResponse(BaseModel):
     """
     csrfToken: str  # 64-character hex string (256-bit entropy)
 
+
 # Methods that mutate state and therefore require a valid CSRF token.
 _PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -66,7 +68,7 @@ _PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _EXEMPT_PATHS: set[str] = {"/api/feedback"}
 
 
-# ── Token helpers ─────────────────────────────────────────────────────────────
+# ── Token helpers ───────────────────────────────────────────────────────
 
 def generate_csrf_token() -> str:
     """Return a new cryptographically secure hex token."""
@@ -149,15 +151,15 @@ def set_csrf_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=CSRF_COOKIE_NAME,       # Cookie name the browser stores and sends
         value=token,                # Raw 64-char hex token — no encoding needed
-        max_age=CSRF_COOKIE_MAX_AGE,# Relative expiry in seconds (8 hours)
+        max_age=CSRF_COOKIE_MAX_AGE,  # Relative expiry in seconds (8 hours)
         path="/",                   # Sent on all routes, not just /api/*
         samesite="lax",             # Blocks cross-site POST; allows OAuth GETs
         httponly=False,             # JS must read this — see docstring above
-        secure=_is_secure_context(),# HTTPS-only in production
+        secure=_is_secure_context(),  # HTTPS-only in production
     )
 
 
-# ── Middleware ────────────────────────────────────────────────────────────────
+# ── Middleware ──────────────────────────────────────────────────────────
 
 class CSRFMiddleware:
     """
@@ -182,7 +184,8 @@ class CSRFMiddleware:
         # Store the next ASGI app in the middleware chain.
         self._app = app
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    async def __call__(self, scope: Scope, receive: Receive,
+                       send: Send) -> None:
         # Only intercept HTTP requests — pass WebSocket and lifespan through.
         if scope["type"] != "http":
             await self._app(scope, receive, send)

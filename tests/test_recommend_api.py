@@ -1,3 +1,4 @@
+from backend import main
 import os
 import sys
 
@@ -5,7 +6,6 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from backend import main
 
 app = main.app
 models = main.models
@@ -14,6 +14,7 @@ models = main.models
 class FakeCollabModel:
     def __init__(self):
         self._user_to_idx = {"known_user": 0}
+
 
 class FakeHybridModel:
     def __init__(self):
@@ -44,7 +45,11 @@ def test_recommend_accepts_reserved_characters_in_query_title():
 
     try:
         client = TestClient(app)
-        response = client.get("/api/recommend", params={"title": "AC/DC Greatest Hits? Deluxe + Café", "top_n": 12})
+        response = client.get(
+            "/api/recommend",
+            params={
+                "title": "AC/DC Greatest Hits? Deluxe + Café",
+                "top_n": 12})
     finally:
         models["ready"] = original_ready
         models["hybrid"] = original_hybrid
@@ -68,7 +73,10 @@ def test_user_recommendations_known_user():
 
     try:
         client = TestClient(app)
-        response = client.get("/api/recommend/user/known_user", params={"top_n": 5})
+        response = client.get(
+            "/api/recommend/user/known_user",
+            params={
+                "top_n": 5})
     finally:
         models["ready"] = original_ready
         models["hybrid"] = original_hybrid
@@ -91,7 +99,10 @@ def test_user_recommendations_unknown_user_fallback():
 
     try:
         client = TestClient(app)
-        response = client.get("/api/recommend/user/unknown_user", params={"top_n": 5})
+        response = client.get(
+            "/api/recommend/user/unknown_user",
+            params={
+                "top_n": 5})
     finally:
         models["ready"] = original_ready
         models["hybrid"] = original_hybrid
@@ -108,10 +119,13 @@ def test_user_recommendations_unknown_user_fallback():
 def test_user_recommendations_invalid_query():
     try:
         client = TestClient(app)
-        response = client.get("/api/recommend/user/known_user", params={"top_n": 51})
+        response = client.get(
+            "/api/recommend/user/known_user",
+            params={
+                "top_n": 51})
     finally:
         pass
-    
+
     assert response.status_code == 422
     main._clear_response_cache()
 

@@ -1,6 +1,9 @@
 """
 Tests for real-time recommendation transports.
 """
+from src.model.hybrid_model import HybridRecommender
+from src.model.content_model import ContentRecommender
+from backend.main import app, models, realtime_hub
 import os
 import sys
 
@@ -9,10 +12,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from backend.main import app, models, realtime_hub
-from src.model.content_model import ContentRecommender
-from src.model.hybrid_model import HybridRecommender
 
 
 @pytest.fixture
@@ -31,7 +30,8 @@ def realtime_client():
         "avg_sentiment": [0.6, 0.2, 0.8, 0.5],
     })
     item_df["combined"] = (
-        item_df["title"] + " " + item_df["description"] + " " + item_df["category"]
+        item_df["title"] + " " + item_df["description"] +
+        " " + item_df["category"]
     )
     previous = models.copy()
     content_model = ContentRecommender(item_df)
@@ -63,7 +63,8 @@ def test_recommendations_websocket_streams_updates(realtime_client):
     assert all(item["title"] != "Alpha" for item in payload["recommendations"])
 
 
-def test_realtime_behavior_endpoint_returns_http_fallback_payload(realtime_client):
+def test_realtime_behavior_endpoint_returns_http_fallback_payload(
+        realtime_client):
     response = realtime_client.post(
         "/api/realtime/behavior",
         json={"item_title": "Alpha", "top_n": 2},

@@ -50,7 +50,8 @@ DEFAULT_VARIANTS = (
 
 
 def _stable_bucket(experiment_id: str, user_key: str) -> int:
-    digest = hashlib.sha256(f"{experiment_id}:{user_key}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(
+        f"{experiment_id}:{user_key}".encode("utf-8")).hexdigest()
     return int(digest[:12], 16)
 
 
@@ -66,7 +67,8 @@ def assign_variant(
 
     total_traffic = sum(max(0, variant.traffic) for variant in variant_list)
     if total_traffic <= 0:
-        raise ValueError("At least one experiment variant must receive traffic.")
+        raise ValueError(
+            "At least one experiment variant must receive traffic.")
 
     bucket = _stable_bucket(experiment_id, str(user_key)) % total_traffic
     cumulative = 0
@@ -107,7 +109,10 @@ def run_recommendation_experiment(
     variants: Iterable[ExperimentVariant] = DEFAULT_VARIANTS,
 ) -> Dict[str, object]:
     """Return recommendations plus A/B metadata for an opt-in user request."""
-    variant = assign_variant(user_key, experiment_id=experiment_id, variants=variants)
+    variant = assign_variant(
+        user_key,
+        experiment_id=experiment_id,
+        variants=variants)
     recommendations = recommender.recommend(
         title, top_n=top_n, explain=explain, weights=variant.weights
     )

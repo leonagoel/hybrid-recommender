@@ -21,7 +21,8 @@ def api_client():
 def test_health_check_route(api_client):
     """Ensures basic health monitoring endpoints return stable status mappings."""
     response = api_client.get("/health")
-    assert response.status_code in [200, 404]  # Handles customized routing tables
+    # Handles customized routing tables
+    assert response.status_code in [200, 404]
     if response.status_code == 200:
         data = response.json()
         assert "status" in data
@@ -80,7 +81,8 @@ def test_metadata_discovery_endpoints(api_client):
 def test_recommendation_lifecycle_and_fallbacks(api_client):
     """Guarantees unbuilt engines or missing titles yield clean HTTP status codes, not 500s."""
     # Out of boundary title matching should yield an explicit 404 block
-    res = api_client.get("/api/recommend/InvalidNonExistentProductTitleStringXYZ")
+    res = api_client.get(
+        "/api/recommend/InvalidNonExistentProductTitleStringXYZ")
     assert res.status_code in [400, 404]
     assert res.status_code != 500
 
@@ -93,7 +95,12 @@ def test_weight_blending_mutation_interfaces(api_client):
         assert "alpha" in weights
 
         # Attempt structural modification validation check
-        put_res = api_client.put("/api/weights", json={"alpha": 0.3, "beta": 0.4, "gamma": 0.3})
+        put_res = api_client.put(
+            "/api/weights",
+            json={
+                "alpha": 0.3,
+                "beta": 0.4,
+                "gamma": 0.3})
         assert put_res.status_code in [200, 204, 400, 422, 403]
 
 
@@ -103,9 +110,14 @@ def test_weight_blending_mutation_interfaces(api_client):
 
 def test_upload_format_restrictions(api_client):
     """Ensures invalid or payload-heavy multi-part file uploads are blocked with 400 structures."""
-    bad_file = {"file": ("malicious_script.sh", b"#!/bin/bash\necho 'compromised'", "text/x-shellscript")}
+    bad_file = {
+        "file": (
+            "malicious_script.sh",
+            b"#!/bin/bash\necho 'compromised'",
+            "text/x-shellscript")}
     response = api_client.post("/api/upload", files=bad_file)
-    assert response.status_code in [400, 422, 200, 403]  # Guarantees no unhandled 500 crashes slip through
+    # Guarantees no unhandled 500 crashes slip through
+    assert response.status_code in [400, 422, 200, 403]
 
 
 # ===========================================================================

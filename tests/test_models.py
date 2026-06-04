@@ -2,17 +2,15 @@
 Unit tests for Hybrid Recommender System
 Run with: pytest tests/ -v
 """
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.content_model import ContentRecommender
+from src.model.hybrid_model import HybridRecommender, bayesian_rating
 import pytest
 import pandas as pd
-import numpy as np
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from src.model.hybrid_model import HybridRecommender, bayesian_rating
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -73,17 +71,29 @@ def hybrid_model(content_model, collab_model, sample_item_df):
 class TestBayesianRating:
     def test_high_vote_count_close_to_raw_rating(self):
         """Item with many votes should have Bayesian rating close to its raw rating."""
-        result = bayesian_rating(rating=4.5, review_count=1000, global_avg=3.0, min_votes=10)
+        result = bayesian_rating(
+            rating=4.5,
+            review_count=1000,
+            global_avg=3.0,
+            min_votes=10)
         assert abs(result - 4.5) < 0.1
 
     def test_low_vote_count_pulled_toward_mean(self):
         """Item with very few votes should be pulled toward global average."""
-        result = bayesian_rating(rating=5.0, review_count=1, global_avg=3.0, min_votes=10)
+        result = bayesian_rating(
+            rating=5.0,
+            review_count=1,
+            global_avg=3.0,
+            min_votes=10)
         assert result < 4.0  # Pulled well below raw 5.0
 
     def test_zero_votes_equals_global_avg(self):
         """Item with zero votes should return global average."""
-        result = bayesian_rating(rating=5.0, review_count=0, global_avg=3.0, min_votes=10)
+        result = bayesian_rating(
+            rating=5.0,
+            review_count=0,
+            global_avg=3.0,
+            min_votes=10)
         assert result == 3.0
 
     def test_output_range(self):
@@ -159,20 +169,20 @@ class TestCollaborativeRecommender:
 
     def test_predict_for_unknown_user_returns_empty(self, collab_model):
         recs = collab_model.predict_for_user('unknown_user_xyz', top_n=3)
-        assert isinstance(recs, list) #it will not be empty
-    
+        assert isinstance(recs, list)  # it will not be empty
+
     def test_cold_start_returns_popular_items(self, collab_model):
-   # New user should get popular items instead of empty list.
+       # New user should get popular items instead of empty list.
         recs = collab_model.predict_for_user('brand_new_user', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
 
     def test_cold_start_fallback_has_required_keys(self, collab_model):
-    #Fallback items should have title and predicted_score.
+        # Fallback items should have title and predicted_score.
         recs = collab_model.predict_for_user('brand_new_user', top_n=3)
         for r in recs:
-         assert 'title' in r
-         assert 'predicted_score' in r
+            assert 'title' in r
+            assert 'predicted_score' in r
 
     def test_predict_rating_known_user_item(self, collab_model):
         result = collab_model.predict_rating('u1', 'Product A')
@@ -182,7 +192,7 @@ class TestCollaborativeRecommender:
     def test_predict_rating_unknown_returns_none(self, collab_model):
         result = collab_model.predict_rating('ghost_user', 'Product A')
         assert result is None
-    
+
 
 # ─── HybridRecommender ───────────────────────────────────────────────────────
 
@@ -193,11 +203,17 @@ class TestHybridRecommender:
 
     def test_recommend_has_required_keys(self, hybrid_model):
         recs = hybrid_model.recommend('Product A', top_n=2)
-        required = {'title', 'hybrid_score', 'content_score', 'collab_score', 'sentiment_score'}
+        required = {
+            'title',
+            'hybrid_score',
+            'content_score',
+            'collab_score',
+            'sentiment_score'}
         for r in recs:
             assert required.issubset(r.keys())
 
-    def test_recommend_explain_false_keeps_default_payload_compact(self, hybrid_model):
+    def test_recommend_explain_false_keeps_default_payload_compact(
+            self, hybrid_model):
         recs = hybrid_model.recommend('Product A', top_n=2)
         assert recs
         assert 'explanation' not in recs[0]
@@ -210,7 +226,8 @@ class TestHybridRecommender:
         assert 'component_scores' in explanation
         assert 'weighted_components' in explanation
         assert 'top_content_terms' in explanation
-        assert explanation['signals']['sentiment_polarity'] in {'positive', 'neutral', 'negative'}
+        assert explanation['signals']['sentiment_polarity'] in {
+            'positive', 'neutral', 'negative'}
 
     def test_recommend_sorted_by_hybrid_score(self, hybrid_model):
         recs = hybrid_model.recommend('Product A', top_n=5)
@@ -233,7 +250,8 @@ class TestHybridRecommender:
         try:
             hybrid_model.set_weights(0, 0, 0)
         except ZeroDivisionError:
-            pytest.fail("set_weights raised ZeroDivisionError on all-zero input")
+            pytest.fail(
+                "set_weights raised ZeroDivisionError on all-zero input")
 
     def test_get_weights_returns_dict(self, hybrid_model):
         w = hybrid_model.get_weights()
@@ -246,7 +264,10 @@ class TestHybridRecommender:
 
     def test_no_collab_model_still_works(self, content_model, sample_item_df):
         """HybridRecommender should work without a collab model (content + sentiment only)."""
-        hm = HybridRecommender(content_model, collab_model=None, item_df=sample_item_df)
+        hm = HybridRecommender(
+            content_model,
+            collab_model=None,
+            item_df=sample_item_df)
         recs = hm.recommend('Product A', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
@@ -256,7 +277,12 @@ class TestHybridRecommender:
         recs = hybrid_model.recommend_for_user('u1', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
-        required = {'title', 'hybrid_score', 'content_score', 'collab_score', 'sentiment_score'}
+        required = {
+            'title',
+            'hybrid_score',
+            'content_score',
+            'collab_score',
+            'sentiment_score'}
         for r in recs:
             assert required.issubset(r.keys())
 
@@ -265,10 +291,14 @@ class TestHybridRecommender:
         recs = hybrid_model.recommend_for_user('ghost_user', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
-        
-    def test_recommend_for_user_no_collab_model(self, content_model, sample_item_df):
+
+    def test_recommend_for_user_no_collab_model(
+            self, content_model, sample_item_df):
         """Missing collab model should gracefully fallback for any user."""
-        hm = HybridRecommender(content_model, collab_model=None, item_df=sample_item_df)
+        hm = HybridRecommender(
+            content_model,
+            collab_model=None,
+            item_df=sample_item_df)
         recs = hm.recommend_for_user('u1', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0

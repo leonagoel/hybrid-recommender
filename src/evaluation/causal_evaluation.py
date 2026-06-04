@@ -50,7 +50,6 @@ Usage
 from __future__ import annotations
 
 from collections import Counter
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -67,11 +66,13 @@ def _build_popularity_rank(item_df: pd.DataFrame) -> dict[str, float]:
     Uses review_count if available, otherwise uniform.
     """
     if "review_count" not in item_df.columns or item_df.empty:
-        titles = item_df["title"].tolist() if "title" in item_df.columns else []
+        titles = item_df["title"].tolist(
+        ) if "title" in item_df.columns else []
         return {t: 0.5 for t in titles}
 
     df = item_df[["title", "review_count"]].copy()
-    df["review_count"] = pd.to_numeric(df["review_count"], errors="coerce").fillna(0)
+    df["review_count"] = pd.to_numeric(
+        df["review_count"], errors="coerce").fillna(0)
     max_count = df["review_count"].max()
     if max_count == 0:
         return {row["title"]: 0.0 for _, row in df.iterrows()}
@@ -85,17 +86,20 @@ def _build_category_map(item_df: pd.DataFrame) -> dict[str, str]:
     """Map title → category string."""
     if "category" not in item_df.columns:
         return {}
-    return dict(zip(item_df["title"].astype(str), item_df["category"].fillna("").astype(str)))
+    return dict(zip(item_df["title"].astype(str),
+                item_df["category"].fillna("").astype(str)))
 
 
-def _avg_popularity_rank(titles: list[str], pop_rank: dict[str, float]) -> float:
+def _avg_popularity_rank(
+        titles: list[str], pop_rank: dict[str, float]) -> float:
     """Mean popularity rank for a list of titles. Unknown titles get 0.5."""
     if not titles:
         return 0.0
     return float(np.mean([pop_rank.get(t, 0.5) for t in titles]))
 
 
-def _intra_list_diversity(titles: list[str], category_map: dict[str, str]) -> float:
+def _intra_list_diversity(
+        titles: list[str], category_map: dict[str, str]) -> float:
     """
     Diversity = 1 - (count of dominant category / list length).
     Returns 0.0 for empty or single-item lists.
@@ -173,18 +177,28 @@ def compare_causal_vs_baseline(
 
         n_queries += 1
         causal_pop_ranks.append(_avg_popularity_rank(causal_titles, pop_rank))
-        baseline_pop_ranks.append(_avg_popularity_rank(baseline_titles, pop_rank))
+        baseline_pop_ranks.append(
+            _avg_popularity_rank(
+                baseline_titles, pop_rank))
         causal_covered.update(causal_titles)
         baseline_covered.update(baseline_titles)
-        causal_diversities.append(_intra_list_diversity(causal_titles, category_map))
-        baseline_diversities.append(_intra_list_diversity(baseline_titles, category_map))
+        causal_diversities.append(
+            _intra_list_diversity(
+                causal_titles, category_map))
+        baseline_diversities.append(
+            _intra_list_diversity(
+                baseline_titles, category_map))
 
-    causal_avg_pop = float(np.mean(causal_pop_ranks)) if causal_pop_ranks else 0.0
-    baseline_avg_pop = float(np.mean(baseline_pop_ranks)) if baseline_pop_ranks else 0.0
+    causal_avg_pop = float(np.mean(causal_pop_ranks)
+                           ) if causal_pop_ranks else 0.0
+    baseline_avg_pop = float(np.mean(baseline_pop_ranks)
+                             ) if baseline_pop_ranks else 0.0
     causal_cov = len(causal_covered) / catalog_size
     baseline_cov = len(baseline_covered) / catalog_size
-    causal_div = float(np.mean(causal_diversities)) if causal_diversities else 0.0
-    baseline_div = float(np.mean(baseline_diversities)) if baseline_diversities else 0.0
+    causal_div = float(np.mean(causal_diversities)
+                       ) if causal_diversities else 0.0
+    baseline_div = float(np.mean(baseline_diversities)
+                         ) if baseline_diversities else 0.0
 
     return {
         # Primary metrics — positive = causal layer is better

@@ -53,7 +53,11 @@ class TestCausalConfigSpec:
         assert aggressive.clip_max == 8.0
 
     def test_to_from_dict(self):
-        original = CausalConfig(enabled=True, blend_lambda=0.75, clip_max=4.2, score_key='custom')
+        original = CausalConfig(
+            enabled=True,
+            blend_lambda=0.75,
+            clip_max=4.2,
+            score_key='custom')
         d = original.to_dict()
         assert d['enabled'] is True
         assert d['blend_lambda'] == 0.75

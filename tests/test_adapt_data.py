@@ -14,16 +14,20 @@ fill defaults) and leaves already-preprocessed columns untouched.
 Run with:
     PYTHONPATH=src/data python -m pytest tests/test_adapt_data.py -v
 """
+from data_preprocessing import preprocess
+from data_adapter import adapt_data
 import sys
 import os
 import pytest
 import pandas as pd
-import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'data'))
-
-from data_adapter import adapt_data
-from data_preprocessing import preprocess
+sys.path.insert(
+    0,
+    os.path.join(
+        os.path.dirname(__file__),
+        '..',
+        'src',
+        'data'))
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -32,10 +36,10 @@ from data_preprocessing import preprocess
 def raw_books_df():
     """Raw books DataFrame as it would arrive from pd.read_csv()."""
     return pd.DataFrame({
-        'authors':   ['J.K. Rowling', 'George Orwell', 'Tolkien'],
-        'publisher': ['Bloomsbury',   'Secker',         'Allen'],
-        'title':     ['Harry Potter', '1984',           'LOTR'],
-        'rating':    [1.0,            3.0,              5.0],
+        'authors': ['J.K. Rowling', 'George Orwell', 'Tolkien'],
+        'publisher': ['Bloomsbury', 'Secker', 'Allen'],
+        'title': ['Harry Potter', '1984', 'LOTR'],
+        'rating': [1.0, 3.0, 5.0],
     })
 
 
@@ -51,8 +55,8 @@ def raw_ratings_df():
     return pd.DataFrame({
         'user_id': ['u1', 'u2', 'u3'],
         'book_id': ['b1', 'b2', 'b3'],
-        'rating':  [1.0,  3.0,  5.0],
-        'title':   ['Book A', 'Book B', 'Book C'],
+        'rating': [1.0, 3.0, 5.0],
+        'title': ['Book A', 'Book B', 'Book C'],
     })
 
 
@@ -74,7 +78,8 @@ class TestAdaptDataNoDoublePreprocessing:
         )
         std = adapted_df['rating_normalized'].std()
         assert std > 0, (
-            f"rating_normalized has zero variance (std={std:.6f}) after adapt_data(). "
+            f"rating_normalized has zero variance (std={
+                std:.6f}) after adapt_data(). "
             "This means MinMaxScaler was applied a second time to an already-normalised "
             "column, collapsing all variance."
         )
@@ -114,7 +119,8 @@ class TestAdaptDataNoDoublePreprocessing:
         """authors must remain int64 after adapt_data(), not be re-cast to object."""
         adapted_df, _ = adapt_data(preprocessed_books_df)
         assert adapted_df['authors'].dtype in ['int32', 'int64'], (
-            f"authors dtype changed to {adapted_df['authors'].dtype} inside adapt_data(). "
+            f"authors dtype changed to {
+                adapted_df['authors'].dtype} inside adapt_data(). "
             "Expected int64 (already encoded by preprocess())."
         )
 
@@ -168,7 +174,8 @@ class TestAdaptDataSchemaIntegrity:
     def test_meta_has_required_keys(self, preprocessed_books_df):
         """Meta dict must contain the expected keys."""
         _, meta = adapt_data(preprocessed_books_df)
-        for key in ['has_user_data', 'has_reviews', 'total_rows', 'total_columns']:
+        for key in ['has_user_data', 'has_reviews',
+                    'total_rows', 'total_columns']:
             assert key in meta, f"Missing meta key: {key}"
 
     def test_ratings_df_adapted(self, raw_ratings_df):

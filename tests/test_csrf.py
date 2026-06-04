@@ -14,7 +14,6 @@ Covers:
 
 import os
 import pytest
-from fastapi import Response
 from fastapi.testclient import TestClient
 
 # Tell _is_secure_context() to return False so the Secure cookie flag is
@@ -33,9 +32,10 @@ from backend.csrf import (                            # noqa: E402
 )
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# ── Fixtures ────────────────────────────────────────────────────────────
 
-@pytest.fixture()                       # function scope — each test gets a clean client
+# function scope — each test gets a clean client
+@pytest.fixture()
 def client():
     """
     Fresh TestClient per test.
@@ -61,7 +61,7 @@ def _inject_csrf_cookie(client: TestClient, token: str) -> None:
     client.cookies.set(CSRF_COOKIE_NAME, token)
 
 
-# ── Token generation ──────────────────────────────────────────────────────────
+# ── Token generation ────────────────────────────────────────────────────
 
 def test_generate_csrf_token_returns_hex_string():
     token = generate_csrf_token()
@@ -76,7 +76,7 @@ def test_generate_csrf_token_is_unique():
     assert len(tokens) == 100
 
 
-# ── /api/csrf-token endpoint ──────────────────────────────────────────────────
+# ── /api/csrf-token endpoint ────────────────────────────────────────────
 
 def test_csrf_token_endpoint_returns_200(client):
     response = client.get("/api/csrf-token")
@@ -122,10 +122,10 @@ def test_csrf_token_response_has_no_cache_headers(client):
 # ── Safe methods are never blocked ───────────────────────────────────────────
 
 @pytest.mark.parametrize("method,path", [
-    ("GET",     "/api/health"),
-    ("GET",     "/api/status"),
-    ("GET",     "/api/csrf-token"),
-    ("GET",     "/api/weights"),
+    ("GET", "/api/health"),
+    ("GET", "/api/status"),
+    ("GET", "/api/csrf-token"),
+    ("GET", "/api/weights"),
     ("OPTIONS", "/api/health"),
 ])
 def test_safe_methods_are_never_blocked_by_csrf(client, method, path):
@@ -155,12 +155,13 @@ def test_safe_methods_are_never_blocked_by_csrf(client, method, path):
 # BEFORE the router, so the middleware sees the method first and returns 403.
 
 @pytest.mark.parametrize("method,path,body", [
-    ("POST",   "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
-    ("PUT",    "/api/weights",  {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}),
-    ("PATCH",  "/api/feedback", {}),
+    ("POST", "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
+    ("PUT", "/api/weights", {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}),
+    ("PATCH", "/api/feedback", {}),
     ("DELETE", "/api/feedback", {}),
 ])
-def test_mutating_request_without_cookie_returns_403(client, method, path, body):
+def test_mutating_request_without_cookie_returns_403(
+        client, method, path, body):
     """
     No CSRF cookie present → middleware must reject with 403 before the
     request reaches any route handler.
@@ -176,12 +177,13 @@ def test_mutating_request_without_cookie_returns_403(client, method, path, body)
 # ── Missing header → 403 ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("method,path,body", [
-    ("POST",   "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
-    ("PUT",    "/api/weights",  {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}),
-    ("PATCH",  "/api/feedback", {}),
+    ("POST", "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
+    ("PUT", "/api/weights", {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}),
+    ("PATCH", "/api/feedback", {}),
     ("DELETE", "/api/feedback", {}),
 ])
-def test_mutating_request_without_header_returns_403(client, method, path, body):
+def test_mutating_request_without_header_returns_403(
+        client, method, path, body):
     """
     Cookie present but X-CSRF-Token header absent → 403.
     The Double Submit pattern requires BOTH values.
@@ -194,22 +196,23 @@ def test_mutating_request_without_header_returns_403(client, method, path, body)
     assert "CSRF" in response.json()["detail"]
 
 
-# ── Mismatched tokens → 403 ───────────────────────────────────────────────────
+# ── Mismatched tokens → 403 ─────────────────────────────────────────────
 
 @pytest.mark.parametrize("method,path,body", [
-    ("POST",   "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
-    ("PUT",    "/api/weights",  {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}),
-    ("PATCH",  "/api/feedback", {}),
+    ("POST", "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
+    ("PUT", "/api/weights", {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}),
+    ("PATCH", "/api/feedback", {}),
     ("DELETE", "/api/feedback", {}),
 ])
-def test_mutating_request_with_mismatched_tokens_returns_403(client, method, path, body):
+def test_mutating_request_with_mismatched_tokens_returns_403(
+        client, method, path, body):
     """
     Cookie token ≠ header token → 403.
     An attacker who can forge a header value but cannot read the cookie
     (cross-origin) will always produce a mismatch.
     """
     cookie_token = generate_csrf_token()
-    wrong_header  = generate_csrf_token()   # different token — guaranteed by CSPRNG
+    wrong_header = generate_csrf_token()   # different token — guaranteed by CSPRNG
     _inject_csrf_cookie(client, cookie_token)
     response = client.request(
         method, path, json=body,
@@ -278,12 +281,16 @@ def test_post_purchases_with_valid_csrf_passes_csrf_check(client):
     response = client.post(
         "/api/purchases",
         headers={CSRF_HEADER_NAME: token},
-        json={"user_id": "test-user", "product_id": 1, "rating": 4.0, "review_text": ""},
+        json={
+            "user_id": "test-user",
+            "product_id": 1,
+            "rating": 4.0,
+            "review_text": ""},
     )
     assert response.status_code != 403
 
 
-# ── set_csrf_cookie helper ────────────────────────────────────────────────────
+# ── set_csrf_cookie helper ──────────────────────────────────────────────
 
 def test_set_csrf_cookie_writes_correct_attributes():
     """

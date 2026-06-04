@@ -2,19 +2,18 @@
 Unit tests for the NLP sentiment engine module.
 Tests NLTK VADER sentiment analysis functions.
 """
-import pytest
-import pandas as pd
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from src.model.nlp_engine import (
     analyze_sentiment,
     sentiment_label,
     batch_analyze,
     aggregate_sentiment_by_item,
 )
+import pytest
+import pandas as pd
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
 class TestAnalyzeSentiment:
@@ -170,7 +169,8 @@ class TestAggregateSentimentByItem:
         })
         df = batch_analyze(df)
         result = aggregate_sentiment_by_item(df)
-        item_a_count = result[result["title"] == "Item A"]["review_count"].iloc[0]
+        item_a_count = result[result["title"]
+                              == "Item A"]["review_count"].iloc[0]
         assert item_a_count == 2
 
     def test_aggregate_auto_analyzes(self):

@@ -1,6 +1,5 @@
 import pytest
 import pandas as pd
-import numpy as np
 
 from src.data.data_adapter import (
     adapt_data,
@@ -8,7 +7,6 @@ from src.data.data_adapter import (
     validate_recommender_inputs,
     _has_blank_values,
     detect_column,
-    read_file,
 )
 
 

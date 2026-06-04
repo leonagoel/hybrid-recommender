@@ -3,7 +3,6 @@ Unit tests specifically for Fairness-Aware Re-ranking in HybridRecommender.
 Run with: pytest tests/ -v
 """
 import pytest
-import pandas as pd
 from unittest.mock import MagicMock
 from src.model.hybrid_model import HybridRecommender
 
@@ -12,9 +11,13 @@ class TestFairnessAwareSpec:
 
     @pytest.fixture
     def mock_recommender(self):
-        # Create a mock recommender with minimal properties needed for _fair_rerank
+        # Create a mock recommender with minimal properties needed for
+        # _fair_rerank
         content_model = MagicMock()
-        model = HybridRecommender(content_model=content_model, collab_model=None, item_df=None)
+        model = HybridRecommender(
+            content_model=content_model,
+            collab_model=None,
+            item_df=None)
         return model
 
     def test_fairness_get_set_defaults(self, mock_recommender):
@@ -30,7 +33,8 @@ class TestFairnessAwareSpec:
         assert d['max_share'] == 1.0
 
     def test_fairness_set_fairness(self, mock_recommender):
-        mock_recommender.set_fairness(enabled=True, key='catalog', max_share=0.25)
+        mock_recommender.set_fairness(
+            enabled=True, key='catalog', max_share=0.25)
         assert mock_recommender.fairness_enabled is True
         assert mock_recommender.fairness_key == 'catalog'
         assert mock_recommender.fairness_max_share == 0.25
@@ -42,12 +46,14 @@ class TestFairnessAwareSpec:
 
     def test_fair_rerank_empty(self, mock_recommender):
         # Empty results should return empty list gracefully
-        res = mock_recommender._fair_rerank([], top_n=5, key='category', max_share=0.5)
+        res = mock_recommender._fair_rerank(
+            [], top_n=5, key='category', max_share=0.5)
         assert res == []
 
     def test_fair_rerank_single_item(self, mock_recommender):
         results = [{'title': 'A', 'category': 'Tech'}]
-        res = mock_recommender._fair_rerank(results, top_n=1, key='category', max_share=0.5)
+        res = mock_recommender._fair_rerank(
+            results, top_n=1, key='category', max_share=0.5)
         assert res == results
 
     def test_fair_rerank_invalid_max_share(self, mock_recommender):
@@ -56,10 +62,12 @@ class TestFairnessAwareSpec:
             {'title': 'B', 'category': 'Tech'}
         ]
         # max_share <= 0 or > 1 or invalid type fallback to 1.0
-        res = mock_recommender._fair_rerank(results, top_n=2, key='category', max_share=-0.5)
+        res = mock_recommender._fair_rerank(
+            results, top_n=2, key='category', max_share=-0.5)
         assert len(res) == 2
 
-        res2 = mock_recommender._fair_rerank(results, top_n=2, key='category', max_share='invalid-type')
+        res2 = mock_recommender._fair_rerank(
+            results, top_n=2, key='category', max_share='invalid-type')
         assert len(res2) == 2
 
     def test_fair_rerank_reallocates_overflow(self, mock_recommender):
@@ -81,7 +89,8 @@ class TestFairnessAwareSpec:
         # At this point selected list has 3 items: [Tech 1, Tech 2, Art 1]
         # We need 4 items. Selected is filled with overflow: Tech 3.
         # Expected final list of size 4: [Tech 1, Tech 2, Art 1, Tech 3]
-        res = mock_recommender._fair_rerank(results, top_n=4, key='category', max_share=0.5)
+        res = mock_recommender._fair_rerank(
+            results, top_n=4, key='category', max_share=0.5)
         assert len(res) == 4
         assert res[0]['title'] == 'Tech 1'
         assert res[1]['title'] == 'Tech 2'
@@ -96,5 +105,6 @@ class TestFairnessAwareSpec:
             {'title': 'C', 'category': 'Tech'}
         ]
         # Should execute successfully without throwing KeyError
-        res = mock_recommender._fair_rerank(results, top_n=3, key='category', max_share=0.5)
+        res = mock_recommender._fair_rerank(
+            results, top_n=3, key='category', max_share=0.5)
         assert len(res) == 3

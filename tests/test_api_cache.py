@@ -2,6 +2,7 @@
 Regression tests for API response caching.
 """
 
+from backend import main
 import os
 import sys
 from types import SimpleNamespace
@@ -9,8 +10,6 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from backend import main
 
 
 class FakeHybrid:
@@ -20,7 +19,8 @@ class FakeHybrid:
     def get_weights(self):
         return {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}
 
-    def recommend(self, item_title, top_n=10, explain=False, target_catalog=None, **kwargs):
+    def recommend(self, item_title, top_n=10, explain=False,
+                  target_catalog=None, **kwargs):
         self.calls += 1
         return [{"title": f"{item_title} match", "hybrid_score": 0.98}][:top_n]
 

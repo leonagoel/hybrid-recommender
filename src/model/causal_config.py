@@ -29,9 +29,9 @@ Design notes
   propagate silently into numpy operations.
 """
 
-from dataclasses import dataclass, field
-
 from dataclasses import dataclass
+
+from dataclasses import dataclass  # noqa: F811
 
 
 @dataclass
@@ -67,7 +67,9 @@ class CausalConfig:
         if not isinstance(self.enabled, bool):
             raise ValueError("enabled must be a bool")
         if not 0.0 <= self.blend_lambda <= 1.0:
-            raise ValueError(f"blend_lambda must be in [0.0, 1.0], got {self.blend_lambda}")
+            raise ValueError(
+                f"blend_lambda must be in [0.0, 1.0], got {
+                    self.blend_lambda}")
         if self.clip_max <= 0:
             raise ValueError(f"clip_max must be positive, got {self.clip_max}")
         if not self.score_key:
@@ -93,7 +95,7 @@ class CausalConfig:
             score_key=str(d.get('score_key', 'hybrid_score')),
         ).validate()
 
-    # ── Preset factory methods ────────────────────────────────────────────────
+    # ── Preset factory methods ──────────────────────────────────────────────
 
     @classmethod
     def disabled(cls) -> 'CausalConfig':

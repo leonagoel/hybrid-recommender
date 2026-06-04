@@ -1,11 +1,11 @@
 import pandas as pd
-import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from typing import Union
 from pathlib import Path
-import os
 
-def preprocess_books_data(data: Union[str, Path, pd.DataFrame] = "datasets/booksdata.csv"):
+
+def preprocess_books_data(
+        data: Union[str, Path, pd.DataFrame] = "datasets/booksdata.csv"):
     """
     Preprocess the books dataset.
     - Removes duplicate entries
@@ -20,7 +20,9 @@ def preprocess_books_data(data: Union[str, Path, pd.DataFrame] = "datasets/books
     elif isinstance(data, (str, Path)):
         df = pd.read_csv(data)
     else:
-        raise TypeError(f"Expected str, Path, or pd.DataFrame — got {type(data)}")
+        raise TypeError(
+            f"Expected str, Path, or pd.DataFrame — got {
+                type(data)}")
 
     print(f"Original shape: {df.shape}")
 
@@ -36,7 +38,9 @@ def preprocess_books_data(data: Union[str, Path, pd.DataFrame] = "datasets/books
     print(f"Final shape: {df.shape}")
     return df
 
-def preprocess_ratings_data(data: Union[str, Path, pd.DataFrame] = "datasets/ratings.csv"):
+
+def preprocess_ratings_data(
+        data: Union[str, Path, pd.DataFrame] = "datasets/ratings.csv"):
     """
     Preprocess the ratings dataset.
     - Removes duplicate user-book pairs
@@ -51,7 +55,9 @@ def preprocess_ratings_data(data: Union[str, Path, pd.DataFrame] = "datasets/rat
     elif isinstance(data, (str, Path)):
         df = pd.read_csv(data)
     else:
-        raise TypeError(f"Expected str, Path, or pd.DataFrame — got {type(data)}")
+        raise TypeError(
+            f"Expected str, Path, or pd.DataFrame — got {
+                type(data)}")
 
     print(f"Original shape: {df.shape}")
 
@@ -66,7 +72,9 @@ def preprocess_ratings_data(data: Union[str, Path, pd.DataFrame] = "datasets/rat
     print(f"Final shape: {df.shape}")
     return df
 
-def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = "datasets/Customer_Sentiment.csv"):
+
+def preprocess_sentiment_data(
+        data: Union[str, Path, pd.DataFrame] = "datasets/Customer_Sentiment.csv"):
     """
     Preprocess the customer sentiment dataset.
     - Removes duplicates
@@ -82,7 +90,9 @@ def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = "datasets/C
     elif isinstance(data, (str, Path)):
         df = pd.read_csv(data)
     else:
-        raise TypeError(f"Expected str, Path, or pd.DataFrame — got {type(data)}")
+        raise TypeError(
+            f"Expected str, Path, or pd.DataFrame — got {
+                type(data)}")
 
     print(f"Original shape: {df.shape}")
 
@@ -91,9 +101,9 @@ def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = "datasets/C
 
     df = df.dropna()
 
-    categorical_cols = ['gender', 'age_group', 'region', 
-                       'product_category', 'purchase_channel', 
-                       'platform', 'sentiment']
+    categorical_cols = ['gender', 'age_group', 'region',
+                        'product_category', 'purchase_channel',
+                        'platform', 'sentiment']
     le = LabelEncoder()
     for col in categorical_cols:
         if col in df.columns:
@@ -106,16 +116,17 @@ def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = "datasets/C
     print(f"Final shape: {df.shape}")
     return df
 
+
 if __name__ == "__main__":
     print("=== Preprocessing Books Data ===")
     books_df = preprocess_books_data()
-    
+
     print("\n=== Preprocessing Ratings Data ===")
     ratings_df = preprocess_ratings_data()
-    
+
     print("\n=== Preprocessing Sentiment Data ===")
     sentiment_df = preprocess_sentiment_data()
-    
+
     print("\n✅ All datasets preprocessed successfully!")
     print(f"Books: {books_df.shape}")
     print(f"Ratings: {ratings_df.shape}")

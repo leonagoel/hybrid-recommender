@@ -1,14 +1,9 @@
 """
 Tests for recommendation A/B testing helpers.
 """
-import os
-import sys
-
-import pandas as pd
-import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
+from src.model.hybrid_model import HybridRecommender
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
 from src.evaluation.ab_testing import (
     DEFAULT_EXPERIMENT_ID,
     DEFAULT_VARIANTS,
@@ -17,9 +12,13 @@ from src.evaluation.ab_testing import (
     run_recommendation_experiment,
     summarize_variant_metrics,
 )
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.content_model import ContentRecommender
-from src.model.hybrid_model import HybridRecommender
+import os
+import sys
+
+import pandas as pd
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
 @pytest.fixture
@@ -101,13 +100,15 @@ def test_run_recommendation_experiment_restores_original_weights(hybrid_model):
         explain=True,
     )
 
-    assert result["experiment"]["variant"] in {variant.name for variant in DEFAULT_VARIANTS}
+    assert result["experiment"]["variant"] in {
+        variant.name for variant in DEFAULT_VARIANTS}
     assert result["recommendations"]
     assert "explanation" in result["recommendations"][0]
     assert hybrid_model.get_weights() == original_weights
 
 
-def test_run_recommendation_experiment_uses_assigned_variant_weights(hybrid_model):
+def test_run_recommendation_experiment_uses_assigned_variant_weights(
+        hybrid_model):
     variant = ExperimentVariant(
         name="sentiment_only",
         description="Uses sentiment-heavy ranking for the test.",
@@ -123,7 +124,8 @@ def test_run_recommendation_experiment_uses_assigned_variant_weights(hybrid_mode
     )
 
     assert result["experiment"]["variant"] == "sentiment_only"
-    assert result["experiment"]["weights"] == {"alpha": 0.0, "beta": 0.0, "gamma": 1.0}
+    assert result["experiment"]["weights"] == {
+        "alpha": 0.0, "beta": 0.0, "gamma": 1.0}
 
 
 def test_summarize_variant_metrics_returns_average_by_variant():

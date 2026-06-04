@@ -1,6 +1,7 @@
 """
 Regression tests for API rate limiting.
 """
+from backend import main
 import asyncio
 import os
 import sys
@@ -10,8 +11,6 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from backend import main
 
 
 class FakeSupabaseQuery:
@@ -136,7 +135,8 @@ def test_feedback_endpoint_uses_rate_limit_scope(monkeypatch):
     calls = []
     fake_supabase = FakeFeedbackSupabase()
 
-    def fake_apply_rate_limit(request, response, scope, limit_env, default_limit):
+    def fake_apply_rate_limit(request, response, scope,
+                              limit_env, default_limit):
         calls.append({
             "scope": scope,
             "limit_env": limit_env,
@@ -149,12 +149,21 @@ def test_feedback_endpoint_uses_rate_limit_scope(monkeypatch):
         return None
 
     monkeypatch.setattr(main, "_apply_rate_limit", fake_apply_rate_limit)
-    monkeypatch.setattr(main, "_get_feedback_storage_client", lambda: fake_supabase)
+    monkeypatch.setattr(
+        main,
+        "_get_feedback_storage_client",
+        lambda: fake_supabase)
 
-    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={"user-agent": "pytest"})
+    request = SimpleNamespace(
+        client=SimpleNamespace(
+            host="127.0.0.1"), headers={
+            "user-agent": "pytest"})
     response = main.Response()
     result = main.submit_feedback(
-        main.FeedbackCreate(user_id="user123", item="item1", feedback="Excellent"),
+        main.FeedbackCreate(
+            user_id="user123",
+            item="item1",
+            feedback="Excellent"),
         request,
         response,
         None,
@@ -171,7 +180,8 @@ def test_feedback_endpoint_uses_rate_limit_scope(monkeypatch):
 def test_github_webhook_uses_rate_limit_scope(monkeypatch):
     calls = []
 
-    def fake_apply_rate_limit(request, response, scope, limit_env, default_limit):
+    def fake_apply_rate_limit(request, response, scope,
+                              limit_env, default_limit):
         calls.append({
             "scope": scope,
             "limit_env": limit_env,
@@ -184,8 +194,13 @@ def test_github_webhook_uses_rate_limit_scope(monkeypatch):
         return None
 
     monkeypatch.setattr(main, "_apply_rate_limit", fake_apply_rate_limit)
-    monkeypatch.setattr(main, "_verify_github_signature", lambda *args, **kwargs: None)
-    monkeypatch.setattr(main, "triage_issue", lambda *args, **kwargs: asyncio.sleep(0, result={"triaged": True}))
+    monkeypatch.setattr(
+        main,
+        "_verify_github_signature",
+        lambda *args,
+        **kwargs: None)
+    monkeypatch.setattr(main, "triage_issue", lambda *args,
+                        **kwargs: asyncio.sleep(0, result={"triaged": True}))
 
     class FakeWebhookRequest:
         def __init__(self):
@@ -212,7 +227,8 @@ def test_github_webhook_uses_rate_limit_scope(monkeypatch):
 
 
 class FakeHybrid:
-    def recommend(self, title, top_n=10, explain=False, target_catalog=None, **kwargs):
+    def recommend(self, title, top_n=10, explain=False,
+                  target_catalog=None, **kwargs):
         return [{"title": f"{title} match", "hybrid_score": 0.9}][:top_n]
 
     def get_weights(self):

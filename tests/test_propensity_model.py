@@ -55,7 +55,8 @@ class TestPropensityModelSpec:
         })
         pm = PropensityModel(df)
         scores = pm.all_scores()
-        # X category is dominant, so A and B should have higher propensity than C
+        # X category is dominant, so A and B should have higher propensity than
+        # C
         assert scores['A'] > scores['C']
         assert scores['B'] > scores['C']
 
@@ -130,7 +131,7 @@ class TestPropensityModelSpec:
         })
         pm = PropensityModel(df)
         scores = pm.all_scores()
-        # Item with 1 billion reviews should not break normalization and have vastly higher score
+        # Item with 1 billion reviews should not break normalization and have
+        # vastly higher score
         assert scores['A'] > scores['B']
         assert pm.get_ips_weight('A') < pm.get_ips_weight('B')
-

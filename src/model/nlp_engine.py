@@ -41,7 +41,8 @@ def sentiment_label(score: float) -> str:
         return 'neutral'
 
 
-def batch_analyze(df: pd.DataFrame, text_col: str = 'review_text') -> pd.DataFrame:
+def batch_analyze(df: pd.DataFrame,
+                  text_col: str = 'review_text') -> pd.DataFrame:
     """
     Add sentiment_score and sentiment_label columns to the DataFrame.
     Operates on the specified text column.
@@ -57,7 +58,8 @@ def batch_analyze(df: pd.DataFrame, text_col: str = 'review_text') -> pd.DataFra
     return df
 
 
-def aggregate_sentiment_by_item(df: pd.DataFrame, item_col: str = 'title') -> pd.DataFrame:
+def aggregate_sentiment_by_item(
+        df: pd.DataFrame, item_col: str = 'title') -> pd.DataFrame:
     """
     Compute average sentiment score per unique item.
     Returns a DataFrame with columns: [item_col, 'avg_sentiment', 'review_count'].
@@ -71,6 +73,7 @@ def aggregate_sentiment_by_item(df: pd.DataFrame, item_col: str = 'title') -> pd
     ).reset_index()
 
     return agg
+
 
 def compute_product_sentiment(reviews):
     """

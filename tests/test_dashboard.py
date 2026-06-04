@@ -2,6 +2,8 @@
 Tests for the admin dashboard endpoint (issue #71).
 Run with: pytest tests/test_dashboard.py -v
 """
+from backend import main as backend_main
+from fastapi.testclient import TestClient
 import os
 import sys
 from types import SimpleNamespace
@@ -9,10 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from fastapi.testclient import TestClient
-
-from backend import main as backend_main
 
 
 # ─── Fake Supabase client ────────────────────────────────────────────
@@ -65,7 +63,8 @@ class _FakeQuery:
                 rows = [r for r in rows if r.get(col) == value]
 
         if self._count_mode == 'exact':
-            return SimpleNamespace(data=[], count=len(self._dataset.get(self._table, [])))
+            return SimpleNamespace(data=[], count=len(
+                self._dataset.get(self._table, [])))
         return SimpleNamespace(data=rows, count=None)
 
 
@@ -123,9 +122,16 @@ def test_dashboard_schema_with_data(client, monkeypatch):
     """Populated database: response has the exact required schema."""
     dataset = {
         'products': [
-            {'id': 1, 'title': 'A', 'category': 'Electronics', 'rating': 4.5, 'avg_sentiment': 0.6, 'review_count': 100},
-            {'id': 2, 'title': 'B', 'category': 'Books',       'rating': 3.0, 'avg_sentiment': 0.1, 'review_count': 20},
-            {'id': 3, 'title': 'C', 'category': 'Electronics', 'rating': 5.0, 'avg_sentiment': 0.9, 'review_count': 50},
+            {'id': 1, 'title': 'A', 'category': 'Electronics',
+                'rating': 4.5, 'avg_sentiment': 0.6, 'review_count': 100},
+            {'id': 2,
+             'title': 'B',
+             'category': 'Books',
+             'rating': 3.0,
+             'avg_sentiment': 0.1,
+             'review_count': 20},
+            {'id': 3, 'title': 'C', 'category': 'Electronics',
+                'rating': 5.0, 'avg_sentiment': 0.9, 'review_count': 50},
         ],
         'purchases': [
             {'id': 10, 'user_id': 'u1', 'product_id': 1},
@@ -146,7 +152,8 @@ def test_dashboard_schema_with_data(client, monkeypatch):
     assert body['total_interactions'] == 3
     assert isinstance(body['avg_recommendation_score'], float)
     assert isinstance(body['avg_sentiment_score'], float)
-    assert body['avg_recommendation_score'] == pytest.approx((4.5 + 3.0 + 5.0) / 3, rel=1e-3)
+    assert body['avg_recommendation_score'] == pytest.approx(
+        (4.5 + 3.0 + 5.0) / 3, rel=1e-3)
     assert isinstance(body['top_5_recommended_products'], list)
     assert len(body['top_5_recommended_products']) <= 5
     # Product 1 has the most purchases — it should rank first.
@@ -185,12 +192,23 @@ def test_dashboard_reports_last_trained_timestamp(client, monkeypatch):
     assert res.json()['model_last_trained'] == fixed_ts
 
 
-def test_dashboard_top_products_fallback_when_no_purchases(client, monkeypatch):
+def test_dashboard_top_products_fallback_when_no_purchases(
+        client, monkeypatch):
     """With products but no purchases, top_5 falls back to top-rated products."""
     dataset = {
         'products': [
-            {'id': 1, 'title': 'Low',  'category': 'X', 'rating': 2.0, 'avg_sentiment': 0.1, 'review_count': 5},
-            {'id': 2, 'title': 'High', 'category': 'X', 'rating': 4.9, 'avg_sentiment': 0.8, 'review_count': 80},
+            {'id': 1,
+             'title': 'Low',
+             'category': 'X',
+             'rating': 2.0,
+             'avg_sentiment': 0.1,
+             'review_count': 5},
+            {'id': 2,
+             'title': 'High',
+             'category': 'X',
+             'rating': 4.9,
+             'avg_sentiment': 0.8,
+             'review_count': 80},
         ],
         'purchases': [],
     }

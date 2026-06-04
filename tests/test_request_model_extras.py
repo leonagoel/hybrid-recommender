@@ -8,9 +8,15 @@ from backend.main import FeedbackCreate, PurchaseCreate, RealtimeRecommendationR
     ("model", "payload"),
     [
         (PurchaseCreate, {"user_id": "u1", "product_id": 1, "role": "admin"}),
-        (FeedbackCreate, {"user_id": "u1", "item": "Alpha", "feedback": "ok", "is_admin": True}),
-        (WeightsUpdate, {"alpha": 0.5, "beta": 0.3, "gamma": 0.2, "owner": "attacker"}),
-        (RealtimeRecommendationRequest, {"item_title": "Alpha", "top_n": 5, "user_id": "victim"}),
+        (FeedbackCreate,
+         {"user_id": "u1",
+          "item": "Alpha",
+          "feedback": "ok",
+          "is_admin": True}),
+        (WeightsUpdate, {"alpha": 0.5, "beta": 0.3,
+         "gamma": 0.2, "owner": "attacker"}),
+        (RealtimeRecommendationRequest, {
+         "item_title": "Alpha", "top_n": 5, "user_id": "victim"}),
     ],
 )
 def test_write_models_reject_extra_fields(model, payload):

@@ -17,10 +17,12 @@ except ImportError:
 logger = logging.getLogger(__name__)
 GOOGLE_API_KEY = "Your_API_KEY"
 
+
 class LLMExplainer:
     """Generate natural language explanations for recommendations using LLM."""
 
-    def __init__(self, model_name: str = "gemini-pro", api_key: Optional[str] = None):
+    def __init__(self, model_name: str = "gemini-pro",
+                 api_key: Optional[str] = None):
         """
         Initialize the LLM explainer.
 
@@ -29,7 +31,8 @@ class LLMExplainer:
             api_key: Google API key (will read from GOOGLE_API_KEY env var if not provided)
         """
         self.model_name = model_name
-        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or GOOGLE_API_KEY
+        self.api_key = api_key or os.environ.get(
+            "GOOGLE_API_KEY") or GOOGLE_API_KEY
 
         if genai is None:
             logger.warning(
@@ -87,7 +90,7 @@ class LLMExplainer:
         description_str = f"\nDescription: {description}" if description else ""
         category_str = f"  Category: {category}" if category else ""
 
-        prompt = f"""You are a recommendation system explainer. Generate a comprehensive, engaging explanation 
+        prompt = f"""You are a recommendation system explainer. Generate a comprehensive, engaging explanation
 (3-4 sentences max) for why this item is recommended.
 
 Query item: {query_item}
@@ -130,7 +133,8 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
         """
         if not self.client:
             # Fallback: Generate a simple text-based explanation
-            logger.warning("LLM client not initialized. Generating fallback explanation.")
+            logger.warning(
+                "LLM client not initialized. Generating fallback explanation.")
             return self._generate_fallback_explanation(
                 recommended_item, query_item, scores, description, category
             )
@@ -159,11 +163,12 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
             return response.text.strip()
 
         except Exception as e:
-            logger.error(f"Error generating LLM explanation: {e}. Using fallback explanation.")
+            logger.error(
+                f"Error generating LLM explanation: {e}. Using fallback explanation.")
             return self._generate_fallback_explanation(
                 recommended_item, query_item, scores, description, category
             )
-    
+
     def _generate_fallback_explanation(
         self,
         recommended_item: str,
@@ -174,22 +179,28 @@ Generate a COMPLETE, FULL explanation (not truncated):"""
     ) -> str:
         """Generate a detailed text-based explanation when LLM is unavailable."""
         # Find the highest scoring component
-        valid_scores = {k: v for k, v in scores.items() if v is not None and isinstance(v, (int, float))}
-        max_score_name = max(valid_scores, key=valid_scores.get) if valid_scores else "hybrid"
-        max_score_value = valid_scores.get(max_score_name, 0) if valid_scores else 0
-        
+        valid_scores = {
+            k: v for k, v in scores.items() if v is not None and isinstance(
+                v, (int, float))}
+        max_score_name = max(
+            valid_scores,
+            key=valid_scores.get) if valid_scores else "hybrid"
+        max_score_value = valid_scores.get(
+            max_score_name, 0) if valid_scores else 0
+
         explanations = {
             "hybrid": f"This {category if category else 'item'} matches your interests across multiple recommendation factors including content similarity, user preferences, and sentiment analysis.",
             "content": f"This {category if category else 'item'} shares similar content features and characteristics with '{query_item}'. Based on content analysis, it has high relevance to your search query.",
             "collab": f"Users who were interested in '{query_item}' also highly appreciated this {category if category else 'item'}. This is based on collaborative filtering across user preferences.",
             "sentiment": f"This {category if category else 'item'} has strong positive reviews and excellent user sentiment scores, indicating high customer satisfaction.",
         }
-        
+
         base_explanation = explanations.get(
-            max_score_name, 
-            f"This item scored {max_score_value:.1%} match with your search criteria based on hybrid recommendation analysis."
+            max_score_name,
+            f"This item scored {
+                max_score_value:.1%} match with your search criteria based on hybrid recommendation analysis."
         )
-        
+
         # Add description if available - increased from 100 to 300 characters
         if description and description.strip():
             desc_snippet = description[:300].strip()

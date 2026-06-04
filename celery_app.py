@@ -53,16 +53,21 @@ def dispatch_task_safely(task, *args, **kwargs):
         # Ping the Redis server with a strict 1-second connection timeout flag
         r = Redis.from_url(REDIS_URL, socket_connect_timeout=1.0)
         r.ping()
-        
-        # If connection succeeds, dispatch asynchronously to the Celery worker cluster
-        logger.info(f"Redis cluster verified healthy. Dispatching task {task.__name__} asynchronously.")
+
+        # If connection succeeds, dispatch asynchronously to the Celery worker
+        # cluster
+        logger.info(
+            f"Redis cluster verified healthy. Dispatching task {
+                task.__name__} asynchronously.")
         return task.delay(*args, **kwargs)
-        
+
     except Exception as e:
-        # If Redis is offline, degrade gracefully by executing the logic locally and synchronously
+        # If Redis is offline, degrade gracefully by executing the logic
+        # locally and synchronously
         logger.warning(
             f"Celery message broker/Redis offline ({e}). "
-            f"Degrading gracefully to execute task {task.__name__} synchronously inline."
+            f"Degrading gracefully to execute task {
+                task.__name__} synchronously inline."
         )
         # .apply() tells Celery to run the function right now on the main execution thread
         return task.apply(args=args, kwargs=kwargs)

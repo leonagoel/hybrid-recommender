@@ -30,7 +30,10 @@ def test_upload_validation_rejects_json_named_as_csv():
 
 def test_upload_validation_rejects_csv_named_as_json():
     with pytest.raises(HTTPException) as exc:
-        _validate_upload_bytes("products.json", ".json", b"title,rating\nAlpha,5")
+        _validate_upload_bytes(
+            "products.json",
+            ".json",
+            b"title,rating\nAlpha,5")
 
     assert exc.value.status_code == 400
     assert exc.value.detail == "JSON uploads must contain JSON content."
