@@ -122,7 +122,11 @@ async def csrf_header_dep(
     # The middleware has already validated the token before this runs.
     # This function exists solely to make the header visible in Swagger UI.
 
+# ── App ──────────────────────────────────────────────────────────────
+from src.api.exceptions import register_exception_handlers
+
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+register_exception_handlers(app)
 
 @app.on_event("startup")
 def download_nltk_assets():
