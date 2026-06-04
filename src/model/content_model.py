@@ -8,8 +8,12 @@ Optimizations:
 """
 import numpy as np
 import pandas as pd
-from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
 
 # Optional HNSW support (enabled only if hnswlib is importable)
 try:
@@ -26,20 +30,27 @@ class ContentRecommender:
         batch_size: Size of slices processed sequentially to prevent RAM spikes.
         """
         self.df = item_df.reset_index(drop=True)
-        self.model = SentenceTransformer(model_name)
-        
+        self.model = SentenceTransformer(model_name) if SentenceTransformer else None
+        self.vectorizer = None
+
         # Generate embeddings using optimized sequential batching
         texts = self.df['combined'].fillna('').tolist()
-        
-        # FIX FOR ISSUE #485: Process text slices sequentially to prevent massive host RAM peaks
-        embeddings_list = []
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i + batch_size]
-            batch_encodings = self.model.encode(batch_texts, show_progress_bar=False)
-            embeddings_list.append(batch_encodings)
-            
-        # Stack slices cleanly into a single final continuous array allocation
-        self.matrix = np.vstack(embeddings_list) if embeddings_list else np.empty((0, 0))
+
+        if self.model is not None:
+            # FIX FOR ISSUE #485: Process text slices sequentially to prevent massive host RAM peaks
+            embeddings_list = []
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i + batch_size]
+                batch_encodings = self.model.encode(batch_texts, show_progress_bar=False)
+                embeddings_list.append(batch_encodings)
+
+            # Stack slices cleanly into a single final continuous array allocation
+            self.matrix = np.vstack(embeddings_list) if embeddings_list else np.empty((0, 0))
+        else:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+
+            self.vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+            self.matrix = self.vectorizer.fit_transform(texts)
         
         # Internal ANN attributes (built automatically if hnswlib available)
         self._ann_index = None
@@ -47,7 +58,12 @@ class ContentRecommender:
 
         # Build HNSW index automatically if hnswlib is importable and embeddings exist
         try:
-            if hnswlib is not None and getattr(self, 'matrix', None) is not None and self.matrix.size and self.matrix.shape[0] > 0:
+            if (
+                hnswlib is not None
+                and isinstance(getattr(self, 'matrix', None), np.ndarray)
+                and self.matrix.size
+                and self.matrix.shape[0] > 0
+            ):
                 dim = int(self.matrix.shape[1])
                 num_elements = int(self.matrix.shape[0])
                 index = hnswlib.Index(space='cosine', dim=dim)
@@ -65,6 +81,11 @@ class ContentRecommender:
         self._title_to_idx = {
             t.lower(): i for i, t in enumerate(self.df['title'])
         }
+
+    def _encode_query(self, query):
+        if self.model is not None:
+            return self.model.encode([query])
+        return self.vectorizer.transform([query])
 
     def recommend(self, title, top_n=10, target_catalog=None):
         """
@@ -156,7 +177,7 @@ class ContentRecommender:
         Search items by query text using semantic similarity.
         Returns list of matching item titles with scores.
         """
-        query_vec = self.model.encode([query])
+        query_vec = self._encode_query(query)
 
         # Candidate retrieval: prefer ANN candidates when available, otherwise brute-force
         n = int(self.matrix.shape[0]) if getattr(self, 'matrix', None) is not None else 0
@@ -221,4 +242,3 @@ class ContentRecommender:
                 break
 
         return results
-

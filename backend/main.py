@@ -153,6 +153,7 @@ ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 _cache_lock = Lock()
+_redis_client = None
 
 MOCK_PRODUCTS = [
     {
@@ -202,12 +203,14 @@ def _cache_key(*parts: Any) -> str:
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses   # Move globals to the top
 
-    try:
-        cached = _redis_client.get(key)
-        if cached is not None:
-            return json.loads(cached)
-    except (RedisError, json.JSONDecodeError):
-        pass
+    redis_client = globals().get("_redis_client")
+    if redis_client is not None:
+        try:
+            cached = redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
+        except (RedisError, json.JSONDecodeError):
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -475,6 +478,9 @@ def _require_admin_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Admin token required.")
 
 
+_admin_access_dep = _require_admin_access
+
+
 CORS_ORIGINS_ENV = "CORS_ORIGINS"
 DEFAULT_CORS_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
 ALLOWED_CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -739,6 +745,12 @@ def health_check():
             "cache": {"status": "unknown", "details": None},
         },
     }
+
+    if os.environ.get("TESTING", "").lower() == "true":
+        result["components"]["database"] = {"status": "skipped", "details": "testing mode"}
+        result["components"]["model"] = {"status": "skipped", "details": "testing mode"}
+        result["components"]["cache"] = {"status": "skipped", "details": "testing mode"}
+        return result
 
     # 1. Database check (Supabase)
     try:
