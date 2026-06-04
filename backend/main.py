@@ -990,11 +990,11 @@ def search_items(
             products = result.data or []
     
     except Exception as e:
-        logger.warning("Search fallback to mock products: %s", e)
+    logger.warning("Search fallback to mock products: %s", e)
 
     products = MOCK_PRODUCTS
-    
 
+    if query:
         query_lower = query.lower()
 
         products = [
@@ -1004,8 +1004,8 @@ def search_items(
             or query_lower in str(p.get('category', '')).lower()
         ]
 
-        for p in products:
-            p['rank'] = 0.0
+    for p in products:
+        p['rank'] = 0.0
 
 
     # Format response
