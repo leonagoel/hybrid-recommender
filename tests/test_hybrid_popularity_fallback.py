@@ -7,7 +7,7 @@ class EmptyContentModel:
     def __init__(self, df):
         self.df = df
 
-    def recommend(self, title, top_n=10):
+    def recommend(self, title, top_n=10, target_catalog=None):
         return []
 
 
