@@ -1,7 +1,7 @@
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 import logging
-logger=logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     """Fill missing values. Text columns get 'Unknown', numeric get median."""

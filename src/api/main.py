@@ -12,6 +12,8 @@ from src.api.response_utils import success_response, error_response
 from pydantic import BaseModel
 from typing import Optional
 
+import logging
+logger = logging.getLogger(__name__)
 
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
