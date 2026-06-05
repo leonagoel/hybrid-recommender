@@ -39,7 +39,7 @@ class HybridRecommender:
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
                  causal_config=None, model_kwargs=None,
-                 kg_model=None, delta=0.0):
+                 kg_model=None, delta=0.05):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -166,21 +166,29 @@ class HybridRecommender:
             # Optional runtime hook for online updates (attachable)
             self.online_updater = None
 
-    def set_weights(self, alpha, beta, gamma):
-        """Update the scoring weights. Normalized to sum to 1."""
-        if any(math.isnan(w) for w in [alpha, beta, gamma]):
+    def set_weights(self, alpha, beta, gamma, delta=0.05):
+        """Update the scoring weights. Normalized to sum to 1.
+
+        Args:
+            alpha: weight for content_score
+            beta:  weight for collab_score
+            gamma: weight for sentiment_score
+            delta: weight for popularity (default 0.05). All four weights are
+                   normalized to sum to 1.0, guaranteeing hybrid_score in [0, 1].
+        """
+        if any(math.isnan(w) for w in [alpha, beta, gamma, delta]):
             raise ValueError("Weights must be finite numbers")
-        if any(w < 0 for w in [alpha, beta, gamma]):
+        if any(w < 0 for w in [alpha, beta, gamma, delta]):
             raise ValueError("Weights must be non-negative")
-        total = alpha + beta + gamma
+        total = alpha + beta + gamma + delta
         if total == 0:
             total = 1
         self.alpha = alpha / total
         self.beta = beta / total
         self.gamma = gamma / total
-
+        self.delta = delta / total
     def get_weights(self):
-        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
+        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
 
     def set_fairness(self, enabled=None, key=None, max_share=None):
         if enabled is not None:
@@ -448,12 +456,16 @@ class HybridRecommender:
                 g * sentiment_scores[i]
             )
 
-            # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
+          # Popularity as a proper fourth component weighted by delta.
+            # All four weights are normalized to sum to 1.0 in set_weights(),
+            # so hybrid is guaranteed within [0, 1] with no clamping needed.
             popularity = self._popularity_map.get(item['title'], 0.5)
-            popularity_bonus = 0.05 * popularity
-            
-            # Enforce strict upper bound limit check
-            hybrid = min(1.0, hybrid_base + popularity_bonus)
+            hybrid = (
+                a * content_scores[i] +
+                b * collab_scores[i] +
+                g * sentiment_scores[i] +
+                self.delta * popularity
+            )
 
             # Lookup info from content model's df
             row_data = self.content_model.df[
@@ -611,7 +623,7 @@ class HybridRecommender:
             'content': round(alpha * content_score, 4),
             'collaborative': round(beta * collab_score, 4),
             'sentiment': round(gamma * sentiment_score, 4),
-            'popularity_bonus': round(0.05 * popularity, 4),
+            'popularity_bonus': round(self.delta * popularity, 4),
         }
         strongest = max(weighted_components, key=weighted_components.get)
         if strongest == "content":
