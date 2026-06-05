@@ -518,20 +518,15 @@ def _require_admin_access(request: Request) -> None:
     )
     if not provided_token or not secrets.compare_digest(provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
-    def _admin_access_dep(request: Request):
-        _require_admin_access(request)
-
-_admin_access_dep = _require_admin_access
-
 
 
 def _admin_access_dep(request: Request) -> None:
-    """FastAPI dependency wrapper around _require_admin_access."""
-    _require_admin_access(request)
+    """FastAPI dependency that enforces admin token authentication.
 
-
-def _admin_access_dep(request: Request) -> None:
-    """FastAPI dependency wrapper around _require_admin_access."""
+    Used with ``Depends(_admin_access_dep)`` on admin-only endpoints.
+    Raises HTTP 401 if the token is missing or invalid, HTTP 500 if
+    the server-side token has not been configured.
+    """
     _require_admin_access(request)
 
 
