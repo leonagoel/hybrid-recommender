@@ -91,3 +91,31 @@ jobs:
           DATA_PATH: "data/products.csv"
         run: |
           pytest tests/test_e2e_api_suite.py -v --tb=short
+
+  ranking-regression:
+    name: Ranking Stability Regression Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Project Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Download NLTK data
+        run: |
+          python -c "import nltk; nltk.download('vader_lexicon')"
+
+      - name: Run ranking regression tests
+        run: |
+          pytest tests/test_ranking_stability.py -v --tb=short
+
