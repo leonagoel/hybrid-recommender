@@ -37,7 +37,8 @@ class HybridRecommender:
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None):
+                 causal_config=None, model_kwargs=None,
+                 kg_model=None, delta=0.0):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
@@ -351,9 +352,9 @@ class HybridRecommender:
             if not isinstance(r, dict):
                 continue
 
-            title = r.get("title")
-            if title:
-                all_titles.add(title)
+            _r_title = r.get("title")
+            if _r_title:
+                all_titles.add(_r_title)
 
         # 2. Collaborative scores
         collab_map = {}
@@ -363,12 +364,12 @@ class HybridRecommender:
                 if not isinstance(r, dict):
                     continue
 
-                title = r.get("title")
-                if not title:
+                _r_title = r.get("title")
+                if not _r_title:
                     continue
 
-                collab_map[title] = r.get("collab_score", 0.0)
-                all_titles.add(title)
+                collab_map[_r_title] = r.get("collab_score", 0.0)
+                all_titles.add(_r_title)
 
         # 3. Build unified candidates
         candidates = {}
@@ -403,10 +404,15 @@ class HybridRecommender:
         collab_scores = self._normalize_scores(collab_raws)
         sentiment_scores = self._normalize_scores(sentiment_raws)
 
+        # 5. Get active weights for this request
+        a, b, g = self._get_active_weights(
+            self.alpha, self.beta, self.gamma,
+            user_id=user_id,
+            candidate_titles=list(candidates.keys()),
+        )
+
         kg_scores = []
-        t
         if self.kg_model:
-            l
             kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
            
             kg_map = {
@@ -511,14 +517,26 @@ class HybridRecommender:
 
         return results[:top_n]
     
+    def get_fallback_recommendations(self, top_n=10, target_catalog=None):
+        """
+        Return popularity-based fallback recommendations for cold-start or unknown users.
+        """
+        return self._cold_start_fallback(title=None, top_n=top_n, target_catalog=target_catalog)
+
     def recommend_for_user(self, user_id, top_n=10, explain=False):
         """
         Get recommendations for a specific user.
         If the user is new (or no collab model exists), fallback to popular items.
         """
+        if user_id is None:
+            logger.warning("recommend_for_user called with user_id=None. Using cold-start fallback recommendations.")
+            return self.get_fallback_recommendations(top_n=top_n)
+
         if self.collab_model is None or user_id not in self.collab_model._user_to_idx:
-            # Cold start fallback for new user
-            return self._cold_start_fallback(title=None, top_n=top_n)
+            logger.warning(
+                "User %r not found. Using cold-start fallback recommendations.", user_id
+            )
+            return self.get_fallback_recommendations(top_n=top_n)
 
         collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
         
@@ -743,9 +761,9 @@ class HybridRecommender:
             return []
 
         df = df.copy()
+        global_avg = 3.0
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-            global_avg = 3.0
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
             df['_bayesian'] = df.apply(lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1)
