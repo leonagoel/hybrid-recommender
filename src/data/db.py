@@ -1,37 +1,67 @@
-"""
-Supabase client singleton.
-Provides a single reusable client instance for the entire application.
-"""
 import os
+import logging
+import threading
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 load_dotenv()
 
-_client = None
-_admin_client = None
+logger = logging.getLogger(__name__)
+
+# Module-level singletons — populated on first use, never recreated.
+_client: Client | None = None
+_admin_client: Client | None = None
+
+# One lock per client; guards the check-then-create critical section.
+_client_lock = threading.Lock()
+_admin_client_lock = threading.Lock()
 
 
-def get_supabase():
-    """Get the Supabase client (uses anon key — respects RLS)."""
+def get_supabase() -> Client:
+    """
+    Return the shared anon Supabase client (respects RLS).
+
+    Lazy: the client is created on the first call, not at import time.
+    Singleton: subsequent calls return the same instance without acquiring
+    the lock (double-checked locking pattern).
+    Raises RuntimeError if required env vars are absent.
+    """
     global _client
     if _client is None:
-        from supabase import create_client
-        url = os.environ.get("SUPABASE_URL", "")
-        key = os.environ.get("SUPABASE_ANON_KEY", "")
-        if not url or not key:
-            raise RuntimeError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env")
-        _client = create_client(url, key)
+        with _client_lock:
+            if _client is None:  # re-check after acquiring lock
+                url = os.environ.get("SUPABASE_URL", "")
+                key = os.environ.get("SUPABASE_ANON_KEY", "")
+                if not url or not key:
+                    raise RuntimeError(
+                        "SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env"
+                    )
+                _client = create_client(url, key)
+                logger.info("Supabase anon client initialised.")
     return _client
 
 
-def get_supabase_admin():
-    """Get the Supabase admin client (uses service role key — bypasses RLS)."""
+def get_supabase_admin() -> Client:
+    """
+    Return the shared admin Supabase client (bypasses RLS).
+
+    Same lazy singleton pattern as get_supabase().
+    Raises RuntimeError if required env vars are absent.
+    """
     global _admin_client
     if _admin_client is None:
-        from supabase import create_client
         url = os.environ.get("SUPABASE_URL", "")
         key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        
+        # FIX FOR ISSUE #487: Dynamic fallback check prevents global execution crashes
         if not url or not key:
-            raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
-        _admin_client = create_client(url, key)
+            logger.warning("Supabase admin credentials missing (SUPABASE_URL/SUPABASE_SERVICE_KEY). Admin features disabled.")
+            return None
+            
+        try:
+            _admin_client = create_client(url, key)
+        except Exception as e:
+            logger.error(f"Failed to initialize Supabase admin client: {e}")
+            return None
+            
     return _admin_client

@@ -31,12 +31,12 @@ export async function runSearch(query, limit = 20) {
     if (!res.ok) throw new Error(`Search error: ${res.status}`);
 
     const data    = await res.json();
-    const results = data.results ?? data ?? [];
+    const results = data.results ?? [];
 
     setState({ searchResults: results, isSearching: false });
     addToSearchHistory(q);   // <-- ADD SEARCH TO HISTORY
     renderProductCards(results, { context: 'search', query: q });
-    renderPagination(1, data.total ?? results.length, state.perPage, loadProducts);
+    renderPagination(1, data.count ?? data.total ?? results.length, state.perPage, loadProducts);
   } catch (err) {
     showToast('Search failed. Please try again.', 'error');
     console.error('[search]', err);
@@ -96,8 +96,44 @@ export async function loadCategories() {
 
 function _bindSearchInput() {
   const input = document.getElementById('search-input');
+  const counter = document.getElementById('search-char-counter');
   if (!input) return;
 
+  // Update counter function
+  const updateCounter = () => {
+    if (!counter) return;
+    const len = input.value.length;
+    counter.textContent = `${len}/100`;
+  };
+
+  // Show/hide counter on focus/blur
+  input.addEventListener('focus', () => {
+    if (counter) {
+      counter.style.display = 'block';
+      updateCounter();
+    }
+  });
+  input.addEventListener('blur', () => {
+    if (counter) counter.style.display = 'none';
+  });
+
+  // Existing debounced search (keep it, but add counter update)
+  input.addEventListener('input', (e) => {
+    clearTimeout(_debounceTimer);
+    const q = e.target.value;
+    // Update character counter
+    updateCounter();
+    // Existing behaviour
+    if (!q.trim()) { loadProducts(1); return; }
+    _debounceTimer = setTimeout(() => runSearch(q), DEBOUNCE_MS);
+  });
+}
+function _bindSearchInput() {
+  const input = document.getElementById('search-input');
+  const clearBtn = document.getElementById('clear-search-btn');
+  if (!input) return;
+
+  // === Existing debounced search logic ===
   input.addEventListener('input', (e) => {
     clearTimeout(_debounceTimer);
     const q = e.target.value;
@@ -108,8 +144,27 @@ function _bindSearchInput() {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { input.value = ''; loadProducts(1); }
   });
-}
 
+  // === Clear button logic (new) ===
+  if (clearBtn) {
+    const toggleClearButton = () => {
+      clearBtn.style.display = input.value.length > 0 ? 'block' : 'none';
+    };
+    toggleClearButton();
+    input.addEventListener('input', toggleClearButton);
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      input.value = '';
+      toggleClearButton();
+      loadProducts(1);
+      input.focus();
+    });
+    // Also handle Escape (already handled above, but we need to update button)
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') setTimeout(toggleClearButton, 0);
+    });
+  }
+}
 function _bindGlobalKeyCapture() {
   document.addEventListener('keydown', (e) => {
     const tag = document.activeElement?.tagName?.toLowerCase();

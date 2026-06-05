@@ -5,6 +5,9 @@ Creates realistic user-product interactions to solve the cold start problem.
 Usage:
     python scripts/seed_mock_data.py
     python scripts/seed_mock_data.py --users 50 --purchases 2000
+
+Optimized via Issue #490: Implements strict pathlib absolute context mappings 
+to prevent relative lookup path anomalies across multi-tier runtime environments.
 """
 import os
 import sys
@@ -12,11 +15,9 @@ import random
 import argparse
 import secrets
 import string
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from pathlib import Path
 
 from tqdm import tqdm
-from src.data.db import get_supabase_admin
 
 
 FIRST_NAMES = [
@@ -26,6 +27,12 @@ FIRST_NAMES = [
     "Jamie", "Kendall", "Peyton", "Charlie", "Frankie", "Jesse", "Remy", "Shay",
     "Lane", "Silver", "Storm", "River", "Wren", "Aspen", "Cedar", "Indigo",
 ]
+
+def generate_mock_password(length: int = 12) -> str:
+    """Generate a secure random password for mock users."""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
 
 REVIEW_TEMPLATES = [
     "Great product, really enjoyed it!",
@@ -46,25 +53,9 @@ REVIEW_TEMPLATES = [
 ]
 
 
-def generate_mock_password(length=24):
-    """Generate a high-entropy password for throwaway mock accounts."""
-    if length < 16:
-        raise ValueError("Mock user passwords must be at least 16 characters.")
-
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
-    required = [
-        secrets.choice(string.ascii_lowercase),
-        secrets.choice(string.ascii_uppercase),
-        secrets.choice(string.digits),
-        secrets.choice("!@#$%^&*()-_=+"),
-    ]
-    remaining = [secrets.choice(alphabet) for _ in range(length - len(required))]
-    chars = required + remaining
-    secrets.SystemRandom().shuffle(chars)
-    return ''.join(chars)
-
-
-def seed_mock_data(num_users=100, num_purchases=5000):
+def seed_mock_data(num_users: int = 100, num_purchases: int = 5000) -> None:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from src.data.db import get_supabase_admin
     sb = get_supabase_admin()
 
     # Get available products
@@ -180,7 +171,7 @@ def seed_mock_data(num_users=100, num_purchases=5000):
         try:
             sb.table('reviews').upsert(batch, on_conflict='user_id,product_id').execute()
         except Exception as e:
-            pass
+            print(f"  Warning: Failed to upsert reviews batch: {str(e)[:100]}")
 
     print(f"\n  {'='*50}")
     print(f"  ✅ Seeded {len(mock_users)} users, {inserted:,} purchases, {len(reviews_data):,} reviews")

@@ -10,289 +10,17 @@ Improvements:
 - [NEW] NeuMF (Neural Matrix Factorization) — two-tower ANN replacing SVD
          Enable via USE_NEUMF=true in .env
 """
-import os
+__all__ = ["CollaborativeRecommender"]
+
+import logging
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import coo_matrix
 
-# ── NeuMF imports (only needed when USE_NEUMF=true) ───────────────────────
-try:
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import Dataset, DataLoader
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
+logger = logging.getLogger(__name__)
 
-USE_NEUMF = os.getenv("USE_NEUMF", "false").lower() == "true"
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  1. NeuMF architecture
-# ══════════════════════════════════════════════════════════════════════════
-
-class NeuMF(nn.Module):
-    """
-    Neural Matrix Factorization — He et al. 2017
-    https://arxiv.org/abs/1708.05031
-
-    HOW IT TRACKS USER BEHAVIOUR
-    ─────────────────────────────
-    Every user gets two learned embedding vectors (one for GMF, one for MLP).
-    Each time the model sees a positive interaction (user bought/clicked item),
-    backprop nudges those vectors so the user embedding moves closer to the
-    items they engaged with in the latent space.
-
-    At inference: score all items for a user → ranked personalised list
-    that reflects their full interaction history.
-
-    TWO TOWERS
-    ──────────
-    GMF branch  — element-wise product of user & item embeddings.
-                  Learns the same linear signal as SVD but end-to-end.
-
-    MLP branch  — concat(user_emb, item_emb) → Dense+ReLU layers.
-                  Learns non-linear patterns SVD can NEVER capture,
-                  e.g. "users who buy hiking boots + rain jacket
-                        probably also want trekking poles".
-
-    Both outputs are concatenated → single Linear → Sigmoid → score ∈ (0,1)
-    """
-    def __init__(self, n_users, n_items,
-                 emb_dim=64,
-                 mlp_layers=(256, 128, 64),
-                 dropout=0.2):
-        super().__init__()
-
-        # GMF embeddings
-        self.gmf_user_emb = nn.Embedding(n_users, emb_dim)
-        self.gmf_item_emb = nn.Embedding(n_items, emb_dim)
-
-        # MLP embeddings  (kept separate — sharing hurts quality in practice)
-        self.mlp_user_emb = nn.Embedding(n_users, emb_dim)
-        self.mlp_item_emb = nn.Embedding(n_items, emb_dim)
-
-        # MLP tower
-        layers, in_dim = [], emb_dim * 2
-        for out_dim in mlp_layers:
-            layers += [nn.Linear(in_dim, out_dim), nn.ReLU(), nn.Dropout(dropout)]
-            in_dim = out_dim
-        self.mlp = nn.Sequential(*layers)
-
-        # Fusion layer
-        self.output_layer = nn.Linear(emb_dim + mlp_layers[-1], 1)
-        self.sigmoid = nn.Sigmoid()
-
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Embedding):
-                nn.init.normal_(m.weight, std=0.01)
-            elif isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.zeros_(m.bias)
-
-    def forward(self, user_ids, item_ids):
-        # GMF branch
-        gmf_out = self.gmf_user_emb(user_ids) * self.gmf_item_emb(item_ids)
-
-        # MLP branch
-        mlp_in  = torch.cat([self.mlp_user_emb(user_ids),
-                              self.mlp_item_emb(item_ids)], dim=-1)
-        mlp_out = self.mlp(mlp_in)
-
-        # Fuse + score
-        fused = torch.cat([gmf_out, mlp_out], dim=-1)
-        return self.sigmoid(self.output_layer(fused)).squeeze(-1)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  2. Implicit feedback dataset  (positive + sampled negatives)
-# ══════════════════════════════════════════════════════════════════════════
-
-class ImplicitFeedbackDataset(Dataset):
-    """
-    For each positive (user, item) interaction → label = 1
-    Sample neg_ratio random items the user has NOT touched → label = 0
-
-    This is the standard NCF training strategy for implicit feedback:
-    model learns "liked" vs "never interacted with",
-    NOT explicit star ratings.
-    """
-    def __init__(self, interactions, n_items, neg_ratio=4):
-        self.data = []
-        item_set  = set(range(n_items))
-
-        user_positives = {}
-        for u, i in interactions:
-            user_positives.setdefault(u, set()).add(i)
-
-        for u, pos_items in user_positives.items():
-            negatives = list(item_set - pos_items)
-            for i in pos_items:
-                self.data.append((u, i, 1.0))
-                negs = np.random.choice(negatives,
-                                        size=min(neg_ratio, len(negatives)),
-                                        replace=False)
-                for n in negs:
-                    self.data.append((u, int(n), 0.0))
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        u, i, label = self.data[idx]
-        return (torch.tensor(u,     dtype=torch.long),
-                torch.tensor(i,     dtype=torch.long),
-                torch.tensor(label, dtype=torch.float32))
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  3. NeuMFTrainer  — same public interface as CollaborativeRecommender
-#     so hybrid_model.py needs ZERO changes
-# ══════════════════════════════════════════════════════════════════════════
-
-class NeuMFTrainer:
-    def __init__(
-        self,
-        interaction_df,
-        emb_dim=64,
-        mlp_layers=(256, 128, 64),
-        dropout=0.2,
-        epochs=20,
-        batch_size=256,
-        lr=1e-3,
-        neg_ratio=4,
-    ):
-        if not TORCH_AVAILABLE:
-            raise RuntimeError(
-                "PyTorch not installed. Run: pip install torch\n"
-                "Or set USE_NEUMF=false to fall back to TruncatedSVD."
-            )
-
-        self.df = interaction_df.copy()
-
-        # Build index mappings  (identical to CollaborativeRecommender)
-        self.users  = self.df['user_id'].astype('category')
-        self.titles = self.df['title'].astype('category')
-
-        self._user_to_idx  = {u: i for i, u in enumerate(self.users.cat.categories)}
-        self._title_to_idx = {t: i for i, t in enumerate(self.titles.cat.categories)}
-        self.title_list    = list(self.titles.cat.categories)
-
-        n_users = len(self._user_to_idx)
-        n_items = len(self._title_to_idx)
-
-        interactions = list(zip(self.users.cat.codes.values,
-                                self.titles.cat.codes.values))
-
-        dataset    = ImplicitFeedbackDataset(interactions, n_items, neg_ratio)
-        self.loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-        self.device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model     = NeuMF(n_users, n_items, emb_dim, mlp_layers, dropout).to(self.device)
-        self.criterion = nn.BCELoss()
-        self.optimiser = torch.optim.Adam(self.model.parameters(), lr=lr)
-
-        print(f"[NeuMF] device={self.device} | "
-              f"users={n_users} | items={n_items} | samples={len(dataset)}")
-        self._train(epochs)
-
-    # ── Training loop ──────────────────────────────────────────────────
-
-    def _train(self, epochs):
-        self.model.train()
-        for epoch in range(1, epochs + 1):
-            total_loss = 0.0
-            for user_ids, item_ids, labels in self.loader:
-                user_ids = user_ids.to(self.device)
-                item_ids = item_ids.to(self.device)
-                labels   = labels.to(self.device)
-
-                self.optimiser.zero_grad()
-                loss = self.criterion(self.model(user_ids, item_ids), labels)
-                loss.backward()
-                self.optimiser.step()
-                total_loss += loss.item()
-
-            if epoch % 5 == 0 or epoch == 1:
-                print(f"  Epoch {epoch:>3}/{epochs}  "
-                      f"loss={total_loss / len(self.loader):.4f}")
-
-    # ── Score all items for one user (used by both recommend methods) ──
-
-    @torch.no_grad()
-    def _score_all_items(self, user_idx):
-        self.model.eval()
-        n = len(self.title_list)
-        u = torch.tensor([user_idx] * n, dtype=torch.long).to(self.device)
-        i = torch.arange(n,              dtype=torch.long).to(self.device)
-        return self.model(u, i).cpu().numpy()
-
-    # ── Public interface (mirrors CollaborativeRecommender exactly) ────
-
-    def recommend(self, title, top_n=10):
-        """
-        Item-item recommendations via user behaviour patterns.
-        Finds all users who interacted with `title`, averages their
-        predicted score vectors across all items, returns top_n.
-        """
-        if title not in self._title_to_idx:
-            return []
-
-        item_idx       = self._title_to_idx[title]
-        users_who_liked = self.df[self.df['title'] == title]['user_id'].unique()
-
-        if len(users_who_liked) == 0:
-            return []
-
-        score_matrix = np.stack([
-            self._score_all_items(self._user_to_idx[u])
-            for u in users_who_liked
-            if u in self._user_to_idx
-        ])
-        avg_scores           = score_matrix.mean(axis=0)
-        avg_scores[item_idx] = -1.0          # exclude the query item
-
-        top_indices = np.argsort(avg_scores)[::-1][:top_n]
-        return [
-            {'title': self.title_list[i], 'collab_score': float(avg_scores[i])}
-            for i in top_indices
-        ]
-
-    def predict_for_user(self, user_id, top_n=10):
-        """Personalised recommendations for a specific user."""
-        if user_id not in self._user_to_idx:
-            return []
-
-        scores     = self._score_all_items(self._user_to_idx[user_id])
-        seen_items = set(self.df[self.df['user_id'] == user_id]['title'].tolist())
-
-        scored = [
-            (self.title_list[i], float(scores[i]))
-            for i in range(len(self.title_list))
-            if self.title_list[i] not in seen_items
-        ]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [{'title': t, 'predicted_score': s} for t, s in scored[:top_n]]
-
-    def predict_rating(self, user_id, title):
-        """Predict interaction probability for a user-item pair → float ∈ (0,1)."""
-        if user_id not in self._user_to_idx or title not in self._title_to_idx:
-            return None
-        self.model.eval()
-        with torch.no_grad():
-            u = torch.tensor([self._user_to_idx[user_id]], dtype=torch.long).to(self.device)
-            i = torch.tensor([self._title_to_idx[title]],  dtype=torch.long).to(self.device)
-            return float(self.model(u, i).item())
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  4. Original SVD recommender  (unchanged — kept as fallback)
-# ══════════════════════════════════════════════════════════════════════════
 
 class CollaborativeRecommender:
     def __init__(self, interaction_df, n_factors=50, use_implicit=True):
@@ -328,12 +56,15 @@ class CollaborativeRecommender:
             (data, (row, col)), shape=(n_users, n_items)
         ).tocsr()
 
+        # Adaptive rank: reduce factors dynamically for sparse matrices
         min_dim = min(self.user_item_sparse.shape)
         density = (self.user_item_sparse.nnz / (n_users * n_items)
                    if (n_users * n_items) > 0 else 0)
 
-        if min_dim <= 1:
+        # FIX FOR ISSUE #483: Prevent array out-of-bounds collapse on small matrices
+        if min_dim <= 2:
             self.svd = None
+            # Matching shapes perfectly to prevent slice dimensionality failures inside recommend()
             self.user_factors = np.ones((n_users, 1))
             self.item_factors = np.ones((1, n_items))
         else:
@@ -344,13 +75,34 @@ class CollaborativeRecommender:
             else:
                 n_components = min(n_factors, min_dim - 1)
 
+            # Keep n_components safely below absolute matrix dimension boundaries
+            n_components = min(n_components, n_users - 1, n_items - 1)
             n_components = max(1, n_components)
 
-            self.svd = TruncatedSVD(n_components=n_components, random_state=42)
-            self.user_factors = self.svd.fit_transform(self.user_item_sparse)
-            self.item_factors = self.svd.components_
+            try:
+                self.svd = TruncatedSVD(n_components=n_components, random_state=42)
+                self.user_factors = self.svd.fit_transform(self.user_item_sparse)
+                self.item_factors = self.svd.components_
+            except ValueError:
+                # Safe baseline fallback if SVD initialization constraints fail on edge-case data shapes
+                self.svd = None
+                self.user_factors = np.ones((n_users, 1))
+                self.item_factors = np.ones((1, n_items))
 
-    def recommend(self, title, top_n=10):
+        # Build catalog map if catalog column is present in interaction_df
+        self._catalog_map = {}
+        if 'catalog' in self.df.columns:
+            self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+
+    def recommend(self, title, top_n=10, target_catalog=None):
+        """
+        Item-item collaborative recommendations using SVD latent space.
+        Returns list of dicts: [{ 'title', 'collab_score' }, ...]
+        """
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer.")
+        top_n = min(top_n, 100)
+
         if title not in self._title_to_idx:
             return []
         idx       = self._title_to_idx[title]
@@ -362,21 +114,56 @@ class CollaborativeRecommender:
             t = self.title_list[i]
             if t == title or t in seen:
                 continue
+
+            # Catalog filtering
+            if target_catalog and self._catalog_map:
+                item_catalog = self._catalog_map.get(t, '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             seen.add(t)
             results.append({'title': t, 'collab_score': float(score)})
             if len(results) >= top_n:
                 break
         return results
 
-    def predict_for_user(self, user_id, top_n=10):
+    def predict_for_user(self, user_id, top_n=10, target_catalog=None):
+        """
+        Personalized recommendations for a specific user.
+        Predicts scores for all unseen items and returns top N.
+        """
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer.")
+        top_n = min(top_n, 100)
+
         if user_id not in self._user_to_idx:
-            return []
-        u_idx      = self._user_to_idx[user_id]
-        scores     = np.dot(self.user_factors[u_idx], self.item_factors)
-        seen_items = set(self.df[self.df['user_id'] == user_id]['title'].tolist())
-        scored = [(self.title_list[i], float(s))
-                  for i, s in enumerate(scores)
-                  if self.title_list[i] not in seen_items]
+            logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
+            return self._popularity_fallback(top_n)
+            
+
+        u_idx = self._user_to_idx[user_id]
+        user_vec = self.user_factors[u_idx]
+        scores = np.dot(user_vec, self.item_factors)
+
+        # Exclude already-interacted items
+        seen_items = set(
+            self.df[self.df['user_id'] == user_id]['title'].tolist()
+        )
+
+        scored = []
+        for i, score in enumerate(scores):
+            t = self.title_list[i]
+            if t in seen_items:
+                continue
+
+            # Catalog filtering
+            if target_catalog and self._catalog_map:
+                item_catalog = self._catalog_map.get(t, '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
+            scored.append((t, float(score)))
+
         scored.sort(key=lambda x: x[1], reverse=True)
         return [{'title': t, 'predicted_score': s} for t, s in scored[:top_n]]
 
@@ -386,31 +173,30 @@ class CollaborativeRecommender:
         u_idx = self._user_to_idx[user_id]
         i_idx = self._title_to_idx[title]
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
-
-
-# ══════════════════════════════════════════════════════════════════════════
-#  5. Factory function  — the only thing hybrid_model.py needs to change
-# ══════════════════════════════════════════════════════════════════════════
-
-def get_collaborative_recommender(interaction_df, **kwargs):
-    """
-    Call this instead of CollaborativeRecommender() directly.
-
-    Returns NeuMFTrainer  if USE_NEUMF=true  in .env
-    Returns CollaborativeRecommender (SVD)  otherwise  (default, safe)
-
-    hybrid_model.py change needed:
-        # Before
-        collab = CollaborativeRecommender(interaction_df)
-        # After
-        from collaborative_model import get_collaborative_recommender
-        collab = get_collaborative_recommender(interaction_df)
-    """
-    if USE_NEUMF:
-        if not TORCH_AVAILABLE:
-            print("[NeuMF] WARNING: torch not found — falling back to SVD.")
-            return CollaborativeRecommender(interaction_df, **kwargs)
-        print("[NeuMF] USE_NEUMF=true — Neural Matrix Factorization active")
-        return NeuMFTrainer(interaction_df)
-    print("[SVD]   USE_NEUMF=false — TruncatedSVD active (default)")
-    return CollaborativeRecommender(interaction_df, **kwargs)
+    
+    def _popularity_fallback(self, top_n=10):
+        # Fallback for cold-start users — top-N by interaction count (popularity)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Using popularity-based fallback for cold-start user.")
+    
+        item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
+    
+        # Bayesian rating
+        global_avg = item_counts['mean'].mean()
+        m = 5
+        item_counts['bayesian'] = (
+            (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +
+            (m / (item_counts['count'] + m)) * global_avg
+        )
+    
+        top_items = item_counts.nlargest(top_n, 'bayesian')
+    
+        return [
+        {
+            'title': row['title'],
+            'predicted_score': round(float(row['bayesian']), 4),
+            'fallback': True
+        }
+        for _, row in top_items.iterrows()
+        ]

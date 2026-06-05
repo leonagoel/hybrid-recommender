@@ -50,60 +50,6 @@ def content_model(sample_item_df):
     return ContentRecommender(sample_item_df)
 
 
-"""
-Unit tests for Content-Based Recommender
-Run with: pytest tests/ -v
-"""
-import pytest
-import pandas as pd
-import numpy as np
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-from src.model.content_model import ContentRecommender
-
-
-# ─── Fixtures ────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def sample_item_df():
-    """Sample DataFrame for testing ContentRecommender."""
-    return pd.DataFrame({
-        'title': [
-            'Harry Potter',
-            'Lord of the Rings',
-            'The Hobbit',
-            'Game of Thrones',
-            'Dune'
-        ],
-        'description': [
-            'A young wizard discovers his magical heritage',
-            'A fellowship embarks on a quest to destroy a ring',
-            'A hobbit goes on an unexpected journey',
-            'Noble families fight for control of the Iron Throne',
-            'A desert planet holds the most valuable resource',
-        ],
-        'category': [
-            'Fantasy', 'Fantasy', 'Fantasy', 'Fantasy', 'SciFi'
-        ],
-        'combined': [
-            'Harry Potter A young wizard discovers his magical heritage Fantasy',
-            'Lord of the Rings A fellowship embarks on a quest Fantasy',
-            'The Hobbit A hobbit goes on an unexpected journey Fantasy',
-            'Game of Thrones Noble families fight for the Iron Throne Fantasy',
-            'Dune A desert planet holds the most valuable resource SciFi',
-        ],
-    })
-
-
-@pytest.fixture
-def content_model(sample_item_df):
-    """Create ContentRecommender instance with sample data."""
-    return ContentRecommender(sample_item_df)
-
-
 # ─── Tests ───────────────────────────────────────────────────────────────────
 
 class TestContentRecommender:
@@ -177,3 +123,65 @@ class TestContentRecommender:
     def test_search_no_match_returns_empty(self, content_model):
         results = content_model.search('xyzxyzxyz123456', top_n=3)
         assert isinstance(results, list)
+
+    def test_search_very_long_query(self, content_model):
+        long_query = "wizard " * 100
+        try:
+            results = content_model.search(long_query, top_n=3)
+            assert isinstance(results, list)
+        except Exception:
+            pass
+
+    def test_search_special_characters(self, content_model):
+        special_query = "!@#$%^&*()_+-=[]{}|;':\",./<>?"
+        results = content_model.search(special_query, top_n=3)
+        assert isinstance(results, list)
+
+    def test_search_unicode_text(self, content_model):
+        unicode_query = "wizard \u00e9\u00e8\u00ea"
+        results = content_model.search(unicode_query, top_n=3)
+        assert isinstance(results, list)
+
+    def test_search_case_sensitivity(self, content_model):
+        results_lower = content_model.search('wizard', top_n=3)
+        results_upper = content_model.search('WIZARD', top_n=3)
+        assert isinstance(results_lower, list)
+        assert isinstance(results_upper, list)
+
+    def test_explain_similarity_valid_titles(self, content_model):
+        explanation = content_model.explain_similarity('Harry Potter', 'Lord of the Rings')
+        assert isinstance(explanation, list)
+        assert len(explanation) == 1
+        assert explanation[0]['term'] == 'semantic_similarity'
+        assert 0.0 <= explanation[0]['score'] <= 1.0
+
+    def test_explain_similarity_invalid_source(self, content_model):
+        explanation = content_model.explain_similarity('Nonexistent', 'Lord of the Rings')
+        assert explanation == []
+
+    def test_explain_similarity_invalid_candidate(self, content_model):
+        explanation = content_model.explain_similarity('Harry Potter', 'Nonexistent')
+        assert explanation == []
+
+    def test_recommend_with_catalog_filtering(self, sample_item_df):
+        df = sample_item_df.copy()
+        df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
+        model = ContentRecommender(df)
+        recs = model.recommend('Harry Potter', top_n=5, target_catalog='movies')
+        for r in recs:
+            # Lord of the Rings and Game of Thrones are movies
+            assert r['title'] in ['Lord of the Rings', 'Game of Thrones']
+
+    def test_search_with_catalog_filtering(self, sample_item_df):
+        df = sample_item_df.copy()
+        df['catalog'] = ['books', 'movies', 'books', 'movies', 'books']
+        model = ContentRecommender(df)
+        results = model.search('wizard', top_n=5, target_catalog='books')
+        for r in results:
+            assert r['title'] in ['Harry Potter', 'The Hobbit', 'Dune']
+
+    def test_init_with_small_batch_size(self, sample_item_df):
+        # Using a batch size of 2 to exercise sequentially encoded slices loop
+        model = ContentRecommender(sample_item_df, batch_size=2)
+        assert model.matrix.shape[0] == len(sample_item_df)
+

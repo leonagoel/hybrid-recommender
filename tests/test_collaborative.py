@@ -58,7 +58,8 @@ def test_cold_start_user():
 
     results = model.predict_for_user(999)
 
-    assert results == []
+    assert len(results) > 0
+    assert all(r.get("fallback") is True for r in results)
 
 
 def test_extreme_sparse_matrix():
@@ -75,3 +76,57 @@ def test_extreme_sparse_matrix():
     assert model.user_factors.shape == (1, 1)
     assert model.item_factors.shape == (1, 1)
     assert model.predict_rating(1, "Naruto") == 1.0
+
+
+def test_top_n_validation_in_collaborative():
+    import pytest
+    df = sample_data()
+    model = CollaborativeRecommender(df)
+
+    with pytest.raises(ValueError):
+        model.recommend("Naruto", top_n=-1)
+
+    with pytest.raises(ValueError):
+        model.recommend("Naruto", top_n=0)
+
+    with pytest.raises(ValueError):
+        model.recommend("Naruto", top_n="five")
+
+    with pytest.raises(ValueError):
+        model.predict_for_user(1, top_n=-5)
+
+    assert len(model.recommend("Naruto", top_n=999)) <= 100
+    assert len(model.predict_for_user(1, top_n=999)) <= 100
+
+
+def test_predict_for_user_top_n_limits():
+    """Test top_n default behavior in predict_for_user."""
+    df = sample_data()
+    model = CollaborativeRecommender(df)
+    results = model.predict_for_user(1)
+    assert len(results) <= 100
+
+
+def test_predict_for_user_with_catalog():
+    """Test catalog filtering in predict_for_user."""
+    df_with_catalog = pd.DataFrame({
+        "user_id": [1, 1, 2, 2],
+        "title": ["Item A", "Item B", "Item A", "Item C"],
+        "rating": [5, 4, 3, 4],
+        "catalog": ["books", "books", "movies", "movies"]
+    })
+    model = CollaborativeRecommender(df_with_catalog)
+    results = model.predict_for_user(2, target_catalog="movies", top_n=10)
+    assert isinstance(results, list)
+
+
+def test_user_with_all_items_seen():
+    """Test predict_for_user when user has seen all items."""
+    df = pd.DataFrame({
+        "user_id": [1, 1, 1],
+        "title": ["Item A", "Item B", "Item C"],
+        "rating": [5, 4, 3]
+    })
+    model = CollaborativeRecommender(df)
+    results = model.predict_for_user(1, top_n=10)
+    assert len(results) == 0

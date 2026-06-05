@@ -60,6 +60,27 @@ function escapeHtml(value) {
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
  */
 
+// ── CSRF Token ──────────────────────────────────────────────────────
+// Fetched once from /api/csrf-token and kept in memory.
+// Every mutating request (POST / PUT / PATCH / DELETE) must include it
+// as the X-CSRF-Token header to satisfy the Double Submit Cookie check.
+let _csrfToken = null;
+
+async function initCsrf() {
+    try {
+        const res = await fetch('/api/csrf-token');
+        if (!res.ok) throw new Error(`CSRF fetch failed: ${res.status}`);
+        const data = await res.json();
+        _csrfToken = data.csrfToken || null;
+    } catch (e) {
+        console.warn('CSRF init failed:', e.message);
+    }
+}
+
+function _csrfHeaders() {
+    return _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {};
+}
+
 // ── Supabase Client ─────────────────────────────────────────────────
 // Loaded dynamically from backend — no hardcoded credentials
 let sbClient = null;
@@ -84,28 +105,20 @@ async function initSupabase() {
 const state = {
     user: null,
     isGuest: true,
-    products: [],
-    allProducts: [],
-    trending: [],
-    page: 1,
+    products: [],    trending: [],    page: 1,
     perPage: 20,
     totalProducts: 0,
     isLoading: false,
     hasMore: true,
     searchTimer: null,
+    searchRequestId: 0,
+    isSearchLoading: false,
     autocompleteResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
-    compareList: [],
-    heatmapSelected: [],
-    activeChips: new Set(['all']),
-    filters: {
-        category: '',
-        rating: '',
-        sentiment: '',
-    },
+    filters: { category: '', rating: '', sentiment: '' },
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -113,7 +126,9 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
     searchInput: $('search-input'),
+    searchContainer: $('search-container'),
     searchDropdown: $('search-dropdown'),
+    searchSpinner: $('search-spinner'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
@@ -161,8 +176,8 @@ const els = {
     modalProductDescription: $('modal-product-description'),
     modalProductScore: $('modal-product-score'),
     modalRecommendationsList: $('modal-recommendations-list'),
-  };
     categoryFilter: $('category-filter'),
+    sortFilter: $('sort-filter'),
     ratingFilter: $('rating-filter'),
     sentimentFilter: $('sentiment-filter'),
     clearFiltersBtn: $('clear-filters'),
@@ -219,7 +234,7 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = '${CONFIG.TOAST_EXIT_MS}ms ease';
+        el.style.transition = `${CONFIG.TOAST_EXIT_MS}ms ease`;
         setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
     }, CONFIG.TOAST_DURATION_MS);
 }
@@ -248,6 +263,13 @@ function showSkeletons(container, count = 8) {
         .fill("")
         .map(() => createSkeletonCard())
         .join("");
+}
+
+function setSearchLoading(isLoading) {
+    state.isSearchLoading = isLoading;
+    els.searchContainer.classList.toggle('is-loading', isLoading);
+    els.searchSpinner.hidden = !isLoading;
+    els.searchInput.setAttribute('aria-busy', String(isLoading));
 }
 
 function renderStars(rating) {
@@ -318,7 +340,7 @@ function applyFilters(products) {
         }
 
         let pass = true;
-        
+
         // Categories OR logic
         if (activeCategories.length > 0) {
             if (!activeCategories.includes(p.category)) pass = false;
@@ -331,6 +353,35 @@ function applyFilters(products) {
 
         return traditionalMatch && pass;
     });
+}
+
+function sortProducts(products, sortType) {
+    const sorted = [...products];
+
+    switch (sortType) {
+        case 'price-low':
+            return sorted.sort((a, b) => (a.price || 0) - (b.price || 0));
+
+        case 'price-high':
+            return sorted.sort((a, b) => (b.price || 0) - (a.price || 0));
+
+        case 'rating':
+            return sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+
+        case 'relevance':
+        default:
+            return sorted;
+    }
+}
+
+function applySorting() {
+    const sortType = els.sortFilter?.value || 'relevance';
+    const sortedProducts = sortProducts(state.allProducts || [], sortType);
+    renderProducts(sortedProducts, { append: false, skipSorting: true });
+}
+
+function getSelectedSort() {
+    return encodeURIComponent(els.sortFilter?.value || 'relevance');
 }
 
 function categoryIcon(cat) {
@@ -389,7 +440,7 @@ const API = {
     async post(url, data) {
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -398,7 +449,7 @@ const API = {
     async put(url, data) {
         const res = await fetch(url, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -510,28 +561,48 @@ function initTypeToSearch() {
     });
 }
 
-// ── Search Dropdown ──────────────────────────────────────────────────
-
-function renderSearchDropdown(results, query) {
-    if (!results.length) {
+// ── Search ──────────────────────────────────────────────────────────
+async function handleSearch(query) {
+    if (!query || query.length < 1) {
         closeSearchDropdown();
         return;
     }
 
-    els.searchDropdown.innerHTML = results
-        .map((title, index) => {
-            const safeTitle = escapeHtml(title);
-            return `
-            <div
-                class="search-result ${index === state.selectedSearchIdx ? 'active' : ''}"
-                data-title="${safeTitle}"
-                data-idx="${index}"
-            >
-                <span class="search-result__icon">🔍</span>
-                <div class="search-result__info">
-                    <div class="search-result__title">
-                        ${highlightMatch(title, query)}
-                    </div>
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
+            state.searchResults = data.items || [];
+            state.selectedSearchIdx = -1;
+            renderSearchDropdown(state.searchResults, query);
+        } catch {
+            closeSearchDropdown();
+        }
+    }, 200);
+}
+
+function renderSearchDropdown(results, query) {
+    if (!results.length) {
+        els.searchDropdown.innerHTML = `
+            <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
+                No results for "${query}"
+            </div>`;
+        els.searchDropdown.classList.add('active');
+        setSearchDropdownExpanded(true);
+        return;
+    }
+
+    els.searchDropdown.innerHTML = results.map((r, i) => `
+        <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
+            tabindex="0"
+            role="button"
+             data-title="${r.title}" data-idx="${i}">
+            <span style="font-size:20px;">${categoryIcon(r.category)}</span>
+            <div class="search-result__info">
+                <div class="search-result__title">${highlightMatch(r.title, query)}</div>
+                <div class="search-result__meta">
+                    ★ ${(r.rating || 0).toFixed(1)}
+                    ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
                 </div>
             </div>
         `;
@@ -539,6 +610,7 @@ function renderSearchDropdown(results, query) {
         .join('');
 
     els.searchDropdown.classList.add('active');
+    setSearchDropdownExpanded(true);
 
     // Click suggestion
     els.searchDropdown.querySelectorAll('.search-result').forEach((el) => {
@@ -546,6 +618,28 @@ function renderSearchDropdown(results, query) {
             const title = el.dataset.title;
             selectSearchResult(title);
         });
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        el.click();
+            }
+        });
+        el.addEventListener('keydown', (e) => {
+    const items = [...els.searchDropdown.querySelectorAll('.search-result')];
+    const currentIndex = items.indexOf(el);
+
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = items[(currentIndex + 1) % items.length];
+        next.focus();
+    }
+
+    if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = items[(currentIndex - 1 + items.length) % items.length];
+        prev.focus();
+    }
+});
     });
 }
 
@@ -569,10 +663,14 @@ function selectSearchResult(title) {
     loadRecommendations(title);
 }
 
+function setSearchDropdownExpanded(expanded) {
+    els.searchInput.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
 
 function closeSearchDropdown() {
     els.searchDropdown.classList.remove('active');
     state.selectedSearchIdx = -1;
+    setSearchDropdownExpanded(false);
 }
 
 // Close dropdown when clicking outside
@@ -635,6 +733,8 @@ function handleSearchKeydown(e) {
 
 function handleSearch(query) {
     if (!query || query.trim().length < 1) {
+        state.searchRequestId++;
+        setSearchLoading(false);
         closeSearchDropdown();
         return;
     }
@@ -643,18 +743,25 @@ function handleSearch(query) {
 
     // 300ms debounce
     state.searchTimer = setTimeout(async () => {
+        const requestId = ++state.searchRequestId;
+        setSearchLoading(true);
         try {
             const data = await API.get(
                 `/api/autocomplete?q=${encodeURIComponent(query)}&limit=${CONFIG.SEARCH_LIMIT}`
             );
 
+            if (requestId !== state.searchRequestId) return;
             state.autocompleteResults = data.suggestions || [];
             state.selectedSearchIdx = -1;
 
             renderSearchDropdown(state.autocompleteResults, query);
         } catch (err) {
-            console.error('Autocomplete failed:', err);
-            closeSearchDropdown();
+            if (requestId === state.searchRequestId) {
+                console.error('Autocomplete failed:', err);
+                closeSearchDropdown();
+            }
+        } finally {
+            if (requestId === state.searchRequestId) setSearchLoading(false);
         }
     }, CONFIG.SEARCH_DEBOUNCE_MS);
 }
@@ -671,7 +778,7 @@ async function loadProducts(append = false) {
 
     if (!append) {
         setPageMeta(
-            'All Products', 
+            'All Products',
             'Browse all products on HybridRec — personalised recommendations just for you.'
         );
     }
@@ -795,6 +902,8 @@ async function loadSearchResults(query) {
     // Pause infinite scroll during search
     destroyScrollObserver();
 
+    const requestId = ++state.searchRequestId;
+    setSearchLoading(true);
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
@@ -802,10 +911,10 @@ async function loadSearchResults(query) {
     els.infiniteEnd.hidden = true;
 
     try {
-        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
-        const products = data.results || data.items || [];
+        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40&sort=${getSelectedSort()}`);
+        const products = data.results || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
         state.hasMore = false;
         state.allProducts = [...products];
@@ -813,6 +922,8 @@ async function loadSearchResults(query) {
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
+    } finally {
+        if (requestId === state.searchRequestId) setSearchLoading(false);
     }
 }
 
@@ -873,12 +984,12 @@ function renderProducts(products, options = {}) {
                     </defs>
                     <circle cx="100" cy="100" r="70" fill="url(#blue-grad)" filter="blur(8px)" opacity="0.15" />
                     <circle cx="120" cy="80" r="40" fill="url(#amber-grad)" filter="blur(6px)" opacity="0.1" />
-                    
+
                     <path d="M50 80 L65 140 H135 L150 80" stroke="var(--text-muted)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
                     <path d="M40 80 H160" stroke="var(--text-muted)" stroke-width="4" stroke-linecap="round" />
-                    
+
                     <circle cx="130" cy="65" r="28" stroke="var(--primary)" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
-                    
+
                     <g class="search-glass">
                         <circle cx="130" cy="65" r="16" stroke="var(--accent)" stroke-width="3.5" fill="var(--bg-card)"/>
                         <path d="M142 77 L158 93" stroke="var(--accent)" stroke-width="3.5" stroke-linecap="round"/>
@@ -901,7 +1012,7 @@ function renderProducts(products, options = {}) {
                 </button>
             </div>
         `;
-        
+
         const clearBtn = document.getElementById('empty-state-clear-btn');
         if (clearBtn) {
             clearBtn.addEventListener('click', resetAllFiltersAndSearch);
@@ -977,13 +1088,7 @@ function renderProducts(products, options = {}) {
 
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
-            const wishlistBtn = card.querySelector('.wishlist-btn');
-
-            wishlistBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            toggleWishlist(p);
-            });
-    
             const title = e.target.dataset.title;
             loadRecommendations(title);
             toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
@@ -1022,13 +1127,28 @@ function renderProducts(products, options = {}) {
         }
 
         card.addEventListener('click', () => {
-            loadRecommendations(title);
+            loadRecommendations(p.title);
         });
 
         fragment.appendChild(card);
     });
 
     els.productGrid.appendChild(fragment);
+}
+
+function handleRecommendationClick(e) {
+    e.stopPropagation();
+
+    const title = e.currentTarget.dataset.title;
+
+    if (!title) return;
+
+    loadRecommendations(title);
+
+    toast(
+        `Finding recommendations for "${title.substring(0, 40)}..."`,
+        'info'
+    );
 }
 
 // ── Recommendations ─────────────────────────────────────────────────
@@ -1100,20 +1220,18 @@ async function fallbackRecommendationRequest(title) {
 }
 
 function renderRecommendations(data) {
-    const recs = data.recommendations || [];
+    const recs = data.results || data.recommendations || [];
 
     els.recsLoader.hidden = true;
     els.recsStrip.hidden = false;
 
     if (!recs.length) {
-    els.recsStrip.innerHTML = `
-        <div class="empty-recommendations">
-            <span class="empty-icon" aria-hidden="true">🔍</span>
-            <p>No recommendations found. Try a different product!</p>
-        </div>
-    `;
-    return;
-}
+        els.recsStrip.innerHTML = "";
+        document.getElementById("empty-state").hidden = false;
+        return;
+    }
+
+    document.getElementById("empty-state").hidden = true;
 
     els.recsStrip.innerHTML = recs.map((r) => {
         const title = r.title || 'Untitled';
@@ -1157,12 +1275,29 @@ async function loadRecommendations(title) {
     els.recsSection.hidden = false;
     setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
+    document
+.getElementById(
+"empty-state"
+)
+.hidden=true;
+
+els.recsStrip.innerHTML=`
+<div class="recommendation-loading">
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+</div>
+`;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
 
     try {
         const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         els.recsLoader.hidden = true;
         els.recsStrip.hidden = false;
@@ -1194,7 +1329,13 @@ async function handleUpload(file) {
     form.append('file', file);
 
     try {
-        const res = await fetch('/api/upload', { method: 'POST', body: form });
+        // FormData POST — Content-Type is set automatically by the browser.
+        // We only inject the CSRF header manually.
+        const res = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { ..._csrfHeaders() },
+            body: form,
+        });
         if (!res.ok) throw new Error('Upload failed');
         const data = await res.json();
         toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
@@ -1308,7 +1449,7 @@ async function openProductModal(product) {
             `/api/recommend/${encodeURIComponent(product.title)}?top_n=5`
         );
 
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         els.modalRecommendationsList.innerHTML = recs.map((r) => `
             <li>${r.title}</li>
@@ -1322,51 +1463,10 @@ async function openProductModal(product) {
 function closeProductModal() {
     els.productModal.hidden = true;
 }
-
-// ── API Helpers ─────────────────────────────────────────────────────
-const API = {
-    async get(url) {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
-    async post(url, data) {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
-    async put(url, data) {
-        const res = await fetch(url, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data),
-        });
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        return res.json();
-    },
-};
-
-    const categories = [...new Set(
-        products
-            .map(p => p.category)
-            .filter(Boolean)
-    )];
-
-    els.categoryFilter.innerHTML = `
-        <option value="">All Categories</option>
-        ${categories.map(cat =>
-            `<option value="${cat}">${cat}</option>`
-        ).join('')}
-    `;
-}
-
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
+    els.searchInput.setAttribute('aria-expanded', 'false');
     els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
     els.searchInput.addEventListener('keydown', handleSearchKeydown);
     els.searchInput.addEventListener('focus', () => {
@@ -1415,6 +1515,10 @@ function bindEvents() {
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
         slider.addEventListener('change', handleWeightChange);
     });
+
+    if (els.sortFilter) {
+        els.sortFilter.addEventListener('change', applySorting);
+    }
 
     // Heatmap close
     els.heatmapCloseBtn.addEventListener('click', () => {
@@ -1518,7 +1622,6 @@ function renderHeatmap(labels, matrix) {
 
 // ── Infinite Scroll (Intersection Observer) ─────────────────────────
 function setupScrollObserver() {
-    try{
     // Tear down any previous observer to avoid duplicates / leaks
     destroyScrollObserver();
 
@@ -1537,33 +1640,10 @@ function setupScrollObserver() {
             threshold: 0,
         }
     );
-    
+
     state.scrollObserver.observe(els.scrollSentinel);
 }
 
-// ── Search ──────────────────────────────────────────────────────────
-async function handleSearch(query) {
-    if (!query || query.length < 1) {
-        els.typingIndicator.hidden = true;
-        closeSearchDropdown();
-        return;
-    }
-
-    clearTimeout(state.searchTimer);
-    els.typingIndicator.hidden = false;
-    state.searchTimer = setTimeout(async () => {
-        try {
-            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
-            state.searchResults = data.results || [];
-            state.selectedSearchIdx = -1;
-            renderSearchDropdown(state.searchResults, query);
-            els.typingIndicator.hidden = true;
-        } catch {
-            closeSearchDropdown();
-            els.typingIndicator.hidden = true;
-        }
-    }, 300);
-}
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
@@ -1654,26 +1734,29 @@ async function loadProducts(append = false) {
     }
 
     try {
-        const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}`);
+        const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}&sort=${getSelectedSort()}`);
         const products = data.results || [];
         state.totalProducts = data.total || products.length;
+        state.allProducts = append
+            ? [...(state.allProducts || []), ...products]
+            : [...products];
 
         if (!append) {
             els.skeletonLoader.hidden = true;
         }
 
-        renderProducts(products, { append });
-        const visibleCount =
-    state.selectedCategory === 'All Categories'
-        ? products.length
-        : products.filter(
-            p => p.category === state.selectedCategory
-        ).length;
-
-els.productCount.textContent = `${visibleCount} products loaded`;
+        if (append) {
+            renderProducts(products, { append });
+        } else {
+            applySorting();
+        }
+        const visibleCount = applyFilters(products).length;
+        els.productCount.textContent = `${visibleCount} products loaded`;
 
         // Show load more if there might be more
-        els.loadMoreContainer.hidden = products.length < state.perPage;
+        if (els.loadMoreContainer) {
+            els.loadMoreContainer.hidden = products.length < state.perPage;
+        }
     } catch (err) {
         els.skeletonLoader.hidden = true;
         toast('Failed to load products', 'error');
@@ -1686,35 +1769,46 @@ async function loadSearchResults(query) {
     els.productsTitle.textContent = `Results for "${query}"`;
 
     try {
-        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
+        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40&sort=${getSelectedSort()}`);
         const products = data.results || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
-        renderProducts(products, false);
+        state.allProducts = [...products];
+        applySorting();
         els.searchInput.select();
         els.productGrid.classList.remove('fade-in');
 
         requestAnimationFrame(() => {
         els.productGrid.classList.add('fade-in');
         });
-        els.loadMoreContainer.hidden = true;
+        if (els.loadMoreContainer) {
+            els.loadMoreContainer.hidden = true;
+        }
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
     }
 }
 
-function renderProducts(products, append) {
+function renderProducts(products, options = {}) {
+    const append = typeof options === 'object' ? options.append || false : Boolean(options);
+    const skipSorting = typeof options === 'object' ? options.skipSorting || false : false;
+
+    products = applyFilters(products || []);
+
+    if (!skipSorting) {
+        products = sortProducts(products, els.sortFilter?.value || 'relevance');
+    }
+
+    if (!append) {
+        els.productGrid.innerHTML = '';
+    }
+
     if (!append) state.products = [];
 
     const fragment = document.createDocumentFragment();
-    const filteredProducts =
-    state.selectedCategory === 'All Categories'
-        ? products
-        : products.filter(
-            p => p.category === state.selectedCategory
-        );
+    const filteredProducts = products;
     filteredProducts.forEach((p, i) => {
         state.products.push(p);
         const title = p.title || 'Untitled';
@@ -1730,7 +1824,7 @@ function renderProducts(products, append) {
             ${
                 !p.image || p.image === 'undefined'
                 ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
-                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" />`
+                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" loading="lazy" />`
              }
             </div>
             <div class="product-card__body">
@@ -1790,7 +1884,7 @@ async function loadRecommendations(title) {
 
     try {
         const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
-        const recs = data.recommendations || [];
+        const recs = data.results || data.recommendations || [];
 
         if (!recs.length) {
             els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
@@ -1830,203 +1924,7 @@ async function loadRecommendations(title) {
     }
 }
 
-// ── Upload & Build ──────────────────────────────────────────────────
-async function handleUpload(file) {
-    toast(`Uploading ${file.name}...`, 'info');
-    const form = new FormData();
-    form.append('file', file);
 
-    try {
-        const res = await fetch('/api/upload', { method: 'POST', body: form });
-        if (!res.ok) throw new Error('Upload failed');
-        const data = await res.json();
-        toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
-        checkStatus();
-    } catch (err) {
-        toast('Upload failed: ' + err.message, 'error');
-    }
-}
-
-async function handleBuild() {
-    els.buildBtn.disabled = true;
-    els.buildBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin">
-            <path d="M21 12a9 9 0 11-6.219-8.56"/>
-        </svg>
-        Building...`;
-
-    try {
-        const data = await API.post('/api/build', {});
-        state.modelReady = true;
-        toast(`Models built in ${data.build_time_seconds}s — ${data.items?.toLocaleString()} items`, 'success');
-        updateStatus('ready', `Ready — ${data.items?.toLocaleString()} products`);
-        loadProducts();
-    } catch (err) {
-        toast('Build failed: ' + err.message, 'error');
-    } finally {
-        els.buildBtn.disabled = false;
-        els.buildBtn.innerHTML = `
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-            </svg>
-            Build Models`;
-    }
-}
-
-// ── Status ──────────────────────────────────────────────────────────
-async function checkStatus() {
-    try {
-        const data = await API.get('/api/status');
-        const count = data.product_count || 0;
-
-        if (data.model_ready) {
-            state.modelReady = true;
-            updateStatus('ready', `Ready — ${count.toLocaleString()} products`);
-            loadProducts();
-        } else if (count > 0) {
-            updateStatus('has-data', `${count.toLocaleString()} products — Build models to start`);
-            loadProducts();
-        } else {
-            updateStatus('', 'No data — Upload a CSV or JSON dataset');
-            els.skeletonLoader.hidden = true;
-            els.productGrid.innerHTML = `
-                <div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-muted);">
-                    <div style="font-size:48px;margin-bottom:16px;">📦</div>
-                    <div style="font-size:16px;font-weight:600;margin-bottom:8px;color:var(--text-secondary);">No products yet</div>
-                    <div style="font-size:13px;">Upload a CSV or JSON dataset to get started</div>
-                </div>`;
-        }
-    } catch {
-        updateStatus('error', 'Backend offline');
-    }
-}
-
-function updateStatus(cls, text) {
-    els.statusDot.className = `status-dot ${cls}`;
-    els.statusText.textContent = text;
-}
-
-// ── Weight Controls ─────────────────────────────────────────────────
-async function handleWeightChange() {
-    const a = parseInt(els.weightAlpha.value);
-    const b = parseInt(els.weightBeta.value);
-    const g = parseInt(els.weightGamma.value);
-
-    // Save values to sessionStorage
-    sessionStorage.setItem('alpha', a);
-    sessionStorage.setItem('beta', b);
-    sessionStorage.setItem('gamma', g);
-
-    try {
-        await API.put('/api/weights', {
-            alpha: a / 100,
-            beta: b / 100,
-            gamma: g / 100
-        });
-    } catch {}
-}
-
-function loadSavedWeights() {
-    const alpha = sessionStorage.getItem('alpha') || 33;
-    const beta = sessionStorage.getItem('beta') || 33;
-    const gamma = sessionStorage.getItem('gamma') || 33;
-
-    els.weightAlpha.value = alpha;
-    els.weightBeta.value = beta;
-    els.weightGamma.value = gamma;
-}
-
-// ── Event Listeners ─────────────────────────────────────────────────
-function bindEvents() {
-    // Search
-    els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
-    els.searchInput.addEventListener('keydown', handleSearchKeydown);
-    els.searchInput.addEventListener('focus', () => {
-    if (els.searchInput.value) {
-        handleSearch(els.searchInput.value);
-    } else {
-        renderSearchHistory();
-    }
-});
-    els.categoryFilter.addEventListener('change', (e) => {
-    state.selectedCategory = e.target.value;
-
-    if (els.searchInput.value.trim()) {
-        loadSearchResults(els.searchInput.value);
-    } else {
-        loadProducts();
-    }
-});
-
-    // Close dropdown on outside click
-    document.addEventListener('click', (e) => {
-       if (!e.target.closest('.header__search')) {
-    closeSearchDropdown();
-    els.searchHistory.classList.remove('active');
-}
-});
-
-    // Auth
-    els.authBtn.addEventListener('click', () => {
-        if (state.isGuest) {
-            els.authModal.hidden = false;
-        } else {
-            // Logged in → sign out
-            sbClient.auth.signOut().then(() => {
-                state.user = null;
-                state.isGuest = true;
-                els.authLabel.textContent = 'Sign In';
-                toast('Signed out', 'info');
-                initAuth(); // Re-login as guest
-            });
-        }
-    });
-
-    // Product modal close button
-    els.productModalClose.addEventListener('click', closeProductModal);
-
-    // Close on outside click
-    els.productModal.addEventListener('click', (e) => {
-     if (e.target === els.productModal) {
-        closeProductModal();
-        }
-    });
-
-    // Close on Escape
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !els.productModal.hidden) {
-            closeProductModal();
-        }
-    });
-
-    els.authForm.addEventListener('submit', handleAuth);
-    els.authToggleBtn.addEventListener('click', toggleAuthMode);
-    els.modalClose.addEventListener('click', () => { els.authModal.hidden = true; });
-    els.authModal.addEventListener('click', (e) => {
-        if (e.target === els.authModal) els.authModal.hidden = true;
-    });
-
-    // Upload
-    els.uploadBtn.addEventListener('click', () => els.fileInput.click());
-    els.fileInput.addEventListener('change', (e) => {
-        if (e.target.files[0]) handleUpload(e.target.files[0]);
-        e.target.value = '';
-    });
-
-    // Build
-    els.buildBtn.addEventListener('click', handleBuild);
-
-    // Load more
-    els.loadMoreBtn.addEventListener('click', () => {
-        state.page++;
-        loadProducts(true);
-    });
-
-    // Weights
-    [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
-        slider.addEventListener('change', handleWeightChange);
-    });
-}
 
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
@@ -2040,6 +1938,9 @@ async function init() {
     loadSavedWeights();
     initTypeToSearch();
     initFilterChips();
+
+    // Fetch CSRF token first — must complete before any mutating request.
+    await initCsrf();
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
@@ -2057,12 +1958,19 @@ async function loadCategories() {
         const data = await API.get('/api/categories');
         const categories = data.categories || [];
 
-        els.categoryFilter.innerHTML = `
-            <option value="All Categories">All Categories</option>
-            ${categories.map(cat => `
-                <option value="${cat}">${cat}</option>
-            `).join('')}
-        `;
+        els.categoryFilter.textContent = '';
+
+        const allOption = document.createElement('option');
+        allOption.value = 'All Categories';
+        allOption.textContent = 'All Categories';
+        els.categoryFilter.appendChild(allOption);
+
+        categories.forEach((category) => {
+            const option = document.createElement('option');
+            option.value = String(category ?? '');
+            option.textContent = String(category ?? '');
+            els.categoryFilter.appendChild(option);
+        });
     } catch (err) {
         console.error('Failed to load categories', err);
     }
@@ -2125,7 +2033,6 @@ document.querySelectorAll(".product-card").forEach(card => {
 });
 
 document.addEventListener('DOMContentLoaded', init);
-document.addEventListener('DOMContentLoaded', init);
 
 // ── Language Toggle ─────────────────────────────────────────────────
 let currentLang = 'EN';
@@ -2133,7 +2040,7 @@ let currentLang = 'EN';
 function toggleLanguage() {
     currentLang = currentLang === 'EN' ? 'HI' : 'EN';
     document.getElementById('lang-toggle').textContent = currentLang;
-    
+
     if (currentLang === 'HI') {
         document.getElementById('search-input').placeholder = 'हिंदी में खोजें...';
         document.getElementById('hindi-indicator').style.display = 'inline';
@@ -2151,28 +2058,28 @@ function initFilterChips() {
     if (!chipsContainer) return;
 
     const chips = chipsContainer.querySelectorAll('.chip');
-    
+
     chips.forEach(chip => {
         chip.addEventListener('click', (e) => {
             const filterVal = e.currentTarget.dataset.filter;
-            
+
             if (filterVal === 'all') {
                 state.activeChips.clear();
                 state.activeChips.add('all');
             } else {
                 state.activeChips.delete('all');
-                
+
                 if (state.activeChips.has(filterVal)) {
                     state.activeChips.delete(filterVal);
                 } else {
                     state.activeChips.add(filterVal);
                 }
-                
+
                 if (state.activeChips.size === 0) {
                     state.activeChips.add('all');
                 }
             }
-            
+
             // Update UI
             chips.forEach(c => {
                 if (state.activeChips.has(c.dataset.filter)) {
@@ -2181,7 +2088,7 @@ function initFilterChips() {
                     c.classList.remove('active');
                 }
             });
-            
+
             // Re-render
             renderProducts(state.allProducts, false);
         });

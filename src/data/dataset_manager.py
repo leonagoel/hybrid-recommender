@@ -13,15 +13,10 @@ Fixes vs. original:
 
 import os
 import uuid
-<<<<<<< HEAD:dataset_manager.py
-import pandas as pd
-
-from data_adapter import adapt_data, read_file
-from data_preprocessing import preprocess
-=======
+from typing import Any, Dict, List, Optional, Tuple
 from src.data.data_adapter import adapt_data
 from src.data.data_preprocessing import preprocess
->>>>>>> 02ba2da92a7fd47032dcb195a0bd501359160b59:src/data/dataset_manager.py
+
 
 
 class DatasetManager:
@@ -36,7 +31,7 @@ class DatasetManager:
         self._datasets = {}
 
     # ------------------------------------------------------------------
-    def load_csv(self, file_path_or_buffer, name=None):
+    def load_csv(self, file_path_or_buffer: Any, name: Optional[str] = None, catalog: Optional[str] = None) -> str:
         """
         Load a CSV (or JSON) file into the manager.
         Accepts a path string or a file-like object.
@@ -48,14 +43,20 @@ class DatasetManager:
             if name is None:
                 name = os.path.basename(file_path_or_buffer)
 
-        raw_df = read_file(file_path_or_buffer)   # handles encoding + json/csv
+        if catalog is None:
+            catalog = os.path.splitext(name)[0]
+
         raw_df = preprocess(raw_df)
         adapted_df, meta = adapt_data(raw_df)
+        adapted_df['catalog'] = catalog
+        
+        ds_id = str(uuid.uuid4())[:8]
 
         ds_id = str(uuid.uuid4())[:8]
         self._datasets[ds_id] = {
-            'name':    name or 'uploaded_dataset',
-            'raw':     raw_df,
+            'name': name,
+            'catalog': catalog,
+            'raw': raw_df,
             'adapted': adapted_df,
             'meta':    meta,
         }
@@ -153,14 +154,16 @@ class DatasetManager:
 
         # ── build item_df (one row per title, aggregated) ───────────
         agg_dict = {
-            'item_id':     'first',
-            'description': 'first',
-            'category':    'first',
-            'combined':    'first',
-            'rating':      'mean',
-            'review_text': lambda x: ' '.join(x.dropna().astype(str)),
-            'views':       'sum',
-            'purchases':   'sum',
+            'item_id':      'first',
+            'description':  'first',
+            'category':     'first',
+            'combined':     'first',
+            'user_id':      'first',
+            'rating':       'mean',
+            'review_text':  lambda x: ' '.join(x.astype(str)),
+            'views':        'sum',
+            'purchases':    'sum',
+            'catalog':      'first',
         }
         valid_agg = {k: v for k, v in agg_dict.items() if k in merged.columns}
         item_df = merged.groupby('title', as_index=False).agg(valid_agg)

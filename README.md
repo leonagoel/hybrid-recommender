@@ -12,6 +12,7 @@
 <div align="center">
 
 [![CI](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml/badge.svg)](https://github.com/leonagoel/hybrid-recommender/actions/workflows/ci.yml)
+[![Docker Compose](https://img.shields.io/badge/Docker_Compose-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](#run-with-docker-compose-recommended-for-contributors)
 [![License](https://img.shields.io/github/license/leonagoel/hybrid-recommender)](https://github.com/leonagoel/hybrid-recommender/blob/main/LICENSE)
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 [![Contributors](https://img.shields.io/github/contributors/leonagoel/hybrid-recommender.svg?style=flat-square)](https://github.com/leonagoel/hybrid-recommender/graphs/contributors)
@@ -192,10 +193,18 @@ SUPABASE_SERVICE_KEY=your-service-role-key
 
 ```bash
 # 4 — Start the server
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
+if (-not $env:PORT) { $env:PORT = "8000" }
+
+python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT
 ```
 
 Open **http://localhost:8000**, upload any CSV/JSON from `datasets/`, click **Build Models**, then start typing to search.
+
+Check the active backend version:
+```bash
+curl "http://localhost:8000/api/version"
+```
 
 ### Async Recommendations — Celery Worker Setup
 
@@ -240,6 +249,58 @@ streamlit run app.py
 Upload any CSV file, click **Build Models**, then enter an item name or User ID to get recommendations directly in your browser — no database or server setup needed.
 
 ---
+
+### Run with Docker Compose (Recommended for Contributors)
+
+Docker Compose starts the full stack — backend API **and** static frontend —
+with a single command. No manual port juggling, no missing env vars.
+
+#### Prerequisites
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Compose)
+
+#### Steps
+
+**1. Copy and fill in your environment file**
+
+```bash
+cp .env.example .env
+# Edit .env with your Supabase credentials
+```
+
+**2. Start the stack**
+
+```bash
+docker-compose up --build
+```
+
+- `--build` forces a fresh image build. Omit it on subsequent runs when
+  code hasn't changed.
+
+**3. Access the app**
+
+| Service  | URL                        |
+|----------|----------------------------|
+| Frontend | http://localhost:3000       |
+| Backend  | http://localhost:8000       |
+| API docs | http://localhost:8000/docs  |
+| Health   | http://localhost:8000/health|
+
+**4. Stop the stack**
+
+```bash
+docker-compose down
+```
+
+Add `-v` to also remove named volumes if you want a completely clean state.
+
+#### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `Error: .env file not found` | Run `cp .env.example .env` and fill in credentials |
+| Backend unhealthy / frontend won't start | Check `docker-compose logs backend` |
+| Port 8000 already in use | Stop other services on 8000, or change `"8000:8000"` to `"8001:8000"` |
+| Dataset not found at runtime | Make sure `datasets/` folder exists in project root |
 
 ## 06 — API Reference
 
@@ -303,6 +364,14 @@ GET /api/purchases/{user_id}
 POST /api/purchases
 ```
 
+## API Examples (curl)
+
+All examples use `http://localhost:8000` as the base URL.  
+Change the host/port if your server runs elsewhere (e.g., Docker uses `http://localhost:8000` as well).
+
+### Get server status
+```bash
+curl http://localhost:8000/api/status
 ---
 
 ## 07 — Evaluation
@@ -327,7 +396,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 ```text
 ✓  No hardcoded credentials — config served via /api/config
 ✓  .env excluded from git via .gitignore
-✓  CORS restricted to configured origins
+✓  CORS restricted to explicit configured origins; wildcard origins are rejected
 ✓  Row-Level Security (RLS) on all Supabase tables
 ✓  Input validation via Pydantic models
 ✓  Generic error messages — no stack trace leakage
@@ -446,6 +515,54 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 streamlit run app.py
 # Browser opens automatically with CSV upload interface
 ```
+---
+### Backend Health Check
+
+Run the utility script to verify whether the backend API server is reachable:
+
+```bash
+python scripts/health_check.py
+```
+
+Example output when backend is running:
+
+```text
+✅ Backend is running
+⏱ Response time: 42 ms
+📦 Response: {'status': 'ok'}
+```
+
+Example output when backend is offline:
+
+```text
+❌ Could not connect to backend server
+```
+
+
+
+### Environment Validation
+
+Run the helper script to verify required environment variables:
+
+```bash
+python scripts/check_env.py
+```
+
+Example output:
+
+```text
+❌ Missing environment variables:
+ - SUPABASE_URL
+ - SUPABASE_ANON_KEY
+ - SUPABASE_SERVICE_KEY
+```
+
+Or:
+
+```text
+✅ Environment setup looks good
+```
+
 
 ---
 
@@ -481,6 +598,100 @@ git merge upstream/main
 MIT — see [`LICENSE`](LICENSE)
 
 ---
+## 🛠️ Troubleshooting Local Setup
+
+### 1. ModuleNotFoundError while running the project
+
+This usually happens when the virtual environment is not activated or dependencies are not installed.
+
+Create a virtual environment:
+
+```bash
+python -m venv venv
+```
+
+Activate it:
+
+#### Windows
+
+```bash
+venv\Scripts\activate
+```
+
+#### macOS/Linux
+
+```bash
+source venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### 2. Dependency conflicts during installation
+
+If `pip install -r requirements.txt` fails because of version conflicts:
+
+Upgrade pip first:
+
+```bash
+python -m pip install --upgrade pip
+```
+
+Then reinstall dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+If issues persist, recreate the virtual environment.
+
+#### Windows
+
+```bash
+deactivate
+rmdir /s /q venv
+python -m venv venv
+```
+
+#### macOS/Linux
+
+```bash
+deactivate
+rm -rf venv
+python -m venv venv
+```
+
+---
+
+### 3. Verify local environment setup
+
+Run these commands to confirm everything is working correctly.
+
+Check Python version:
+
+```bash
+python --version
+```
+
+Check installed packages:
+
+```bash
+pip list
+```
+
+Run the test suite:
+
+```bash
+pytest
+```
+
+If tests run successfully, the environment is ready for development.
+
 
 ## Documentation
 
@@ -531,3 +742,22 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to get started — all skill levels welco
 </div>
 
 ---
+## Knowledge Graph Embeddings
+
+This project now supports semantic item relationships using
+TransE-style knowledge graph embeddings.
+
+Features:
+- Semantic similarity learning
+- Graph-based recommendation enrichment
+- Hybrid recommendation integration
+- Category/author relationship modeling
+
+Run:
+
+```bash
+python scripts/generate_kg_embeddings.py
+```
+
+---
+

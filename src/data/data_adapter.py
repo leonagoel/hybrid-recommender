@@ -17,13 +17,47 @@ Fixes applied:
 """
 
 import pandas as pd
-import numpy as np
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
-# ─────────────────────────────────────────────
-#  Dataset-specific preprocessors
-# ─────────────────────────────────────────────
+def remove_duplicate_headers(df):
+    """
+    Normalizes dataframe column headers by lowercasing and stripping whitespace.
+    If duplicate semantic mappings are found, retains the column with fewer null values.
+    """
+    normalized_cols = {}
+    cols_to_drop = []
+
+    for col in df.columns:
+        # Convert to lowercase and strip spaces to detect duplicates like 'Product_ID' and 'product_id'
+        norm_name = str(col).strip().lower()
+        
+        if norm_name in normalized_cols:
+            existing_col = normalized_cols[norm_name]
+            # Compare missing/null value counts between the duplicates
+            existing_nulls = df[existing_col].isnull().sum()
+            current_nulls = df[col].isnull().sum()
+            
+            # Keep the one with fewer null values, drop the other from the array
+            if current_nulls < existing_nulls:
+                cols_to_drop.append(existing_col)
+                normalized_cols[norm_name] = col
+            else:
+                cols_to_drop.append(col)
+        else:
+            normalized_cols[norm_name] = col
+
+    # Drop duplicate column fields gracefully before parsing mapping states
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
+        
+    return df
+
+
+def preprocess_books_data(df):
+    """
+    Preprocess books dataset.
+    """
 
 def preprocess_books_data(df):
     df = df.copy()
@@ -81,16 +115,23 @@ def preprocess_sentiment_data(df):
 # ─────────────────────────────────────────────
 
 def detect_column(columns, keywords):
-    """
-    Case-insensitive, hyphen/underscore-insensitive column detector.
-    e.g. 'Book-Title', 'book_title', 'booktitle' all match keyword 'book title'.
-    """
-    normalised = {col: col.lower().replace('-', ' ').replace('_', ' ')
-                  for col in columns}
-    for col, norm in normalised.items():
-        for key in keywords:
-            key_norm = key.lower().replace('-', ' ').replace('_', ' ')
-            if key_norm in norm:
+    """Detect a column by matching against a list of keywords (case-insensitive)."""
+    if not keywords:
+        return None
+
+    # First pass: exact matches
+    for key in keywords:
+        for col in columns:
+            if col.lower() == key:
+                return col
+                
+    # Second pass: substring matches
+    for key in keywords:
+        for col in columns:
+            if key in col.lower():
+                # Avoid false positive where customer_rating is matched as user column
+                if key == 'customer' and ('rating' in col.lower() or 'score' in col.lower()):
+                    continue
                 return col
     return None
 
@@ -104,6 +145,50 @@ def validate_dataframe(df):
         raise ValueError("DataFrame is empty.")
     if len(df.columns) < 2:
         raise ValueError("DataFrame must have at least 2 columns.")
+    return True
+
+
+def _has_blank_values(series):
+    """Return True when a column contains nulls or blank string values."""
+    return series.isna().any() or series.astype(str).str.strip().eq('').any()
+
+
+def validate_recommender_inputs(df, user_col=None, item_id_col=None, title_col=None, rating_col=None):
+    """
+    Validate columns that feed the recommender pipeline before normalization.
+    """
+    missing = []
+    if user_col is None:
+        missing.append('user_id')
+    if item_id_col is None and title_col is None:
+        missing.append('item_id or title')
+    if rating_col is None:
+        missing.append('rating')
+
+    if missing:
+        raise ValueError(
+            "Interaction data is missing required column(s): "
+            + ", ".join(missing)
+        )
+
+    corrupted = []
+    for label, col in (('user_id', user_col), ('item_id', item_id_col), ('title', title_col)):
+        if col is not None and _has_blank_values(df[col]):
+            corrupted.append(label)
+
+    if _has_blank_values(df[rating_col]):
+        corrupted.append('rating')
+
+    ratings = pd.to_numeric(df[rating_col], errors='coerce')
+    if ratings.isna().any():
+        corrupted.append('rating must be numeric')
+
+    if corrupted:
+        raise ValueError(
+            "Interaction data contains invalid value(s) in: "
+            + ", ".join(dict.fromkeys(corrupted))
+        )
+
     return True
 
 
@@ -123,17 +208,33 @@ def read_file(path_or_buffer, file_format=None):
             try:
                 if hasattr(path_or_buffer, 'seek'):
                     path_or_buffer.seek(0)
-                df = pd.read_csv(path_or_buffer, on_bad_lines='skip',
-                                 low_memory=False, encoding=encoding)
+
+                df = pd.read_csv(
+                    path_or_buffer,
+                    on_bad_lines='skip',
+                    low_memory=False,
+                    encoding=encoding,
+                )
+
+                # Deduplicate raw column configurations early upon reading CSV file buffers
+                df = remove_duplicate_headers(df)
                 break
             except (UnicodeDecodeError, UnicodeError):
                 continue
         else:
             if hasattr(path_or_buffer, 'seek'):
                 path_or_buffer.seek(0)
-            df = pd.read_csv(path_or_buffer, on_bad_lines='skip',
-                             low_memory=False, encoding='utf-8',
-                             encoding_errors='replace')
+
+            df = pd.read_csv(
+                path_or_buffer,
+                on_bad_lines='skip',
+                low_memory=False,
+                encoding='utf-8',
+                encoding_errors='replace',
+            )
+            # Deduplicate raw column configurations early upon fallback processing loop strings
+            df = remove_duplicate_headers(df)
+
     return df
 
 
@@ -143,23 +244,19 @@ def read_file(path_or_buffer, file_format=None):
 
 def adapt_data(df):
     """
-    Adapt any DataFrame into unified schema.
+    Adapt any DataFrame into unified schema (case‑insensitive column matching).
 
-    Unified columns produced:
-        title, description, user_id, rating, review_text,
-        category, item_id, views, purchases, combined
+    This function handles schema adaptation: column detection, renaming to
+    canonical names, and filling missing required fields.
     """
+
+    # Apply early header case deduplication loop tracking array states
+    df = remove_duplicate_headers(df)
+
     validate_dataframe(df)
 
-    # ── route to dataset-specific preprocessor ──
-    if 'authors' in df.columns or 'publisher' in df.columns:
-        df = preprocess_books_data(df)
-    elif 'user_id' in df.columns and 'rating' in df.columns:
-        df = preprocess_ratings_data(df)
-    elif 'sentiment' in df.columns:
-        df = preprocess_sentiment_data(df)
-
-    columns = df.columns
+    # ── Main column mapping (case‑insensitive) ──
+    columns = df.columns  # update after possible preprocessing
 
     # ── detect columns ──────────────────────────
     # FIX: extended keywords to cover BX dataset ('Book-Title', 'User-ID', 'Book-Rating')
@@ -168,9 +265,20 @@ def adapt_data(df):
         'title', 'name', 'product name', 'item name',
     ])
 
-    desc_col = detect_column(columns, [
-        'desc', 'summary', 'overview', 'about',
-    ])
+    desc_col = detect_column(
+        columns,
+        [
+            'description',
+            'desc',
+            'summary',
+            'overview',
+            'about'
+        ]
+    )
+    user_col = detect_column(
+        columns,
+        ['user_id', 'user', 'reviewer', 'customer']
+    )
 
     user_col = detect_column(columns, [
         'user id', 'userid',                 # BX: 'User-ID'
@@ -198,6 +306,16 @@ def adapt_data(df):
 
     views_col    = detect_column(columns, ['views', 'clicks', 'impressions'])
     purchase_col = detect_column(columns, ['purchases', 'orders', 'bought', 'transactions'])
+
+    is_interaction_data = user_col is not None
+    if is_interaction_data:
+        validate_recommender_inputs(
+            df,
+            user_col=user_col,
+            item_id_col=item_id_col,
+            title_col=title_col,
+            rating_col=rating_col,
+        )
 
     df = df.copy()
 

@@ -1,7 +1,7 @@
 // =============================================================================
 // recommendations.js — Hybrid Recommendations & WebSocket
 // =============================================================================
-import { state, setState } from './state.js';
+import { state, setState, getAnonymousUserId } from './state.js';
 import { renderProductCards, showToast, setLoadingState, showLoadingBar, hideLoadingBar } from './ui.js';
 
 function getRealtimeUrl() {
@@ -52,9 +52,11 @@ function requestRealtimeRecommendations(title) {
   if (!realtimeReady || !recommendationSocket) return false;
 
   pendingRecommendationTitle = title;
+  const userId = getAnonymousUserId();
   recommendationSocket.send(JSON.stringify({
     item_title: title,
     top_n: 12,
+    user_id: userId,
   }));
   return true;
 }
@@ -76,8 +78,25 @@ async function fallbackRecommendationRequest(title) {
   }, 250);
 }
 
+/**
+ * Update the recommendations section heading.
+ * Shows "Your personalized recommendations" when the backend confirms
+ * the user has interaction history, otherwise shows the default heading.
+ * @param {boolean} hasHistory
+ */
+function _updateRecsHeading(hasHistory) {
+  const titleEl = document.querySelector('#recs-section .section-title');
+  if (!titleEl) return;
+  const icon = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
+  titleEl.innerHTML = hasHistory
+    ? `${icon} Your personalized recommendations`
+    : `${icon} Recommended for you`;
+}
+
 function renderRecommendations(data) {
   const recs = data.recommendations || [];
+
+  _updateRecsHeading(!!data.has_history);
 
   const recsStrip = document.getElementById('recs-strip');
   const recsLoader = document.getElementById('recs-loader');
@@ -97,7 +116,7 @@ function renderRecommendations(data) {
   }
 
   recsStrip.innerHTML = recs.map((r) => `
-    <div class="rec-card" data-title="${r.title}">
+    <div class="rec-card" data-title="${escapeHtml(r.title)}">
       <div class="rec-card__title">${escapeHtml(r.title)}</div>
       <div class="rec-card__rating">
         <div class="star-rating">${renderStars(r.rating || 0)}</div>
@@ -125,7 +144,10 @@ function renderRecommendations(data) {
 async function loadRecommendationsOverHttp(title) {
   showLoadingBar();
   try {
-    const res = await fetch(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+    const userId = getAnonymousUserId();
+    const res = await fetch(
+      `/api/recommend/${encodeURIComponent(title)}?top_n=12&user_id=${encodeURIComponent(userId)}`
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     renderRecommendations(data);
@@ -156,7 +178,10 @@ export async function loadRecommendations(title) {
   showLoadingBar();
 
   try {
-    const res = await fetch(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
+    const userId = getAnonymousUserId();
+    const res = await fetch(
+      `/api/recommend?title=${encodeURIComponent(title)}&top_n=12&user_id=${encodeURIComponent(userId)}`
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     renderRecommendations(data);
@@ -174,7 +199,8 @@ export async function loadRecommendations(title) {
   }
 }
 
-// Helper for rendering stars (copied from original)
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 function renderStars(rating) {
   const full = Math.floor(rating);
   const half = rating - full >= 0.5;
@@ -188,16 +214,11 @@ function renderStars(rating) {
 }
 
 function escapeHtml(str) {
-  if (!str) return '';
-  return String(str).replace(/[&<>]/g, function(m) {
-    if (m === '&') return '&amp;';
-    if (m === '<') return '&lt;';
-    if (m === '>') return '&gt;';
-    return m;
-  });
+  return String(str ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 }
 
-// The API object (for realtime behavior) – adjust if your API is elsewhere
 const API = {
   async post(url, data) {
     const res = await fetch(url, {
