@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
 from src.model.recommendation_history import history_tracker
+from src.model.multi_objective import MultiObjectiveRanker
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
@@ -69,6 +70,7 @@ class HybridRecommender:
         self.fairness_max_share = 1.0
         self.kg_model = None
         self.delta = 0.0
+        self.multi_objective_ranker = MultiObjectiveRanker()
 
         # Expose model kwargs explicitly as structural configuration dictionaries
         # Legacy compatibility: no explicit model_kwargs parameter in signature,
@@ -502,8 +504,10 @@ class HybridRecommender:
             results.append(result)
 
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
+        if not explain:
+            results = self.multi_objective_ranker.rerank(results)
         if not results:
-            return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
+            return self.get_popular_fallback_items(...)
 
         # 7. Optional causal debiasing — applied after sorting so the debiaser
         #    sees the full candidate set for proper batch-level IPS normalization,
@@ -654,7 +658,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'raw_content': roaund(raw_item['raw_content'], 4),
+                'raw_content': round(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
             },
@@ -799,13 +803,20 @@ class HybridRecommender:
         df = df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-            global_avg = 3.0
+            
+        global_avg = 3.0
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
-            df['_bayesian'] = df.apply(lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1)
             df['_bayesian'] = df.apply(
-                lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1
-            )
+                lambda r: bayesian_rating(
+                    r['rating'],
+                    r.get('review_count', 0),
+                    global_avg 
+                    ),
+                    axis=1
+
+                    )
+            
             df = df.sort_values(
                 ['_bayesian', 'review_count'],
                 ascending=[False, False],
