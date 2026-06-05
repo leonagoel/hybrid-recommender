@@ -15,9 +15,9 @@ try:
     nltk.data.find('sentiment/vader_lexicon.zip')
 except LookupError:
     nltk.download('vader_lexicon', quiet=True)
-try: 
-    nltk.data.find('corpora/stopwords') 
-except LookupError: 
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
     nltk.download('stopwords', quiet=True)
 
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
@@ -79,6 +79,8 @@ def aggregate_sentiment_by_item(df: pd.DataFrame, item_col: str = 'title') -> pd
     ).reset_index()
 
     return agg
+
+
 # Common English stopwords
 _custom_stopwords = {
     'top',
@@ -100,6 +102,7 @@ _custom_stopwords = {
 }
 
 _stop_words = list(set(stopwords.words('english')).union(_custom_stopwords))
+
 
 def clean_text(text: str) -> str:
     """
@@ -134,7 +137,7 @@ def extract_keywords(text: str, top_n: int = 5) -> list:
             ngram_range=(1, 2)
         )
 
-        tfidf_matrix = vectorizer.fit_transform([cleaned])
+        vectorizer.fit([cleaned])
 
         keywords = vectorizer.get_feature_names_out()
 
@@ -143,7 +146,6 @@ def extract_keywords(text: str, top_n: int = 5) -> list:
 
     except Exception:
         return []
-    
 
 
 def compute_product_sentiment(reviews):

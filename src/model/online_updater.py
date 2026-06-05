@@ -36,7 +36,13 @@ class OnlineUpdater:
         update recommender internal maps in a best-effort manner.
         """
         # Record to an in-memory buffer for eventual flushing (not required)
-        self.buffer.append({'user_id': user_id, 'title': item_title, 'rating': rating, 'sentiment': sentiment, 'timestamp': timestamp})
+        self.buffer.append({
+            'user_id': user_id,
+            'title': item_title,
+            'rating': rating,
+            'sentiment': sentiment,
+            'timestamp': timestamp
+        })
 
         if recommender is None or item_title is None:
             return True
@@ -49,22 +55,34 @@ class OnlineUpdater:
 
             # 2) Popularity
             try:
-                max_reviews = max(recommender._review_count_map.values()) if recommender._review_count_map else new_count
+                counts = recommender._review_count_map.values()
+                max_reviews = (max(counts) if counts else new_count)
             except Exception:
                 max_reviews = new_count
-            recommender._popularity_map[item_title] = (new_count / max_reviews) if max_reviews > 0 else 0.0
+            popularity = (new_count / max_reviews) if max_reviews > 0 else 0.0
+            recommender._popularity_map[item_title] = popularity
 
             # 3) Rating
             if rating is not None:
                 try:
-                    prev_rating = float(recommender._rating_map.get(item_title, 0.0))
+                    prev_rating = float(
+                        recommender._rating_map.get(item_title, 0.0)
+                    )
                     prev_n = prev if prev > 0 else 0
-                    raw_avg = (prev_rating * prev_n + float(rating)) / (prev_n + 1) if (prev_n + 1) > 0 else float(rating)
+                    numerator = prev_rating * prev_n + float(rating)
+                    denominator = prev_n + 1
+                    raw_avg = (numerator / denominator
+                               if denominator > 0 else float(rating))
                     try:
-                        global_avg = float(np.mean(list(recommender._rating_map.values()))) if recommender._rating_map else 3.0
+                        rating_values = recommender._rating_map.values()
+                        global_avg = (float(np.mean(list(rating_values)))
+                                      if recommender._rating_map else 3.0)
                     except Exception:
                         global_avg = 3.0
-                    recommender._rating_map[item_title] = bayesian_rating(raw_avg, new_count, global_avg=global_avg)
+                    bayesian = bayesian_rating(
+                        raw_avg, new_count, global_avg=global_avg
+                    )
+                    recommender._rating_map[item_title] = bayesian
                 except Exception:
                     pass
 
@@ -75,13 +93,23 @@ class OnlineUpdater:
                     if prev_sent is None:
                         recommender._sentiment_map[item_title] = float(sentiment)
                     else:
-                        recommender._sentiment_map[item_title] = (float(prev_sent) * prev + float(sentiment)) / (prev + 1)
+                        numerator = (float(prev_sent) * prev +
+                                     float(sentiment))
+                        denominator = prev + 1
+                        recommender._sentiment_map[item_title] = (
+                            numerator / denominator
+                        )
                 except Exception:
                     pass
 
             # 5) Collaborative history best-effort
             try:
-                if hasattr(recommender, 'collab_model') and recommender.collab_model is not None and hasattr(recommender.collab_model, 'df'):
+                has_collab = (
+                    hasattr(recommender, 'collab_model') and
+                    recommender.collab_model is not None and
+                    hasattr(recommender.collab_model, 'df')
+                )
+                if has_collab:
                     try:
                         import pandas as pd
                         row = {'user_id': user_id, 'title': item_title}
@@ -89,7 +117,11 @@ class OnlineUpdater:
                             row['rating'] = float(rating)
                         if timestamp is not None:
                             row['timestamp'] = timestamp
-                        recommender.collab_model.df = pd.concat([recommender.collab_model.df, pd.DataFrame([row])], ignore_index=True)
+                        new_row_df = pd.DataFrame([row])
+                        dfs = [recommender.collab_model.df, new_row_df]
+                        recommender.collab_model.df = pd.concat(
+                            dfs, ignore_index=True
+                        )
                     except Exception:
                         pass
             except Exception:
