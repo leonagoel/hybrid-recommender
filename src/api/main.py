@@ -12,6 +12,7 @@ from src.api.response_utils import success_response, error_response
 from pydantic import BaseModel
 from typing import Optional
 
+
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
@@ -85,7 +86,7 @@ def startup_event():
             break
 
     if not loaded:
-        print("Warning: No datasets found for API startup.")
+        logger.warning("Warning: No datasets found for API startup.")
         return
 
     interaction_df, item_df = dm.merge_all()
@@ -127,6 +128,9 @@ def get_recommendations(req: RecommendationRequest):
             _item_df,
             causal_config=causal_cfg,
         )
+
+
+
 
         recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
         return success_response(
@@ -179,6 +183,7 @@ def get_recommendations(req: RecommendationRequest):
             
         except Exception as fallback_exc:
             logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
+
             return JSONResponse(
                 status_code=500,
                 content=error_response(
@@ -187,4 +192,6 @@ def get_recommendations(req: RecommendationRequest):
                     detail="Recommendation engine completely offline."
                 )
             )
+
+
 
