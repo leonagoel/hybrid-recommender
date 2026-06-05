@@ -518,14 +518,12 @@ streamlit run app.py
 ---
 ### Backend Health Check
 
-Run the utility script to verify whether the backend API server is reachable:
+Verify that the backend is running by visiting:
 
 ```bash
-python scripts/health_check.py
-```
+curl http://localhost:8000/api/status
 
 Example output when backend is running:
-
 ```text
 ✅ Backend is running
 ⏱ Response time: 42 ms
@@ -537,33 +535,25 @@ Example output when backend is offline:
 ```text
 ❌ Could not connect to backend server
 ```
-
-
-
 ### Environment Validation
 
-Run the helper script to verify required environment variables:
+Ensure the following variables are configured in your `.env` file:
 
-```bash
-python scripts/check_env.py
-```
+- SUPABASE_URL
+- SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_KEY
 
 Example output:
-
 ```text
 ❌ Missing environment variables:
  - SUPABASE_URL
  - SUPABASE_ANON_KEY
  - SUPABASE_SERVICE_KEY
 ```
-
 Or:
-
 ```text
 ✅ Environment setup looks good
 ```
-
-
 ---
 
 ## 12 — Beginner Contributor Tips
@@ -740,24 +730,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to get started — all skill levels welco
 | 3️⃣ | Submit a Pull Request |
 
 </div>
-
----
-## Knowledge Graph Embeddings
-
-This project now supports semantic item relationships using
-TransE-style knowledge graph embeddings.
-
-Features:
-- Semantic similarity learning
-- Graph-based recommendation enrichment
-- Hybrid recommendation integration
-- Category/author relationship modeling
-
-Run:
-
-```bash
-python scripts/generate_kg_embeddings.py
-```
 
 ---
 
