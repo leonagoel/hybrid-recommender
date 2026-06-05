@@ -450,7 +450,7 @@ class HybridRecommender:
 # Light popularity boost treated as a transparent fourth signal 
             popularity = self._popularity_map.get(item['title'], 0.5)
             popularity_bonus = 0.05 * popularity
-            
+
             # Enforce dynamic boundary check and explicitly clamp to prevent 1.0 leakage
             hybrid = min(1.0, float(hybrid_base + popularity_bonus))
 
@@ -646,7 +646,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'raw_content': roaund(raw_item['raw_content'], 4),
+               'raw_content': round(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
             },
