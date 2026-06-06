@@ -540,7 +540,7 @@ def _recommendation_payload(item_title: str, top_n: int = 10, explain: bool = Fa
         raise HTTPException(404, "Item not found or no recommendations.")
     
     # Add LLM explanations if requested
-    if llm_explain:
+    if explain:
         try:
             explainer = get_explainer()
             recs = explainer.explain_multiple(recs, item_title)
@@ -552,7 +552,7 @@ def _recommendation_payload(item_title: str, top_n: int = 10, explain: bool = Fa
         "recommendations": recs,
         "weights": models["hybrid"].get_weights(),
         "explain": explain,
-        "llm_explain": llm_explain,
+        "llm_explain": explain,
     }
 
 
