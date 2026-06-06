@@ -118,6 +118,7 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
+    filters: { category: '', rating: '', sentiment: '' },
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
