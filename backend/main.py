@@ -1042,17 +1042,17 @@ def search_items(
             query_builder = sb.table('products').select(
                 'id, title, description, category, rating, avg_sentiment, review_count, metadata'
             )
-    
+
             if sort == "rating":
                 query_builder = query_builder.order('rating', desc=True)
             else:
                 query_builder = query_builder.order('rating', desc=True) \
-                .order('review_count', desc=True)
-    
+                    .order('review_count', desc=True)
+
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
-    
-        except Exception as e:
+
+    except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
         products = MOCK_PRODUCTS
 
@@ -1597,112 +1597,7 @@ def train_federated(
         "build_time_seconds": build_time,
     }
 
-def build_models():
-    with _model_lock:
-        sb = get_supabase()
 
-        all_products = []
-        page_size = 1000
-        offset = 0
-
-        while True:
-            result = sb.table('products').select(
-                'id, title, description, category, rating, avg_sentiment, review_count'
-            ).range(offset, offset + page_size - 1).execute()
-
-            batch = result.data or []
-            all_products.extend(batch)
-
-            if len(batch) < page_size:
-                break
-
-            offset += page_size
-
-        if not all_products:
-            raise HTTPException(400, "No products in database. Upload data first.")
-
-        import pandas as pd
-
-        item_df = pd.DataFrame(all_products)
-
-        item_df['combined'] = (
-            item_df['title'].astype(str) + ' ' +
-            item_df['description'].fillna('').astype(str) + ' ' +
-            item_df['category'].fillna('').astype(str)
-        )
-
-        item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
-
-        start_time = time.time()
-
-        content_model = ContentRecommender(item_df)
-
-        collab_model = None
-        with _model_lock:
-
-        try:
-            purchases_result = sb.table('purchases').select(
-                'user_id, product_id, rating'
-            ).limit(50000).execute()
-
-            purchases = purchases_result.data or []
-
-            if len(purchases) > 10:
-                product_title_map = {
-                    p['id']: p['title']
-                    for p in all_products
-                }
-
-                interaction_rows = []
-
-                for p in purchases:
-                    title = product_title_map.get(p['product_id'])
-
-                    if title:
-                        interaction_rows.append({
-                            'user_id': p['user_id'],
-                            'title': title,
-                            'rating': p.get('rating', 3.0)
-                        })
-
-                if len(interaction_rows) > 10:
-                    interaction_df = pd.DataFrame(interaction_rows)
-
-                    if interaction_df['user_id'].nunique() > 1:
-                        collab_model = CollaborativeRecommender(interaction_df)
-
-        except Exception as e:
-            logger.warning(
-                "Collaborative model data load failed: %s",
-                e
-            )
-
-        hybrid_model = HybridRecommender(
-            content_model,
-            collab_model,
-            item_df
-        )
-
-        build_time = round(time.time() - start_time, 2)
-
-        models["content"] = content_model
-        models["collab"] = collab_model
-        models["hybrid"] = hybrid_model
-        models["item_df"] = item_df
-        models["ready"] = True
-        models["build_time"] = build_time
-        models["last_trained_at"] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        _clear_response_cache()
-
-        return {
-            "message": "Models built successfully!",
-            "items": len(item_df),
-            "has_collaborative": collab_model is not None,
-            "build_time_seconds": build_time,
-        }
 
 
 # ── Recommendations ───────────────────────────────────────────────────
