@@ -1,0 +1,38 @@
+name: Documentation Update
+description: Suggest improvements or updates to the project documentation
+title: "[Docs]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve the docs!
+        > ⚠️ The bot will automatically add `gssoc:approved` and other labels — do not add them manually.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What needs to be updated?
+      placeholder: Which file or section? (e.g. README.md, SETUP.md)
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this change needed?
+      placeholder: Is something unclear, missing, or outdated?
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested change
+      placeholder: What should it say instead?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      placeholder: Any other context or references.

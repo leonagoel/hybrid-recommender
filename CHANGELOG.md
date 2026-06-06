@@ -27,4 +27,12 @@ The format is based on [keep a changelog](https://keepchangelog.com/en/1.1.0)
 - Removed dependency on external backend server by directly reusing modal classes 
 
 
+## [Unreleased]
+### Added
+- Implemented Hybrid Score Normalization and Dynamic Weighting Matrix (#331)
+	- Added configurable `normalization` ('minmax' | 'zscore') for component scores
+	- Added `weight_matrix` for dynamic alpha/beta/gamma overrides (cold/warm/user/category)
+	- Added tests covering normalization and weight-matrix behavior
+
+
 

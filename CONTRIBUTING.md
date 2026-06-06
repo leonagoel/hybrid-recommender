@@ -1,218 +1,308 @@
-# Contributing to Hybrid Recommender System
+<div align="center">
 
-Welcome! This project is part of **GSSoC 2026 (GirlScript Summer of Code)**. We're glad you're here. This guide will help you make your first contribution smoothly.
+![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=700&size=28&duration=3000&pause=800&color=6C63FF&center=true&vCenter=true&multiline=true&width=700&height=80&lines=Contributing+to+hybrid-recommender)
+
+![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=16&duration=2500&pause=600&color=A78BFA&center=true&vCenter=true&width=700&lines=collaborative+filtering+%2B+content-based+approaches;built+by+the+community%2C+for+the+community;every+contribution+improves+the+signal+%F0%9F%8E%AF)
+
+</div>
+
+---
+
+We welcome contributions from everyone — whether you're fine-tuning a model, squashing a bug, or improving a docstring. This guide covers everything you need to get started.
 
 ---
 
 ## Table of Contents
 
-- [Before You Start](#before-you-start)
-- [Prerequisites](#Prerequisites)
-- [How to Contribute](#how-to-contribute)
-- [Branch Naming](#branch-naming)
-- [Commit Message Format](#commit-message-format)
+- [Before You Begin](#before-you-begin)
+- [How the Project is Structured](#how-the-project-is-structured)
+- [Setting Up Locally](#setting-up-locally)
+- [Finding Something to Work On](#finding-something-to-work-on)
+- [Contribution Limits](#contribution-limits)
+- [Making Your Contribution](#making-your-contribution)
 - [Pull Request Guidelines](#pull-request-guidelines)
-- [Code Style](#code-style)
-- [Running the Project Locally](#running-the-project-locally)
-- [GSSoC Label Guide](#gssoc-label-guide)
-- [Common Mistakes to Avoid](#Common-Mistakes-to-Avoid)
+- [Code Standards](#code-standards)
+- [Testing](#testing)
+- [Getting Help](#getting-help)
 
 ---
 
-## Before You Start
+## Before You Begin
 
-1. **Find an issue** — Go to the [Issues tab](../../issues) and look for ones labelled `gssoc:approved` + `good first issue` if you are a beginner.
-2. **Comment to claim** — Comment `"I'd like to work on this"` on the issue and **wait for it to be assigned to you** before starting any code.
-3. **Do not submit a PR for an unassigned issue** — it will be closed without review.
-
----
-
-## Prerequisites
-- Python 3.8+
-- Git installed
-- GitHub account
-- Basic knowledge of Python
+- Search [existing issues](https://github.com/leonagoel/hybrid-recommender/issues) before opening a new one
+- For large changes (new features, architecture changes), open a discussion first
+- Read through the [README](README.md) to understand how the recommender works
+- Be respectful — we're all here to learn and build
 
 ---
 
-## How to Contribute
+## How the Project is Structured
+
+```
+hybrid-recommender/
+├── backend/           # Python — recommendation logic, APIs
+│   ├── models/        # Collaborative + content-based models
+│   ├── api/           # REST endpoints
+│   └── utils/         # Shared utilities
+├── frontend/          # JavaScript — user interface
+│   ├── src/
+│   └── public/
+├── datasets/          # Sample and test datasets
+├── scripts/           # Data processing and setup scripts
+├── tests/             # Test suites (Python + JS)
+├── supabase/          # DB schema and edge functions
+└── .github/workflows/ # Automation and CI
+```
+
+---
+
+## Setting Up Locally
+
+### Prerequisites
+- Python 3.9+
+- Node.js 18+
+- Git
+
+### Steps
 
 ```bash
-# 1. Fork the repository (click Fork on GitHub)
-
-# 2. Clone your fork
-git clone https://github.com/<your-username>/hybrid-recommender.git
+# 1. Fork the repo, then clone your fork
+git clone https://github.com/YOUR-USERNAME/hybrid-recommender.git
 cd hybrid-recommender
 
-# 3. Add the original repo as upstream
+# 2. Add upstream remote
 git remote add upstream https://github.com/leonagoel/hybrid-recommender.git
 
-# 4. Create a new branch (see naming guide below)
-git checkout -b feat/add-streamlit-ui
-
-# 5. Install dependencies
+# 3. Backend setup
+cd backend
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# 6. Make your changes and test them locally
+# 4. Frontend setup
+cd ../frontend
+npm install
 
-# 7. Commit your changes
+# 5. Environment variables
+cp .env.example .env.local
+# Fill in your credentials in .env.local
+
+# 6. Run both
+# Terminal 1 — backend
+cd ../backend && uvicorn main:app --reload
+
+# Terminal 2 — frontend
+cd ../frontend && npm run dev
+```
+
+---
+
+## Finding Something to Work On
+
+| Label | What it means |
+|-------|--------------|
+| `good first issue` | Self-contained, well-scoped — great starting point |
+| `level:beginner` | Minimal context needed, clear expected output |
+| `level:intermediate` | Requires understanding of the codebase |
+| `level:advanced` | ML model changes, architecture work |
+| `ml/ai` | Touches recommendation logic |
+| `frontend` | UI/UX work |
+| `bug` | Something is broken |
+| `documentation` | Docs, comments, guides |
+
+Browse open issues → [github.com/leonagoel/hybrid-recommender/issues](https://github.com/leonagoel/hybrid-recommender/issues)
+
+Leave a comment on an issue to claim it before starting work.
+
+---
+
+## Contribution Limits
+
+To keep the project manageable and fair for everyone:
+
+- **Max 3 open issues** assigned to you at a time
+- **Max 3 open PRs** from you at a time
+- Close or complete existing work before picking up new items
+- If you claimed an issue but can't continue, leave a comment so someone else can take over
+
+---
+
+## Making Your Contribution
+
+```bash
+# 1. Sync your fork with upstream
+git fetch upstream
+git checkout main
+git merge upstream/main
+
+# 2. Create a branch
+git checkout -b fix/cold-start-bug
+# or
+git checkout -b feat/content-based-filter
+# or
+git checkout -b docs/setup-guide
+
+# 3. Make your changes, then commit
 git add .
-git commit -m "feat: add streamlit UI for hybrid recommendations"
+git commit -m "fix: handle cold start for new users"
 
-# 8. Push to your fork
-git push origin feat/add-streamlit-ui
-
-# 9. Open a Pull Request on GitHub against the main branch
+# 4. Push
+git push origin your-branch-name
 ```
 
----
-
-## Branch Naming
-
-Use this format: `type/short-description`
-
-| Type | When to use |
-|------|-------------|
-| `feat/` | Adding a new feature |
-| `fix/` | Fixing a bug |
-| `docs/` | Documentation changes only |
-| `test/` | Adding or updating tests |
-| `refactor/` | Code cleanup with no feature/fix |
-| `perf/` | Performance improvements |
-
-Examples:
-- `feat/add-streamlit-ui`
-- `fix/cold-start-fallback`
-- `docs/update-setup-guide`
-- `test/unit-tests-content-model`
-
----
-
-## Commit Message Format
+### Commit Message Format
 
 ```
-type: short description (max 72 chars)
+<type>: <short description>
+
+Types: feat | fix | docs | refactor | test | chore
 ```
 
 Examples:
-```
-feat: add configurable alpha/beta/gamma weights via CLI
-fix: handle empty interaction_df in CollaborativeRecommender
-docs: add Jupyter notebook demo for hybrid recommendations
-test: add unit tests for bayesian_rating function
-refactor: extract weight normalization into helper function
-```
-
-- Use **present tense** ("add" not "added")
-- Keep it **short and clear**
-- Reference the issue number if applicable: `fix: handle cold start (#12)`
+- `feat: add cosine similarity scoring to content model`
+- `fix: correct NaN handling in collaborative filter`
+- `docs: add dataset preparation guide`
+- `test: add unit tests for recommendation pipeline`
 
 ---
 
 ## Pull Request Guidelines
 
-Every PR description **must include**:
+### PR Description Template
 
-```
-## What changed
-<!-- Describe what you added/fixed/changed -->
-
-## Why
-<!-- Explain the problem this solves or feature this adds -->
-
-## How to test
-<!-- Step-by-step instructions to test your changes locally -->
-
-## Screenshots (if UI change)
-<!-- Add before/after screenshots or screen recording -->
+```markdown
+## What does this PR do?
+<!-- A clear summary of the change -->
 
 ## Related issue
-Closes #<issue-number>
+Closes #
+
+## Type of change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Refactor
+- [ ] Documentation
+- [ ] Tests
+
+## How to test this
+<!-- Steps to verify your change works -->
+
+## Screenshots (if UI change)
 ```
 
-**Rules:**
-- One issue per PR — don't bundle unrelated changes
-- All code must be tested locally before submitting
-- If the project has tests, update them to cover your change
-- Respond to review comments within **48 hours** or the PR may be closed
-- Do not merge your own PR — wait for a mentor/PA to review it
+### Before you submit
+
+- [ ] Synced with latest `main`
+- [ ] No merge conflicts
+- [ ] Tested locally (both backend and frontend if applicable)
+- [ ] No hardcoded credentials or API keys
+- [ ] Relevant tests added or updated
+- [ ] Docstrings/comments added for new functions
+
+### Review process
+- At least one maintainer review is required before merging
+- Address all review comments before re-requesting review
+- Be responsive — PRs inactive for 7 days may be closed
 
 ---
 
-## Code Style
+## Code Standards
 
-This project uses **Python** and follows **PEP8**.
+### Python (backend)
+
+- Follow [PEP 8](https://pep8.org/)
+- Use type hints for function signatures
+- Write docstrings for all public functions
+
+```python
+# Good
+def compute_similarity(user_id: int, item_id: int) -> float:
+    """
+    Compute cosine similarity between user and item vectors.
+
+    Args:
+        user_id: ID of the user
+        item_id: ID of the item
+
+    Returns:
+        Similarity score between 0 and 1
+    """
+    ...
+
+# Avoid
+def sim(u, i):
+    # does stuff
+    ...
+```
+
+### JavaScript (frontend)
+
+- Use `const`/`let`, not `var`
+- Prefer arrow functions
+- Handle errors explicitly — no silent failures
+
+```javascript
+// Good
+const fetchRecommendations = async (userId) => {
+  try {
+    const data = await api.get(`/recommend/${userId}`);
+    return data;
+  } catch (error) {
+    console.error('Recommendation fetch failed:', error);
+    throw error;
+  }
+};
+
+// Avoid
+function getRec(id) {
+  return api.get('/recommend/' + id);
+}
+```
+
+---
+
+## Testing
+
+### Python tests
 
 ```bash
-# Check for PEP8 issues
-pip install flake8
-flake8 . --max-line-length=100
-
-# Auto-format (optional but recommended)
-pip install black
-black .
+cd backend
+pytest tests/
 ```
 
-Key rules:
-- Use `snake_case` for variable and function names
-- Use `PascalCase` for class names
-- Keep functions small and focused — one responsibility per function
-- Add docstrings to all classes and functions
-- No hardcoded credentials — use `.env` file (see `.env.example`)
-
----
-
-## Running the Project Locally
+### Frontend tests
 
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Set up environment variables
-cp .env.example .env
-# Fill in your Supabase credentials in .env
-
-# 3. Start the backend server
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-
-# 4. Open http://localhost:8000 in your browser
-
-# 5. Run the smoke test (no Supabase needed for this)
-python test_pipeline.py
+cd frontend
+npm run test
 ```
 
----
-
-## GSSoC Label Guide
-
-For your PR to count on the GSSoC leaderboard, mentors will add these labels after review:
-
-| Label | Meaning |
-|-------|---------|
-| `gssoc:approved` | ✅ Required — PR counts toward leaderboard |
-| `level:beginner` | 3 points |
-| `level:intermediate` | 7 points |
-| `level:advanced` | 10 points |
-| `quality:clean` | Score multiplier for well-written code |
-| `quality:exceptional` | Higher multiplier for outstanding contributions |
-| `mentor:username` | Mentor who reviewed the PR |
-
-**You do not add these labels yourself** — mentors add them upon review.
+### What to test
+- New functions should have at least one unit test
+- Bug fixes should include a test that would have caught the bug
+- Don't break existing tests — run the full suite before submitting
 
 ---
 
-## Questions?
+## Getting Help
 
-- Open a [GitHub Discussion](../../discussions) or comment on the issue
-- Join the **GSSoC Discord** and find the project channel
-- Tag **@leonagoel** if you are blocked for more than 48 hours
+- 💬 **Discussions** — questions, ideas, design decisions → [Discussion Board](https://github.com/leonagoel/hybrid-recommender/discussions)
+- 🐛 **Issues** — bugs and feature requests → [Issues](https://github.com/leonagoel/hybrid-recommender/issues)
+- 📖 **Docs** — project overview → [README](README.md)
+
+If you're stuck on something, open a discussion rather than sitting on it — the community is here to help.
 
 ---
 
-## Common Mistakes to Avoid
-- Don't work on unassigned issues
-- Don't submit multiple PRs for same issue  
-- Don't forget to sync fork before starting
-- Always test locally before PR
+## Security
 
-Happy contributing! 🚀
+Never commit:
+- API keys or tokens
+- Database connection strings with credentials
+- `.env` files or any secrets
+
+If you discover a security vulnerability, please open a **private** issue rather than a public one.
+
+---
+
+*Thank you for contributing. Every improvement — big or small — makes the recommender better for everyone.*
