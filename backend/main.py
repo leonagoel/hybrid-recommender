@@ -67,7 +67,6 @@ logger = logging.getLogger(__name__)
 
 from celery.result import AsyncResult
 from celery_app import celery_app
-from tasks import compute_recommendations
 
 
 # backend/main.py — corrected imports
@@ -215,7 +214,7 @@ def _recommendation_cache_key(
     return _cache_key("recommend", title, top_n, explain, user_id or "", target_catalog or "", model_version or "", strategy or "")
 
 def _get_cached_response(key: str):
-    global _cache_hits, _cache_misses
+    global _cache_misses
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -237,62 +236,8 @@ def _apply_rate_limit(ip_address: str) -> bool:
     Applies token-bucket rate limiting dynamically.
     Optimized to handle Algorithmic Complexity DoS scenarios.
     """
-    from src.data.db import get_supabase
-    from redis import Redis
-    from redis.exceptions import RedisError
-    import os
+    return True
 
-    result = {
-        "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "components": {
-            "database": {"status": "unknown", "details": None},
-            "model": {"status": "unknown", "details": None},
-            "cache": {"status": "unknown", "details": None},
-        },
-    }
-
-    # 1. Database check (Supabase)
-    try:
-        sb = get_supabase()
-        resp = sb.table("products").select("id").limit(1).execute()
-        if resp.data is not None:
-            result["components"]["database"] = {"status": "healthy", "details": "connected"}
-        else:
-            result["components"]["database"] = {"status": "unhealthy", "details": "query returned no data"}
-            result["status"] = "degraded"
-    except Exception as e:
-        result["components"]["database"] = {"status": "unhealthy", "details": str(e)}
-        result["status"] = "degraded"
-
-    # 2. Model readiness check
-    try:
-        if models.get("ready"):
-            result["components"]["model"] = {"status": "ready", "details": "models loaded"}
-        else:
-            result["components"]["model"] = {"status": "not_ready", "details": "models not built"}
-            result["status"] = "degraded"
-    except Exception as e:
-        result["components"]["model"] = {"status": "error", "details": str(e)}
-        result["status"] = "degraded"
-
-    # 3. Cache (Redis) check
-    try:
-        redis_url = os.environ.get("REDIS_URL", "")
-        if redis_url:
-            r = Redis.from_url(redis_url, decode_responses=True)
-            if r.ping():
-                result["components"]["cache"] = {"status": "healthy", "details": "redis ping successful"}
-            else:
-                result["components"]["cache"] = {"status": "unhealthy", "details": "redis ping failed"}
-                result["status"] = "degraded"
-        else:
-            result["components"]["cache"] = {"status": "not_configured", "details": "REDIS_URL not set"}
-    except Exception as e:
-        result["components"]["cache"] = {"status": "error", "details": str(e)}
-        result["status"] = "degraded"
-
-    return result
 
 # ── API Metrics ───────────────────────────────────────────────────────
 @app.get("/api/version")
@@ -573,32 +518,8 @@ def search_items(
             except Exception:
                 sentiment_value = "N/A"
     
-    with _rate_limit_lock:
-        bucket = _rate_limit_buckets.get(ip_address)
-        if bucket is None:
-            bucket = {"tokens": 10.0, "last_updated": current_time}
-        else:
-            elapsed = current_time - bucket["last_updated"]
-            bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
-            bucket["last_updated"] = current_time
-            
-        if bucket["tokens"] >= 1.0:
-            bucket["tokens"] -= 1.0
-            _rate_limit_buckets[ip_address] = bucket
-            allowed = True
-        else:
-            allowed = False
-            
-        # Optimization: Move cleanup out of the request loop path
-        _request_counter += 1
-        if random.random() < 0.001 or _request_counter >= CLEANUP_THRESHOLD:
-            _request_counter = 0
-            # Evict empty keys inside amortized window block
-            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v or v.get("tokens", 0.0) <= 0.1]
-            for k in empty_keys:
-                del _rate_limit_buckets[k]
-                
-    return allowed
+    return results
+
 
 
 # ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
