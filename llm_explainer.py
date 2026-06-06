@@ -32,9 +32,9 @@ class LLMExplainer:
             raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
 
         self.model_name = model_name
-        self.api_key = api_key or GOOGLE_API_KEY
+        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or GOOGLE_API_KEY
 
-        if not self.api_key:
+        if not self.api_key or self.api_key == "Your_API_KEY":
             logger.warning(
                 "GOOGLE_API_KEY not found. Set it as an environment variable to enable LLM explanations."
             )
