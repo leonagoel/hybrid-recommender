@@ -36,7 +36,7 @@ def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
 
 
 class HybridRecommender:
-    def __init__(self, content_model, collab_model=None, item_df=None,
+    def __init__(self,content_model,collab_model=None,gnn_model=None,item_df=None,
                  alpha=0.4, beta=0.35, gamma=0.25,
                  normalization='minmax', weight_matrix=None,
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
@@ -63,6 +63,7 @@ class HybridRecommender:
         """
         self.content_model = content_model
         self.collab_model = collab_model
+        self.gnn_model = gnn_model
         self.item_df = item_df
         self.alpha = alpha
         self.beta = beta
@@ -344,6 +345,7 @@ class HybridRecommender:
                 'raw_content': r['content_score'],
                 'raw_collab': collab_map.get(r['title'], 0.0),
                 'raw_sentiment': self._sentiment_map.get(r['title'], 0.0),
+                'raw_gnn': 0.0
             }
 
         for t in collab_map:
@@ -353,6 +355,7 @@ class HybridRecommender:
                     'raw_content': 0.0,
                     'raw_collab': collab_map[t],
                     'raw_sentiment': self._sentiment_map.get(t, 0.0),
+                    'raw_gnn': 0.0
                 }
 
         if not candidates:

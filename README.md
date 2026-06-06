@@ -410,14 +410,14 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 <details>
 <summary><strong>How do I set up the project locally?</strong></summary>
 
-Clone the repository and install the required dependencies using the package manager mentioned in the project documentation. After that, configure the environment variables if needed and start both the frontend and backend servers. Make sure your database or dataset files are also available before running the app.
+Clone the repository and install the required dependencies with `pip install -r requirements.txt`. After that, configure the environment variables if needed and start both the frontend and backend servers. Make sure your database or dataset files are also available before running the app.
 
 </details>
 
 <details>
 <summary><strong>What datasets does this project use?</strong></summary>
 
-This project uses datasets related to user interactions, ratings, and item metadata to generate recommendations. The exact dataset files are usually stored inside the data or datasets directory. You can check the project documentation for download links and formatting details.
+This project uses datasets related to user interactions, ratings, and item metadata to generate recommendations. The exact dataset files are usually stored inside the `datasets/` directory. You can check the project documentation for download links and formatting details.
 
 </details>
 
@@ -518,14 +518,12 @@ streamlit run app.py
 ---
 ### Backend Health Check
 
-Run the utility script to verify whether the backend API server is reachable:
+Verify that the backend is running by visiting:
 
 ```bash
-python scripts/health_check.py
-```
+curl http://localhost:8000/api/status
 
 Example output when backend is running:
-
 ```text
 ✅ Backend is running
 ⏱ Response time: 42 ms
@@ -537,33 +535,25 @@ Example output when backend is offline:
 ```text
 ❌ Could not connect to backend server
 ```
-
-
-
 ### Environment Validation
 
-Run the helper script to verify required environment variables:
+Ensure the following variables are configured in your `.env` file:
 
-```bash
-python scripts/check_env.py
-```
+- SUPABASE_URL
+- SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_KEY
 
 Example output:
-
 ```text
 ❌ Missing environment variables:
  - SUPABASE_URL
  - SUPABASE_ANON_KEY
  - SUPABASE_SERVICE_KEY
 ```
-
 Or:
-
 ```text
 ✅ Environment setup looks good
 ```
-
-
 ---
 
 ## 12 — Beginner Contributor Tips
@@ -757,7 +747,6 @@ Run:
 
 ```bash
 python scripts/generate_kg_embeddings.py
-```
 
 ---
 
