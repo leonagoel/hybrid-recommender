@@ -20,6 +20,7 @@ HybridRecommender = _load_safe("src.model.hybrid_model", "HybridRecommender")
 CausalDebiaser = _load_safe("src.model.causal_model", "CausalDebiaser")
 CausalConfig = _load_safe("src.model.causal_config", "CausalConfig")
 PropensityModel = _load_safe("src.model.propensity_model", "PropensityModel")
+KnowledgeGraphRecommender = _load_safe("src.model.knowledge_graph_model", "KnowledgeGraphRecommender")
 
 __all__ = [
     "ContentRecommender",
@@ -28,4 +29,5 @@ __all__ = [
     "CausalDebiaser",
     "CausalConfig",
     "PropensityModel",
+    "KnowledgeGraphRecommender",
 ]

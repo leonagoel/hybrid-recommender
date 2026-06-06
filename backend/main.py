@@ -2458,7 +2458,7 @@ if os.path.isdir(frontend_dir):
     @app.get("/dashboard.html")
     def serve_dashboard():
         return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
-Y
+
 
 
         raise HTTPException(status_code=500, detail=str(e))
