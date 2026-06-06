@@ -107,6 +107,12 @@ class CollaborativeRecommender:
         Predicts scores for all unseen items and returns top N.
         """
         if user_id not in self._user_to_idx:
+            for k in self._user_to_idx.keys():
+                if str(k) == str(user_id):
+                    user_id = k
+                    break
+
+        if user_id not in self._user_to_idx:
             return []
 
         u_idx = self._user_to_idx[user_id]
@@ -130,6 +136,12 @@ class CollaborativeRecommender:
 
     def predict_rating(self, user_id, title):
         """Predict the rating a user would give to an item."""
+        if user_id not in self._user_to_idx:
+            for k in self._user_to_idx.keys():
+                if str(k) == str(user_id):
+                    user_id = k
+                    break
+
         if user_id not in self._user_to_idx or title not in self._title_to_idx:
             return None
         u_idx = self._user_to_idx[user_id]
