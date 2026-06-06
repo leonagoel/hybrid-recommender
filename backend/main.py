@@ -1038,24 +1038,23 @@ def search_items(
     
                 products = fuzzy_res.data or []
     
+        else:
+            query_builder = sb.table('products').select(
+                'id, title, description, category, rating, avg_sentiment, review_count, metadata'
+            )
+    
+            if sort == "rating":
+                query_builder = query_builder.order('rating', desc=True)
             else:
-                try:
-                    query_builder = sb.table('products').select(
-                        'id, title, description, category, rating, avg_sentiment, review_count, metadata'
-                    )
-
-                    if sort == "rating":
-                        query_builder = query_builder.order('rating', desc=True)
-                    else:
-                        query_builder = query_builder.order('rating', desc=True) \
-                        .order('review_count', desc=True)
-
-                    result = query_builder.limit(limit).offset(offset).execute()
-                    products = result.data or []
-
-                except Exception as e:
-                    logger.warning("Search fallback to mock products: %s", e)
-                    products = MOCK_PRODUCTS
+                query_builder = query_builder.order('rating', desc=True) \
+                .order('review_count', desc=True)
+    
+            result = query_builder.limit(limit).offset(offset).execute()
+            products = result.data or []
+    
+        except Exception as e:
+        logger.warning("Search fallback to mock products: %s", e)
+        products = MOCK_PRODUCTS
 
         if query:
             query_lower = query.lower()
@@ -1066,9 +1065,6 @@ def search_items(
                 or query_lower in str(p.get('description', '')).lower()
                 or query_lower in str(p.get('category', '')).lower()
             ]
-    except Exception as e:
-        logger.warning("Supabase error, falling back to mock products: %s", e)
-        products = MOCK_PRODUCTS
 
     for p in products:
         p['rank'] = 0.0
