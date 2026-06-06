@@ -786,7 +786,7 @@ class FederatedTrainRequest(BaseModel):
 @app.get("/api/health")
 def health_check():
     """
-    Low‑overhead health check endpoint for component tracking.
+    Low-overhead health check endpoint for component tracking.
     Checks database (Supabase), model readiness, and cache (Redis).
     """
     from src.data.db import get_supabase
