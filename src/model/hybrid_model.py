@@ -465,7 +465,7 @@ class HybridRecommender:
                 'top_reviews': top_reviews,
             }
             if explain:
-                result['explanation'] = self._build_explanation(
+                expl = self._build_explanation(
                     title,
                     item['title'],
                     content_scores[i],

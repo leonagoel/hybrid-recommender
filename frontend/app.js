@@ -1232,24 +1232,31 @@ function renderRecommendations(data) {
 
     document.getElementById("empty-state").hidden = true;
 
-    els.recsStrip.innerHTML = recs.map((r) => {
-        const title = r.title || 'Untitled';
-        const safeTitle = escapeHtml(title);
-        return `
-        <div class="rec-card" data-title="${safeTitle}">
-            <div class="rec-card__title">${safeTitle}</div>
-            <div class="rec-card__rating">
-                <div class="star-rating">${renderStars(r.rating || 0)}</div>
-                <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
-            </div>
-            <div class="rec-card__score">
-                Score: ${(r.hybrid_score || 0).toFixed(3)}
-                · Content: ${(r.content_score || 0).toFixed(2)}
-                · Collab: ${(r.collab_score || 0).toFixed(2)}
-            </div>
-        </div>
-    `;
-    }).join('');
+    els.recsStrip.innerHTML = recs
+        .map((r) => {
+            const title = r.title || 'Untitled';
+            const safeTitle = escapeHtml(title);
+            return `
+                <div class="rec-card" data-title="${safeTitle}">
+                    <div class="rec-card__title">${safeTitle}</div>
+                    <div class="rec-card__rating">
+                        <div class="star-rating">${renderStars(r.rating || 0)}</div>
+                        <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
+                    </div>
+
+                    <div class="rec-card__score">
+                        Score: ${(r.hybrid_score || 0).toFixed(3)}
+                        · Content: ${(r.content_score || 0).toFixed(2)}
+                        · Collab: ${(r.collab_score || 0).toFixed(2)}
+                    </div>
+
+                    <div class="rec-card__explanation">
+                        Reason: ${(r.explanation || r.llm_explanation || 'Based on hybrid signals.')}
+                    </div>
+                </div>
+            `;
+        })
+        .join('');
 
     els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
         card.addEventListener('click', () => {
@@ -1259,6 +1266,7 @@ function renderRecommendations(data) {
 
     els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+
 
 async function loadRecommendationsOverHttp(title) {
     const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
@@ -1904,6 +1912,9 @@ async function loadRecommendations(title) {
                     Score: ${(r.hybrid_score || 0).toFixed(3)}
                     · Content: ${(r.content_score || 0).toFixed(2)}
                     · Collab: ${(r.collab_score || 0).toFixed(2)}
+                </div>
+                <div class="rec-card__explanation">
+                    Reason: ${(r.explanation || r.llm_explanation || 'Based on hybrid signals.')}
                 </div>
             </div>
         `;
