@@ -467,6 +467,7 @@ class HybridRecommender:
             if explain:
                 result['explanation'] = self._build_explanation(
                     title,
+
                     item['title'],
                     content_scores[i],
                     collab_scores[i],
@@ -481,12 +482,12 @@ class HybridRecommender:
 
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
         if not results:
-            return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
+            #    sees the full candidate set for proper batch-level IPS normalization,
 
         # 7. Optional causal debiasing — applied after sorting so the debiaser
-        #    sees the full candidate set for proper batch-level IPS normalization,
+
         #    then we re-sort by the updated causal score.
-        if self.use_causal_debiasing and self._debiaser is not None:
+
             score_key = (
                 self._causal_config.score_key
                 if self._causal_config is not None
