@@ -237,9 +237,6 @@ def _apply_rate_limit(ip_address: str) -> bool:
     Applies token-bucket rate limiting dynamically.
     Optimized to handle Algorithmic Complexity DoS scenarios.
     """
-    Low-overhead health check endpoint for component tracking.
-    Checks database (Supabase), model readiness, and cache (Redis).
-    """
     from src.data.db import get_supabase
     from redis import Redis
     from redis.exceptions import RedisError
@@ -503,9 +500,9 @@ def search_items(
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
     
-        except Exception as e:
-            logger.warning("Search fallback to mock products: %s", e)
-            products = MOCK_PRODUCTS
+    except Exception as e:
+        logger.warning("Search fallback to mock products: %s", e)
+        products = MOCK_PRODUCTS
 
         if query:
             query_lower = query.lower()
