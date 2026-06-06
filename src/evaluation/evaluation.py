@@ -1,172 +1,3 @@
-"""
-evaluation.py — Model Performance Benchmarking
-===============================================
-Computes Precision@K, Recall@K, and NDCG@K for four recommendation modes:
-  - content       (TF-IDF cosine similarity only)
-  - collaborative (Truncated SVD only)
-  - sentiment     (VADER sentiment only)
-  - hybrid        (weighted blend of all three)
-
-Usage as CLI (unchanged from original behaviour):
-    python evaluation.py
-    python evaluation.py --k 20
-    python evaluation.py --k 10 --mode hybrid
-
-Usage as importable module (new — used by /api/evaluate endpoint):
-    from evaluation import run_evaluation
-    results = run_evaluation(k=10, mode="all", weights={"alpha":0.4,"beta":0.4,"gamma":0.2})
-"""
-
-from __future__ import annotations
-
-import argparse
-import json
-import math
-import os
-from pathlib import Path
-from typing import Literal
-
-import numpy as np
-import pandas as pd
-
-# ---------------------------------------------------------------------------
-# Types
-# ---------------------------------------------------------------------------
-
-Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
-
-MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
-ResultsDict = dict[str, MetricsDict]    # {"content": {...}, "hybrid": {...}, ...}
-UNSAFE_CACHE_SUFFIXES = {".pkl", ".pickle"}
-
-
-# ---------------------------------------------------------------------------
-# Core metric helpers with safety guards against ZeroDivisionError
-# ---------------------------------------------------------------------------
-
-def _precision_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Fraction of top-K recommended items that are relevant."""
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    hits = sum(1 for item in recommended[:k] if item in relevant)
-    return hits / k
-
-
-def _recall_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Fraction of relevant items found in top-K recommendations."""
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    hits = sum(1 for item in recommended[:k] if item in relevant)
-    
-    # FIX FOR ISSUE #486: Guard cold states to prevent ZeroDivisionError
-    denom = len(relevant)
-    return hits / denom if denom > 0 else 0.0
-
-
-def _dcg_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Discounted Cumulative Gain at K."""
-    if not recommended or not relevant or k == 0:
-        return 0.0
-    dcg = 0.0
-    for i, item in enumerate(recommended[:k], start=1):
-        if item in relevant:
-            dcg += 1.0 / math.log2(i + 1)
-    return dcg
-
-
-def _ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Normalised DCG at K (IDCG assumes all relevant items are at top)."""
-    dcg = _dcg_at_k(recommended, relevant, k)
-    ideal = _dcg_at_k(list(relevant)[:k], relevant, k)
-    
-    # FIX FOR ISSUE #486: Handle zero baseline ideal scores gracefully
-    return dcg / ideal if ideal > 0.0 else 0.0
-
-
-# Public wrappers used by benchmark.py
-def ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Exported wrapper for normalized DCG."""
-    return _ndcg_at_k(recommended, relevant, k)
-
-
-def average_precision_at_k(recommended: list, relevant: set, k: int) -> float:
-    """Average Precision at K (AP@K).
-
-    Implemented as sum(precision@i * rel_i) / min(|relevant|, k).
-    """
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    hits = 0
-    precisions = 0.0
-    for i, item in enumerate(recommended[:k], start=1):
-        if item in relevant:
-            hits += 1
-            precisions += hits / i
-    denom = min(len(relevant), k)
-    return precisions / denom if denom > 0 else 0.0
-
-
-# New metrics requested: MRR, Hit Rate, Catalog Coverage, ILD
-def _mean_reciprocal_rank(recommended: list, relevant: set, k: int) -> float:
-    """Mean Reciprocal Rank (MRR) — rank of first relevant item."""
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    for i, item in enumerate(recommended[:k], start=1):
-        if item in relevant:
-            return 1.0 / i
-    return 0.0
-
-
-def _hit_rate(recommended: list, relevant: set, k: int) -> float:
-    """Hit Rate — 1.0 if at least one relevant item in top-K."""
-    if not relevant or k == 0 or not recommended:
-        return 0.0
-    return 1.0 if any(item in relevant for item in recommended[:k]) else 0.0
-
-
-def _catalog_coverage(all_recommendations: list[list], catalog_size: int) -> float:
-    """Catalog coverage: fraction of unique items recommended."""
-    if not all_recommendations or catalog_size == 0:
-        return 0.0
-    unique = set()
-    for recs in all_recommendations:
-        unique.update(recs)
-    return len(unique) / catalog_size
-
-
-def _intra_list_diversity(
-    recommended: list[str], df: pd.DataFrame, tfidf_matrix
-) -> float:
-    """Intra-List Diversity (ILD) using TF-IDF cosine dissimilarity.
-
-    Returns 1 - average_pairwise_similarity. If TF-IDF matrix is not
-    available or list too small, returns 0.0.
-    """
-    if tfidf_matrix is None or len(recommended) <= 1:
-        return 0.0
-    from sklearn.metrics.pairwise import cosine_similarity
-
-    indices = []
-    for title in recommended:
-        try:
-            idx = df[df["title"] == title].index[0]
-            indices.append(idx)
-        except IndexError:
-            continue
-    if len(indices) <= 1:
-        return 0.0
-    sims = []
-    for i in range(len(indices)):
-        for j in range(i + 1, len(indices)):
-            sim = cosine_similarity(
-                tfidf_matrix[indices[i]], tfidf_matrix[indices[j]]
-            )[0, 0]
-            sims.append(sim)
-    avg_sim = float(np.mean(sims)) if sims else 0.0
-    return 1.0 - avg_sim
-
-
-# Small helper used by benchmark to build models/test pairs
 def _build_test_data(
     data_path: str | None = None,
     random_seed: int = 42,
@@ -176,8 +7,21 @@ def _build_test_data(
     Uses a fixed ``random_seed`` so that repeated calls with the same dataset
     produce the same test pairs, making benchmark comparisons stable.
 
-    Returns (content_model, collab_model, df, test_pairs).
+    Args:
+        data_path (str | None, optional): File path to source dataset CSV. 
+            Defaults to None (which falls back to the DATA_PATH environment variable 
+            or "data/products.csv").
+        random_seed (int, optional): Seed value used to maintain reproducible 
+            sampling of test pairs. Defaults to 42.
+
+    Returns:
+        tuple: A 4-element tuple containing:
+            - content_model (ContentRecommender or None): Initialized content filtering model.
+            - collab_model (_Collab or None): Dummy structural SVD model wrapper.
+            - df (pd.DataFrame or None): Cleaned and prepared Pandas DataFrame.
+            - test_pairs (list): Collection of evaluation pairs for benchmarking metrics.
     """
+    rng = np.random.default_rng(random_seed)
     from src.model.content_model import ContentRecommender
 
     path = data_path or os.getenv("DATA_PATH", "data/products.csv")
@@ -368,6 +212,8 @@ def run_evaluation(
     from sklearn.model_selection import train_test_split
     from sklearn.metrics.pairwise import cosine_similarity as _cosine_sim
 
+    rng = np.random.default_rng(random_seed)
+
     # --- validate parameters ---
     if not (0.0 < test_size < 1.0):
         raise ValueError("test_size must be strictly between 0 and 1.")
@@ -440,9 +286,164 @@ def run_evaluation(
             random_state=random_seed,
         )
 
-    # Sample up to 200 items for speed
-    sample_size = min(200, len(df))
-    sample_indices = np.random.choice(len(df), size=sample_size, replace=False)
+    train_df = train_df.reset_index(drop=True)
+    test_df  = test_df.reset_index(drop=True)
+
+    # -----------------------------------------------------------------------
+    # Build text feature column (title + category) for both splits
+    # -----------------------------------------------------------------------
+    def _add_text_col(frame: pd.DataFrame) -> pd.DataFrame:
+        frame = frame.copy()
+        if "category" in frame.columns:
+            frame["_eval_text"] = (
+                frame["title"].fillna("") + " " + frame["category"].fillna("")
+            )
+        else:
+            frame["_eval_text"] = frame["title"].fillna("")
+        return frame
+
+    train_df = _add_text_col(train_df)
+    test_df  = _add_text_col(test_df)
+
+    # -----------------------------------------------------------------------
+    # TF-IDF: fit on training split only, transform test split separately
+    # -----------------------------------------------------------------------
+    tfidf_vec   = TfidfVectorizer(stop_words="english", max_features=5000)
+    train_tfidf = tfidf_vec.fit_transform(train_df["_eval_text"])
+    test_tfidf  = tfidf_vec.transform(test_df["_eval_text"])
+
+    # -----------------------------------------------------------------------
+    # SVD: fit on training TF-IDF only, transform test TF-IDF separately
+    # -----------------------------------------------------------------------
+    n_components = max(
+        1, min(50, train_tfidf.shape[1] - 1, train_tfidf.shape[0] - 1)
+    )
+    svd_model   = TruncatedSVD(n_components=n_components, random_state=random_seed)
+    train_svd   = svd_model.fit_transform(train_tfidf)
+    test_svd    = svd_model.transform(test_tfidf)
+
+    # -----------------------------------------------------------------------
+    # Deterministic RNG — all sampling goes through this single generator
+    # -----------------------------------------------------------------------
+    rng = np.random.default_rng(random_seed)
+
+    # -----------------------------------------------------------------------
+    # Relevance sets are built exclusively from training items.
+    # Test items are never included in the candidate or relevance pools.
+    # -----------------------------------------------------------------------
+    def _get_relevant_train(test_row: pd.Series) -> set[str]:
+        """Relevance for a test item derived from the training catalog."""
+        relevant: set[str] = set()
+        if "category" in train_df.columns and pd.notna(test_row.get("category")):
+            same_cat = train_df[
+                train_df["category"] == test_row["category"]
+            ]["title"].tolist()
+            relevant.update(same_cat)
+        return relevant
+
+    # -----------------------------------------------------------------------
+    # Local recommendation helpers: query vector → top-K from training split
+    # -----------------------------------------------------------------------
+
+    def _content_recs_vec(q_vec) -> list[str]:
+        sims = _cosine_sim(q_vec, train_tfidf).flatten()
+        top  = np.argsort(sims)[::-1][:k]
+        return train_df.iloc[top]["title"].tolist()
+
+    def _collab_recs_vec(q_svd_vec) -> list[str]:
+        sims = _cosine_sim(q_svd_vec.reshape(1, -1), train_svd).flatten()
+        top  = np.argsort(sims)[::-1][:k]
+        return train_df.iloc[top]["title"].tolist()
+
+    def _sentiment_recs_train() -> list[str]:
+        frame = train_df.copy()
+        if "sentiment_score" not in frame.columns:
+            frame["sentiment_score"] = 0.0
+        return frame.sort_values("sentiment_score", ascending=False).head(k)[
+            "title"
+        ].tolist()
+
+    def _hybrid_recs_vec(q_tfidf_vec, q_svd_vec) -> list[str]:
+        content_s = _cosine_sim(q_tfidf_vec, train_tfidf).flatten()
+        collab_s  = _cosine_sim(q_svd_vec.reshape(1, -1), train_svd).flatten()
+        sentiment_raw = (
+            train_df.get("sentiment_score", pd.Series(np.zeros(len(train_df))))
+            .values.astype(float)
+        )
+        s_min, s_max = sentiment_raw.min(), sentiment_raw.max()
+        sentiment_s = (
+            (sentiment_raw - s_min) / (s_max - s_min)
+            if s_max != s_min
+            else np.zeros_like(sentiment_raw)
+        )
+        hybrid_s = (
+            w["alpha"] * content_s
+            + w["beta"]  * collab_s
+            + w["gamma"] * sentiment_s
+        )
+        top = np.argsort(hybrid_s)[::-1][:k]
+        return train_df.iloc[top]["title"].tolist()
+
+    # -----------------------------------------------------------------------
+    # Helpers for the user-based path: query by title from the training set
+    # -----------------------------------------------------------------------
+
+    def _content_recs_train_title(title: str) -> list[str]:
+        matches = train_df[train_df["title"] == title]
+        if matches.empty:
+            return []
+        idx  = matches.index[0]
+        sims = _cosine_sim(train_tfidf[idx], train_tfidf).flatten()
+        sims[idx] = -1
+        top  = np.argsort(sims)[::-1][:k]
+        return train_df.iloc[top]["title"].tolist()
+
+    def _collab_recs_train_title(title: str) -> list[str]:
+        matches = train_df[train_df["title"] == title]
+        if matches.empty:
+            return []
+        idx  = matches.index[0]
+        sims = _cosine_sim(train_svd[idx].reshape(1, -1), train_svd).flatten()
+        sims[idx] = -1
+        top  = np.argsort(sims)[::-1][:k]
+        return train_df.iloc[top]["title"].tolist()
+
+    def _sentiment_recs_train_title(title: str) -> list[str]:
+        frame = train_df.copy()
+        if "sentiment_score" not in frame.columns:
+            frame["sentiment_score"] = 0.0
+        matches = frame[frame["title"] == title]
+        if not matches.empty:
+            frame = frame.drop(index=matches.index[0], errors="ignore")
+        return frame.sort_values("sentiment_score", ascending=False).head(k)[
+            "title"
+        ].tolist()
+
+    def _hybrid_recs_train_title(title: str) -> list[str]:
+        matches = train_df[train_df["title"] == title]
+        if matches.empty:
+            return []
+        idx       = matches.index[0]
+        content_s = _cosine_sim(train_tfidf[idx], train_tfidf).flatten()
+        collab_s  = _cosine_sim(train_svd[idx].reshape(1, -1), train_svd).flatten()
+        sentiment_raw = (
+            train_df.get("sentiment_score", pd.Series(np.zeros(len(train_df))))
+            .values.astype(float)
+        )
+        s_min, s_max = sentiment_raw.min(), sentiment_raw.max()
+        sentiment_s = (
+            (sentiment_raw - s_min) / (s_max - s_min)
+            if s_max != s_min
+            else np.zeros_like(sentiment_raw)
+        )
+        hybrid_s = (
+            w["alpha"] * content_s
+            + w["beta"]  * collab_s
+            + w["gamma"] * sentiment_s
+        )
+        hybrid_s[idx] = -1
+        top = np.argsort(hybrid_s)[::-1][:k]
+        return train_df.iloc[top]["title"].tolist()
 
     # -----------------------------------------------------------------------
     # Determine evaluation strategy
@@ -477,20 +478,13 @@ def run_evaluation(
         if has_user_data:
             # ------------------------------------------------------------------
             # User-based leave-one-out evaluation.
-            #
-            # For each sampled user we hold out their last interaction as the
-            # evaluation target.  Recommendations are generated from the
-            # training split using the user's remaining interaction history as
-            # seed items.  The training TF-IDF/SVD artifacts are used for all
-            # similarity computations, so the held-out item never influences
-            # the model fit.
             # ------------------------------------------------------------------
             for current_user in sample_users:
                 user_profile = (
                     df[df["user_id"] == current_user].reset_index(drop=True)
                 )
                 if len(user_profile) < 2:
-                    continue  # leave-one-out requires at least 2 interactions
+                    continue
 
                 query_item   = user_profile.iloc[-1]["title"]
                 relevant     = {query_item}
@@ -535,22 +529,11 @@ def run_evaluation(
                     )
                     all_recs.append(final_recs)
         else:
-            # ----------------------------------------------------
-            # FALLBACK: Item similarity processing if dataset is flat
-            # ----------------------------------------------------
-            for idx in sample_indices:
-                title = df.iloc[idx]["title"]
-                
-                # Relevance is defined by category membership only.
-                # Do NOT add a global rating threshold here: mixing
-                # "rating >= N" into the relevance set marks unrelated
-                # high-rated items as ground-truth matches, inflating
-                # Precision@K, Recall@K, MRR, and NDCG for every query.
-                relevant = set()
-                if "category" in df.columns and pd.notna(df.iloc[idx].get("category")):
-                    relevant.update(df[df["category"] == df.iloc[idx]["category"]]["title"].tolist())
-                relevant.discard(title)
-
+            # ------------------------------------------------------------------
+            # Item-based evaluation on the held-out test split.
+            # ------------------------------------------------------------------
+            for test_idx in sample_indices:
+                relevant = _get_relevant_train(test_df.iloc[test_idx])
                 if not relevant:
                     continue
 

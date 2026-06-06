@@ -100,19 +100,25 @@ def startup_event():
 
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
+    from src.model.validation import validate_recommendations
+
     if _content_model is None:
-        return JSONResponse(
-            status_code=503,
-            content=error_response(
-                message="Models not loaded",
-                model_name="hybrid",
-                detail="Models not loaded"
-            )
+        fallback_recs = validate_recommendations(
+            None,
+            top_n=req.top_n,
+            default_fallback_items=_item_df["title"].tolist() if _item_df is not None and not _item_df.empty else None,
+            context="hybrid"
+        )
+        return success_response(
+            recommendations=fallback_recs,
+            model_name="hybrid",
+            message="Models not loaded. Serving trending fallback layout.",
+            causal_debiasing_applied=req.use_causal,
+            fallback=True,
+            note="Models not loaded. Serving trending fallback layout."
         )
 
-    # ===================================================================
     # Try the Primary Hybrid Pipeline
-    # ===================================================================
     try:
         causal_cfg = (
             CausalConfig(
@@ -143,9 +149,7 @@ def get_recommendations(req: RecommendationRequest):
             fallback=False
         )
 
-    # ===================================================================
     # Graceful Popularity Fallback Recovery Layer (#678)
-    # ===================================================================
     except Exception as exc:
         import logging
         logger = logging.getLogger("uvicorn.error")
