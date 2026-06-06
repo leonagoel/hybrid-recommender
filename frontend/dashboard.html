@@ -85,6 +85,11 @@
 async function loadDashboard() {
 
   const response = await fetch('/api/dashboard');
+
+  if (!response.ok) {
+    throw new Error('Failed to load dashboard data');
+  }
+
   const data = await response.json();
 
   document.getElementById('products').textContent =
@@ -106,6 +111,8 @@ async function loadDashboard() {
     new Date(data.model_last_trained).toLocaleString();
 
   const list = document.getElementById('top-products');
+
+  list.innerHTML = '';
 
   data.top_5_recommended_products.forEach(product => {
     const li = document.createElement('li');
