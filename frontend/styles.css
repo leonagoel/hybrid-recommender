@@ -689,11 +689,14 @@ body {
     font-weight: 600;
     line-height: 1.4;
     margin-bottom: 8px;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    line-clamp: 2;
+    /* Prevent title text from wrapping to a new line */
+    white-space: nowrap;
+    /* Hide text that extends past the width of the recommendation card */
     overflow: hidden;
+    /* Add an ellipsis (...) where the text gets cut off */
+    text-overflow: ellipsis;
+    /* Restrict boundary width to match the card container */
+    max-width: 100%;
 }
 
 .rec-card__score {
@@ -792,11 +795,11 @@ body {
     font-weight: 600;
     line-height: 1.4;
     margin-bottom: 6px;
-    white-space: nowrap;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 100%;
-    color: var(--text);
 }
 .product-card__desc {
     font-size: 12px;
@@ -1667,12 +1670,17 @@ RECOMMENDATION CARD IMPROVEMENTS
     rgba(0,0,0,.15);
 }
 
-.rec-card__title{
-    font-size:18px;
-    font-weight:700;
-    line-height:1.5;
+.rec-card__title {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.4;
+    margin-bottom: 8px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
-
 .rec-card__rating{
     display:flex;
     align-items:center;

@@ -30,6 +30,7 @@ import logging
 import os
 import sys
 import threading
+from functools import wraps
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -38,6 +39,32 @@ from redis import Redis  # noqa: E402  (module-level for patchability in tests)
 from celery_app import celery_app, REDIS_URL  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# ── User Request Serialization Lock Registry ──────────────────────────────
+_user_task_locks: dict[str, threading.Lock] = {}
+_lock_registry_mutex: threading.Lock = threading.Lock()
+
+def serialize_user_requests(func):
+    """
+    Decorator to prevent race conditions on concurrent tasks for the same user.
+    Ensures that parallel weight matrix or recommendation generation requests
+    from an identical user_id are executed sequentially.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        user_id = kwargs.get("user_id") or (args[0] if args else None)
+        
+        if not user_id:
+            return func(*args, **kwargs)
+
+        with _lock_registry_mutex:
+            if user_id not in _user_task_locks:
+                _user_task_locks[user_id] = threading.Lock()
+            user_lock = _user_task_locks[user_id]
+        
+        with user_lock:
+            return func(*args, **kwargs)
+    return wrapper
 
 # ── Redis coordination key (must match the constant in backend/main.py) ───────
 REDIS_MODEL_VERSION_KEY = "hybrid_recommender:model_version"
@@ -187,20 +214,11 @@ def _get_worker_models() -> dict:
 
     current_version = _read_current_version()
 
-    # Fast path: cached model is available and does not need a rebuild.
-    # A model is considered current when:
-    #   (a) Redis reports the same version the worker already cached, OR
-    #   (b) Redis is unreachable (current_version is None) — we keep serving
-    #       the cached copy rather than doing an unnecessary rebuild.
-    # Reading the globals without the lock is safe because CPython's GIL
-    # guarantees that object-reference reads are atomic.
     if _worker_models is not None and _worker_models.get("ready"):
         if current_version is None or _worker_model_version == current_version:
             return _worker_models
 
-    # Slow path: acquire lock, then double-check before rebuilding.
     with _worker_lock:
-        # Another thread may have completed the rebuild while we waited.
         if _worker_models is not None and _worker_models.get("ready"):
             if current_version is None or _worker_model_version == current_version:
                 return _worker_models
@@ -213,83 +231,21 @@ def _get_worker_models() -> dict:
         )
         _worker_models = _build_models_for_worker()
         _worker_model_version = current_version
-        logger.info(
-            "Worker: models rebuilt successfully (version=%s).",
-            current_version,
-        )
+        return _worker_models
 
-    return _worker_models
+# ── Celery Tasks ─────────────────────────────────────────────────────────────
 
-
-# ── Public API: reset the worker cache (used by tests) ───────────────────────
-
-def _reset_worker_cache() -> None:
-    """Clear the worker-local model cache.  For use in tests only."""
-    global _worker_model_version, _worker_models
-    with _worker_lock:
-        _worker_model_version = None
-        _worker_models = None
-
-
-# ── Celery task ───────────────────────────────────────────────────────────────
-
-@celery_app.task(
-    bind=True,
-    name="tasks.compute_recommendations",
-    max_retries=3,
-    default_retry_delay=5,
-)
-def compute_recommendations(
-    self,
-    item_title: str,
-    top_n: int = 10,
-    explain: bool = False,
-):
+@celery_app.task(name="tasks.get_recommendations")
+@serialize_user_requests
+def get_recommendations(user_id: str, top_n: int = 10) -> list[dict]:
     """
-    Background task: run hybrid recommendation computation.
-
-    Models are loaded from the shared data source (Supabase) rather than
-    from API-process memory, so this task executes correctly in any worker
-    process without requiring a prior in-process ``POST /api/build`` call.
-
-    Returns:
-        dict with ``query_item``, ``recommendations``, ``weights``, ``explain``.
-
-    Raises:
-        ValueError  — item not found or no model available.
-        Retries up to 3 times on transient infrastructure failures.
+    Generate hybrid recommendations for a user.
     """
     try:
-        worker_models = _get_worker_models()
-
-        recs = worker_models["hybrid"].recommend(item_title, top_n=top_n, explain=explain)
-
-        if not recs:
-            raise ValueError(
-                f"Item '{item_title}' not found or no recommendations available."
-            )
-
-        logger.info(
-            "compute_recommendations completed: item=%s top_n=%d",
-            item_title,
-            top_n,
-        )
-
-        return {
-            "query_item": item_title,
-            "recommendations": recs,
-            "weights": worker_models["hybrid"].get_weights(),
-            "explain": explain,
-        }
-
-    except ValueError:
-        raise
-
+        models = _get_worker_models()
+        hybrid_model = models["hybrid"]
+        recs = hybrid_model.recommend(user_id, top_n=top_n)
+        return recs
     except Exception as exc:
-        logger.error(
-            "compute_recommendations failed for item=%s: %s",
-            item_title,
-            exc,
-            exc_info=True,
-        )
-        raise self.retry(exc=exc)
+        logger.error("Worker: recommendation generation failed for user %s: %s", user_id, exc)
+        raise
