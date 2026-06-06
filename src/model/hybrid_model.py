@@ -22,6 +22,7 @@ from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
 from src.model.recommendation_history import history_tracker
 from src.model.multi_objective import MultiObjectiveRanker
+from src.model.validation import validate_recommendations
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
     """
@@ -71,6 +72,9 @@ class HybridRecommender:
         self.kg_model = None
         self.delta = 0.0
         self.multi_objective_ranker = MultiObjectiveRanker()
+        
+        self.kg_model = kg_model
+        self.delta = delta
 
         # Expose model kwargs explicitly as structural configuration dictionaries
         # Legacy compatibility: no explicit model_kwargs parameter in signature,
@@ -93,10 +97,6 @@ class HybridRecommender:
         # dynamic weighting matrix (dict of context -> (alpha,beta,gamma))
         self.weight_matrix = weight_matrix or {}
 
-        # Fairness defaults
-        self.fairness_enabled = False
-        self.fairness_key = 'category'
-        self.fairness_max_share = 1.0
 
         # Causal debiasing — prefer CausalConfig when provided; fall back to raw params.
         # This keeps the old float-based API fully working while adding structured config.
@@ -369,25 +369,21 @@ class HybridRecommender:
         for r in content_recs:
             if not isinstance(r, dict):
                 continue
+            item_title = r.get("title")
+            if item_title:
+                all_titles.add(item_title)
 
-            title = r.get("title")
-            if title:
-                all_titles.add(title)
-
-        # 2. Collaborative scores
         collab_map = {}
         if self.collab_model:
             collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
             for r in collab_recs:
                 if not isinstance(r, dict):
                     continue
-
-                title = r.get("title")
-                if not title:
+                item_title = r.get("title")
+                if not item_title:
                     continue
-
-                collab_map[title] = r.get("collab_score", 0.0)
-                all_titles.add(title)
+                collab_map[item_title] = r.get("collab_score", 0.0)
+                all_titles.add(item_title)
 
         # 3. Build unified candidates
         candidates = {}
@@ -411,7 +407,13 @@ class HybridRecommender:
                 }
 
         if not candidates:
-            return self._cold_start_fallback(title, top_n, target_catalog=target_catalog)
+            return validate_recommendations(
+                [],
+                fallback_fn=lambda top_n: self._cold_start_fallback(title, top_n, target_catalog=target_catalog),
+                top_n=top_n,
+                default_fallback_items=self.item_df["title"].tolist() if self.item_df is not None else None,
+                context="hybrid"
+            )
 
         items = list(candidates.values())
 
@@ -533,9 +535,15 @@ class HybridRecommender:
         if apply_fairness:
             key = fairness_key or self.fairness_key
             max_share = self.fairness_max_share if fairness_max_share is None else fairness_max_share
-            return self._fair_rerank(results, top_n, key, max_share)
+            results = self._fair_rerank(results, top_n, key, max_share)
 
-        return results[:top_n]
+        return validate_recommendations(
+            results,
+            fallback_fn=lambda top_n: self.get_popular_fallback_items(top_n=top_n, exclude_title=title),
+            top_n=top_n,
+            default_fallback_items=self.item_df["title"].tolist() if self.item_df is not None else None,
+            context="hybrid"
+        )
     
     def recommend_for_user(self, user_id, top_n=10, explain=False):
         """
@@ -544,7 +552,14 @@ class HybridRecommender:
         """
         if self.collab_model is None or user_id not in self.collab_model._user_to_idx:
             # Cold start fallback for new user
-            return self._cold_start_fallback(title=None, top_n=top_n)
+            recs = self._cold_start_fallback(title=None, top_n=top_n)
+            return validate_recommendations(
+                recs,
+                fallback_fn=lambda top_n: self.get_popular_fallback_items(top_n=top_n),
+                top_n=top_n,
+                default_fallback_items=self.item_df["title"].tolist() if self.item_df is not None else None,
+                context="hybrid"
+            )
 
         collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
         recent_titles = history_tracker.get_recent_titles(user_id)
@@ -594,12 +609,19 @@ class HybridRecommender:
             results = self._debiaser.debias_batch(results, score_key=score_key)
             results.sort(key=lambda x: x[score_key], reverse=True)
 
-            for item in results:
+            for item in results[:top_n]:
                 history_tracker.add_recommendation(
                     user_id,
                     item["title"]
-                    )
-                return results
+                )
+
+        return validate_recommendations(
+            results,
+            fallback_fn=lambda top_n: self._cold_start_fallback(title=None, top_n=top_n),
+            top_n=top_n,
+            default_fallback_items=self.item_df["title"].tolist() if self.item_df is not None else None,
+            context="hybrid"
+        )
 
     def _build_explanation(
         self,
@@ -801,10 +823,17 @@ class HybridRecommender:
             return []
 
         df = df.copy()
+        global_avg = 3.0  # always defined before use
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
             
         global_avg = 3.0
+        if 'rating' in df.columns and len(df) > 0:
+            try:
+                global_avg = float(df['rating'].mean())
+            except Exception:
+                global_avg = 3.0
+
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
             df['_bayesian'] = df.apply(
@@ -838,5 +867,6 @@ class HybridRecommender:
                 'category': row.get('category', ''),
                 'description': str(row.get('description', ''))[:200],
                 'top_reviews': [],
+                'fallback': True,
             })
         return results
