@@ -362,8 +362,11 @@ class HybridRecommender:
         Get hybrid recommendations for a given item title.
         Returns list of dicts sorted by hybrid_score.
         """
+        # Preserve original input title (do not shadow this name below)
+        source_title = title
+
         # 1. Content-based scores
-        content_recs = self.content_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
+        content_recs = self.content_model.recommend(source_title, top_n=top_n * 3, target_catalog=target_catalog)
         all_titles = set()
 
         for r in content_recs:
@@ -373,17 +376,24 @@ class HybridRecommender:
             if item_title:
                 all_titles.add(item_title)
 
+            candidate_title = r.get("title")
+            if candidate_title:
+                all_titles.add(candidate_title)
+
+        # 2. Collaborative scores
         collab_map = {}
         if self.collab_model:
-            collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
+            collab_recs = self.collab_model.recommend(source_title, top_n=top_n * 3, target_catalog=target_catalog)
             for r in collab_recs:
                 if not isinstance(r, dict):
                     continue
-                item_title = r.get("title")
-                if not item_title:
+
+                candidate_title = r.get("title")
+                if not candidate_title:
                     continue
-                collab_map[item_title] = r.get("collab_score", 0.0)
-                all_titles.add(item_title)
+
+                collab_map[candidate_title] = r.get("collab_score", 0.0)
+                all_titles.add(candidate_title)
 
         # 3. Build unified candidates
         candidates = {}
@@ -407,13 +417,7 @@ class HybridRecommender:
                 }
 
         if not candidates:
-            return validate_recommendations(
-                [],
-                fallback_fn=lambda top_n: self._cold_start_fallback(title, top_n, target_catalog=target_catalog),
-                top_n=top_n,
-                default_fallback_items=self.item_df["title"].tolist() if self.item_df is not None else None,
-                context="hybrid"
-            )
+            return self._cold_start_fallback(source_title, top_n, target_catalog=target_catalog)
 
         items = list(candidates.values())
 
@@ -428,7 +432,7 @@ class HybridRecommender:
 
         kg_scores = []
         if self.kg_model:
-            kg_recs = self.kg_model.recommend(title, top_n=top_n * 3)
+            kg_recs = self.kg_model.recommend(source_title, top_n=top_n * 3)
             kg_map = {
                 item['title']: item['kg_score']
                 for item in kg_recs
@@ -492,7 +496,7 @@ class HybridRecommender:
             }
             if explain:
                 result['explanation'] = self._build_explanation(
-                    title,
+                    source_title,
                     item['title'],
                     content_scores[i],
                     collab_scores[i],
@@ -510,6 +514,8 @@ class HybridRecommender:
             results = self.multi_objective_ranker.rerank(results)
         if not results:
             return self.get_popular_fallback_items(...)
+        if not results:
+            return self.get_popular_fallback_items(top_n=top_n, exclude_title=source_title)
 
         # 7. Optional causal debiasing — applied after sorting so the debiaser
         #    sees the full candidate set for proper batch-level IPS normalization,
