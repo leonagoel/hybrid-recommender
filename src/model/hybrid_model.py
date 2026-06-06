@@ -367,25 +367,21 @@ class HybridRecommender:
         for r in content_recs:
             if not isinstance(r, dict):
                 continue
+            item_title = r.get("title")
+            if item_title:
+                all_titles.add(item_title)
 
-            title = r.get("title")
-            if title:
-                all_titles.add(title)
-
-        # 2. Collaborative scores
         collab_map = {}
         if self.collab_model:
             collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
             for r in collab_recs:
                 if not isinstance(r, dict):
                     continue
-
-                title = r.get("title")
-                if not title:
+                item_title = r.get("title")
+                if not item_title:
                     continue
-
-                collab_map[title] = r.get("collab_score", 0.0)
-                all_titles.add(title)
+                collab_map[item_title] = r.get("collab_score", 0.0)
+                all_titles.add(item_title)
 
         # 3. Build unified candidates
         candidates = {}
@@ -647,7 +643,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'raw_content': roaund(raw_item['raw_content'], 4),
+                'raw_content': round(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
             },

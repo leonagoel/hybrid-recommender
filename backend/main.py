@@ -1681,25 +1681,25 @@ def build_models():
                     e
                 )
 
-        hybrid_model = HybridRecommender(
-            content_model,
-            collab_model,
-            item_df
-        )
+            hybrid_model = HybridRecommender(
+                content_model,
+                collab_model,
+                item_df
+            )
 
-        build_time = round(time.time() - start_time, 2)
+            build_time = round(time.time() - start_time, 2)
 
-        models["content"] = content_model
-        models["collab"] = collab_model
-        models["hybrid"] = hybrid_model
-        models["item_df"] = item_df
-        models["ready"] = True
-        models["build_time"] = build_time
-        models["last_trained_at"] = datetime.now(
-            timezone.utc
-        ).isoformat()
+            models["content"] = content_model
+            models["collab"] = collab_model
+            models["hybrid"] = hybrid_model
+            models["item_df"] = item_df
+            models["ready"] = True
+            models["build_time"] = build_time
+            models["last_trained_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
 
-        _clear_response_cache()
+            _clear_response_cache()
 
         return {
             "message": "Models built successfully!",
