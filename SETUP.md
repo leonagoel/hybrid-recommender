@@ -57,7 +57,7 @@ python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT --reload
 ```
 ## Windows Local Setup (Recommended)
 
-If you encounter dependency issues on Windows, it is recommended to create a clean conda environment.
+If you encounter dependency issues on Windows, create a clean Conda environment.
 
 ### Create Environment
 
