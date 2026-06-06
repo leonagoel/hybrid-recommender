@@ -175,6 +175,54 @@ def preprocess_sentiment_data(
     return df
 
 
+def handle_missing_values(df):
+    """Handle missing values by filling text columns and numeric columns."""
+    df = df.copy()
+    df = df.dropna(how='all')
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = df[col].fillna("Unknown")
+    for col in df.select_dtypes(include=['int64', 'float64']).columns:
+        df[col] = df[col].fillna(df[col].median())
+    return df
+
+
+def remove_duplicates(df):
+    """Remove duplicate entries or duplicate user-item pairs."""
+    df = df.copy()
+    if 'user_id' in df.columns and 'book_id' in df.columns:
+        df = df.drop_duplicates(subset=['user_id', 'book_id'])
+    else:
+        df = df.drop_duplicates()
+    return df
+
+
+def normalize_ratings(df):
+    """Normalize ratings column using MinMaxScaler."""
+    df = df.copy()
+    if 'rating' in df.columns:
+        scaler = MinMaxScaler()
+        df['rating_normalized'] = scaler.fit_transform(df[['rating']])
+    return df
+
+
+def encode_categorical(df):
+    """Encode categorical columns using LabelEncoder."""
+    df = df.copy()
+    le = LabelEncoder()
+    if 'authors' in df.columns:
+        df['authors_encoded'] = le.fit_transform(df['authors'].astype(str))
+    return df
+
+
+def preprocess(df):
+    """Run full preprocessing pipeline on a DataFrame."""
+    df = remove_duplicates(df)
+    df = handle_missing_values(df)
+    df = normalize_ratings(df)
+    df = encode_categorical(df)
+    return df
+
+
 if __name__ == "__main__":
 
     print("=== Preprocessing Books Data ===")
