@@ -177,12 +177,28 @@ MOCK_PRODUCTS = [
 _model_lock = Lock()
 
 def _get_slow_response_threshold_ms() -> float:
+    """Retrieve the duration threshold used to classify slow API responses.
+
+    Reads from the RESPONSE_TIME_SLOW_MS environment variable, falling back 
+    to a default threshold if the variable is missing or invalid.
+
+    Returns:
+        float: Threshold duration measured in milliseconds.
+    """
     try:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
 def _cache_key(*parts: Any) -> str:
+    """Generate a consistent, lowercased cache string key from input segments.
+
+    Args:
+        *parts (Any): Variable length argument list of components to join.
+
+    Returns:
+        str: A colon-separated, lowercase cache key string with trimmed whitespace.
+    """
     return ":".join(str(part).strip().lower() for part in parts)
 
 def _recommendation_cache_key(
