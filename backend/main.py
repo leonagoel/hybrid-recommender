@@ -87,25 +87,6 @@ from functools import lru_cache
 from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
 
 
-# ── OpenAPI CSRF header dependency ────────────────────────────────────
-# WHY a Depends() instead of just relying on the middleware?
-#
-# The CSRFMiddleware enforces the token at the ASGI level — it never
-# touches the OpenAPI schema that FastAPI builds from route signatures.
-# Swagger UI only renders parameters that appear in the schema, so the
-# X-CSRF-Token field is invisible to users testing the API interactively.
-#
-# This dependency solves that purely at the documentation layer:
-#   - It declares X-CSRF-Token as a required header parameter on every
-#     route that includes Depends(csrf_header_dep).
-#   - FastAPI adds it to the OpenAPI spec → Swagger UI renders the field.
-#   - The function body does nothing (returns None) because the middleware
-#     has already validated the token before the route handler runs.
-#   - No double-validation, no logic duplication.
-#
-# The `alias="X-CSRF-Token"` preserves the canonical mixed-case header
-# name in the OpenAPI spec so Swagger UI labels it correctly, even though
-# Starlette lowercases all incoming headers internally.
 async def csrf_header_dep(
     x_csrf_token: str = Header(
         ...,
@@ -118,11 +99,9 @@ async def csrf_header_dep(
     ),
 ) -> None:
     """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
-    # The middleware has already validated the token before this runs.
-    # This function exists solely to make the header visible in Swagger UI.
 
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
-register_exception_handlers(app)
+
 
 @app.on_event("startup")
 def download_nltk_assets():
@@ -152,9 +131,6 @@ _rate_limit_lock = Lock()
 _request_counter = 0
 CLEANUP_THRESHOLD = 10000  # Defensive boundary check to protect physical memory leak
 
-# Optional Redis client for distributed caching.  None when REDIS_URL is unset
-# or the connection cannot be established at startup; the in-process dict cache
-# is used as a fallback in both cases.
 _redis_client: Redis | None = None
 
 MOCK_PRODUCTS = [
@@ -190,6 +166,7 @@ MOCK_PRODUCTS = [
     },
 ]
 
+_cache_lock = Lock()
 _model_lock = Lock()
 
 def _get_slow_response_threshold_ms() -> float:
@@ -226,16 +203,6 @@ def _recommendation_cache_key(
     model_version: str = "",
     strategy: str = "",
 ) -> str:
-    """Single authoritative cache key for recommendation responses.
-
-    Both the precomputation path (_precompute_recommendation_cache) and
-    the request-serving path (get_recommendations) must use this function
-    so that precomputed entries are always retrievable by the API.
-
-    All optional parameters default to '' so that a plain item lookup
-    produces the same key whether called from precomputation or from the
-    API handler with all optional query params absent.
-    """
     return _cache_key(
         "recommend",
         title,
@@ -249,7 +216,7 @@ def _recommendation_cache_key(
 
 
 def _get_cached_response(key: str):
-    global _cache_hits, _cache_misses   # Move globals to the top
+    global _cache_hits, _cache_misses
 
     if _redis_client is not None:
         try:
@@ -258,7 +225,6 @@ def _get_cached_response(key: str):
                 return json.loads(cached)
         except (RedisError, json.JSONDecodeError):
             pass
-
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -285,7 +251,6 @@ def _clear_response_cache() -> None:
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
-    """Expose simple cache hit/miss metrics and configured TTL."""
     return {
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "hits": int(_cache_hits),
@@ -295,7 +260,6 @@ def get_cache_metrics():
 
 
 def _build_tfidf_for_items(item_df):
-    """Build and return a TF-IDF matrix and vectorizer for the given item_df."""
     from sklearn.feature_extraction.text import TfidfVectorizer
     texts = (item_df.get('combined') or item_df.get('title')).fillna('').astype(str).tolist()
     vec = TfidfVectorizer(max_features=16384, stop_words='english')
@@ -304,10 +268,6 @@ def _build_tfidf_for_items(item_df):
 
 
 def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tuple[float, float, float] = (0.6, 0.3, 0.1), target_catalog: Optional[str] = None):
-    """Cold-start blending of content similarity (TF-IDF) and simple popularity/rating signals.
-
-    Returns list of dicts with blended score and components.
-    """
     import numpy as np
     from sklearn.metrics.pairwise import cosine_similarity
 
@@ -323,7 +283,6 @@ def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tupl
 
     scores = cosine_similarity(qv, matrix).flatten()
 
-    # Popularity normalization (review_count) and rating normalization
     review_counts = item_df.get('review_count', None)
     if review_counts is None or len(review_counts) == 0:
         pop_norm = np.zeros_like(scores)
@@ -411,7 +370,6 @@ def _normalize_search_query(query: str) -> str:
 
 
 def _escape_like_pattern(value: str) -> str:
-    """Escape special LIKE metacharacters to prevent pattern injection."""
     return (
         value
         .replace("\\", "\\\\")
@@ -424,7 +382,6 @@ _USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
 
 
 def _validate_user_id(user_id: str) -> str:
-    """Allowlist-validate user_id to block injection via path parameters."""
     if not _USER_ID_RE.match(user_id):
         raise HTTPException(status_code=400, detail="Invalid user_id format.")
     return user_id
@@ -485,7 +442,6 @@ def _apply_rate_limit(
         reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
         reset_time = max(0, reset_time)
 
-        # Garbage Collection: Remove empty buckets to prevent memory leak
         empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
         for k in empty_keys:
             del _rate_limit_buckets[k]
@@ -494,7 +450,6 @@ def _apply_rate_limit(
     response.headers["x-ratelimit-remaining"] = str(remaining)
     response.headers["x-ratelimit-reset"] = str(reset_time)
     return None
-
 
 
 def _extract_bearer_token(value: str | None) -> str:
@@ -520,16 +475,6 @@ def _require_admin_access(request: Request) -> None:
     )
     if not provided_token or not secrets.compare_digest(provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
-    def _admin_access_dep(request: Request):
-        _require_admin_access(request)
-
-_admin_access_dep = _require_admin_access
-
-
-
-def _admin_access_dep(request: Request) -> None:
-    """FastAPI dependency wrapper around _require_admin_access."""
-    _require_admin_access(request)
 
 
 def _admin_access_dep(request: Request) -> None:
@@ -580,7 +525,6 @@ def validate_cors_configuration() -> None:
     _parse_cors_origins()
 
 
-# CORS
 allowed_origins = _parse_cors_origins()
 
 allow_creds = True
@@ -597,7 +541,6 @@ app.add_middleware(
 
 app.add_middleware(CSRFMiddleware)
 
-# ── Response Time Monitoring ─────────────────────────────────────────
 SLOW_RESPONSE_THRESHOLD_MS = 500.0
 METRICS_SAMPLE_SIZE = 1000
 response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
@@ -624,20 +567,20 @@ def record_response_metric(endpoint, method, status_code, response_time_ms):
         if status_code >= 400:
             response_metrics["error_requests"] += 1
         response_time_samples.append(
-          (time.time(), response_time_ms)
+            (time.time(), response_time_ms)
         )
 
         current_time = time.time()
 
         while (
-          response_time_samples
-          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
+            response_time_samples
+            and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
         ):
-          response_time_samples.popleft()
+            response_time_samples.popleft()
     log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
     if log_level == logging.WARNING:
-        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
-                       endpoint, method, status_code, response_time_ms, response_time_ms, endpoint)
+        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms",
+                       endpoint, method, status_code, response_time_ms)
     else:
         logger.info("API request endpoint=%s method=%s status=%s time=%.2fms",
                     endpoint, method, status_code, response_time_ms)
@@ -681,7 +624,6 @@ async def response_time_middleware(request, call_next):
         record_response_metric(request.url.path, request.method, status_code, response_time_ms)
 
 
-# ── State ─────────────────────────────────────────────────────────────
 models = {
     "content": None,
     "collab": None,
@@ -762,7 +704,6 @@ class RealtimeRecommendationRequest(BaseModel):
     target_catalog: Optional[str] = None
 
 
-# ── CSRF Token ───────────────────────────────────────────────────────
 @app.get(
     "/api/csrf-token",
     response_model=CSRFTokenResponse,
@@ -783,14 +724,9 @@ class FederatedTrainRequest(BaseModel):
     reg: float = 0.05
 
 
-# ── Health ────────────────────────────────────────────────────────────
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
-    """
-    Low-overhead health check endpoint for component tracking.
-    Checks database (Supabase), model readiness, and cache (Redis).
-    """
     from src.data.db import get_supabase
     from redis import Redis
     from redis.exceptions import RedisError
@@ -1060,52 +996,6 @@ def search_items(
     for p in products:
         p['rank'] = 0.0
 
-
-    # Format response
-    results = []
-    
-    for p in products:
-    
-        raw_sentiment = p.get('avg_sentiment', 0.0)
-        reviews = p.get('reviews', [])
-    
-        # Newly added products may still have the default
-        # sentiment value before the NLP batch pipeline runs.
-        # Recompute dynamically so the UI never shows misleading 0.0.
-        if raw_sentiment == 0.0 and reviews:
-            try:
-                from nlp_engine import compute_product_sentiment
-    
-                computed_sentiment = compute_product_sentiment(reviews)
-    
-                sentiment_value = (
-                    computed_sentiment
-                    if computed_sentiment is not None
-                    else "N/A"
-                )
-    
-            except Exception:
-                sentiment_value = "N/A"
-    
-        else:
-            sentiment_value = (
-                raw_sentiment
-                if raw_sentiment != 0.0
-                else "N/A"
-            )
-    
-        results.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''),
-            'rating': p.get('rating', 0.0),
-            'avg_sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0),
-        })
-    
-    
     def _product_price(product):
         metadata = product.get('metadata') or {}
         raw_price = (
@@ -1134,7 +1024,7 @@ def search_items(
     for p in products:
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
+
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
@@ -1146,16 +1036,15 @@ def search_items(
                 )
             except Exception:
                 sentiment_value = "N/A"
-    
         else:
             sentiment_value = (
                 raw_sentiment
                 if raw_sentiment != 0.0
                 else "N/A"
             )
-    
+
         price = _product_price(p)
-    
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title', ''),
@@ -1167,10 +1056,9 @@ def search_items(
             'review_count': p.get('review_count', 0),
             'rank': p.get('rank', 0.0),
         })
-    
-    
+
     result_count = len(results)
-    
+
     payload = {
         "results": results,
         "count": result_count,
@@ -1179,14 +1067,13 @@ def search_items(
         "sort": sort,
         "is_fallback": not query or is_fuzzy_fallback,
     }
-    
+
     _set_cached_response(cache_key, payload)
     _set_cache_headers(response, "MISS")
-    
+
     return payload
 
 
-# ── Autocomplete ──────────────────────────────────────────────────────
 @app.get("/api/autocomplete")
 def autocomplete_products(
     q: str = Query("", min_length=1),
@@ -1218,7 +1105,6 @@ def autocomplete_products(
         raise HTTPException(status_code=500, detail="Autocomplete failed")
 
 
-# ── Fuzzy Search Endpoint ─────────────────────────────────────────────
 @app.get("/api/search/fuzzy")
 def fuzzy_search_items(
     request: Request,
@@ -1226,10 +1112,6 @@ def fuzzy_search_items(
     q: str = "",
     threshold: float = Query(0.3, ge=0.0, le=1.0),
 ):
-    """
-    Task 3: Executes a typo-tolerant string similarity lookup 
-    using the PostgreSQL pg_trgm extension via Supabase RPC.
-    """
     query = _normalize_search_query(q)
     if not query:
         return {"results": [], "count": 0, "query": query}
@@ -1237,28 +1119,28 @@ def fuzzy_search_items(
     try:
         sb = get_supabase()
         result = sb.rpc('fuzzy_search_products', {
-            'q': query, 
+            'q': query,
             'threshold': threshold
         }).execute()
-        
+
         products = result.data or []
-        
+
         results = []
         for p in products:
             metadata = p.get('metadata') or {}
             price = float(p.get('price') if p.get('price') is not None else metadata.get('price', 0.0))
             results.append({
-                'id': p.get('id'), 
+                'id': p.get('id'),
                 'title': p.get('title', ''),
                 'description': str(p.get('description', ''))[:200],
-                'category': p.get('category', ''), 
+                'category': p.get('category', ''),
                 'rating': p.get('rating', 0.0),
                 'price': price,
                 'avg_sentiment': p.get('avg_sentiment', 0.0),
-                'review_count': p.get('review_count', 0), 
+                'review_count': p.get('review_count', 0),
                 'rank': p.get('rank', 0.0),
             })
-            
+
         return {
             "results": results,
             "count": len(results),
@@ -1300,11 +1182,6 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="JSON uploads must contain valid JSON.")
 
-
-# ── Upload ────────────────────────────────────────────────────────────
-def _validate_upload_bytes(filename, ext, contents):
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(400, f"File too large. Maximum {MAX_UPLOAD_BYTES // (1024*1024)}MB.")
 
 @app.post("/api/upload")
 async def upload_dataset(
@@ -1355,9 +1232,7 @@ async def upload_dataset(
                 title = str(row.get('title', 'Unknown')).strip()
                 if not title or title == 'nan' or title == 'Unknown':
                     continue
-# --- sanitize HTML tags ---
                 title = bleach.clean(title, strip=True)[:500]
-
                 description = str(row.get('description', ''))
                 description = bleach.clean(description, strip=True)[:2000]
 
@@ -1394,16 +1269,19 @@ async def upload_dataset(
         raise HTTPException(400, "Upload failed. Check file format and try again.")
 
 
-# ── Build Models ──────────────────────────────────────────────────────
-@app.post("/api/build")
+def _publish_model_version(version: str) -> None:
+    global ACTIVE_MODEL_VERSION
+    ACTIVE_MODEL_VERSION = version
 
+
+@app.post("/api/build")
 def build_models(
     _csrf: None = Depends(csrf_header_dep),
     _admin: None = Depends(_admin_access_dep),
 ):
     global STAGING_MODEL_VERSION
     try:
-       sb = get_supabase_admin()
+        sb = get_supabase_admin()
     except RuntimeError:
         sb = get_supabase()
     all_products = []
@@ -1429,6 +1307,8 @@ def build_models(
     start_time = time.time()
     content_model = ContentRecommender(item_df)
     collab_model = None
+
+    # FIX: removed misplaced inner `with _model_lock:` that broke try/except
     try:
         purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
         purchases = purchases_result.data or []
@@ -2458,8 +2338,4 @@ if os.path.isdir(frontend_dir):
     @app.get("/dashboard.html")
     def serve_dashboard():
         return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
-
-
-
-        raise HTTPException(status_code=500, detail=str(e))
 
