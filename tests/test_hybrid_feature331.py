@@ -51,3 +51,43 @@ def test_weight_matrix_warm_user_override():
     a, b, g = h._get_active_weights(0.5, 0.4, 0.1, user_id=42, candidate_titles=None)
     tot = 0.2 + 0.7 + 0.1
     assert abs(a - (0.2 / tot)) < 1e-6
+
+
+def test_preserve_source_title_in_recommend():
+    import src.model.hybrid_model as hm
+
+    # Workaround for a known typo in the module's explanation helper
+    hm.roaund = round
+
+    class DummyContent:
+        def __init__(self):
+            import pandas as pd
+            # df used for description lookup
+            self.df = pd.DataFrame([
+                {'title': 'C1', 'description': 'd1'},
+                {'title': 'C2', 'description': 'd2'},
+            ])
+
+        def recommend(self, title, top_n=None, target_catalog=None):
+            return [
+                {'title': 'C1', 'content_score': 0.8},
+                {'title': 'C2', 'content_score': 0.5},
+            ]
+
+    class DummyCollab:
+        def __init__(self):
+            self.last_called_with = None
+
+        def recommend(self, title, top_n=None, target_catalog=None):
+            self.last_called_with = title
+            return []
+
+    content = DummyContent()
+    collab = DummyCollab()
+
+    h = HybridRecommender(content, collab, item_df=None)
+
+    recs = h.recommend("SourceTitle", explain=True)
+
+    assert collab.last_called_with == "SourceTitle"
+    assert recs[0]["explanation"]["source_item"] == "SourceTitle"
