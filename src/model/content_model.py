@@ -140,7 +140,7 @@ class ContentRecommender:
 
         return validate_recommendations(
             results,
-            fallback_fn=lambda top_n: self._popularity_fallback(top_n),
+            fallback_fn=lambda top_n: [r for r in self._popularity_fallback(top_n + 1) if r['title'].lower() != title.lower()],
             top_n=top_n,
             context="content",
             force_padding=True
