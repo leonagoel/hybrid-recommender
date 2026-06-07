@@ -195,6 +195,443 @@ def _get_cached_response(key: str):
         _cache_hits += 1
         return value
 
+# ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
+def _apply_rate_limit(ip_address: str) -> bool:
+    """
+    Applies token-bucket rate limiting dynamically.
+    Optimized to handle Algorithmic Complexity DoS scenarios.
+    """
+    import time
+    import random
+    current_time = time.time()
+    
+    with _rate_limit_lock:
+        bucket = _rate_limit_buckets.get(ip_address)
+        if bucket is None:
+            bucket = {"tokens": 10.0, "last_updated": current_time}
+        else:
+            elapsed = current_time - bucket["last_updated"]
+            bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
+            bucket["last_updated"] = current_time
+            
+        if bucket["tokens"] >= 1.0:
+            bucket["tokens"] -= 1.0
+            _rate_limit_buckets[ip_address] = bucket
+            allowed = True
+        else:
+            allowed = False
+            
+        # Optimization: Move cleanup out of the request loop path
+        global _request_counter
+        _request_counter += 1
+        if random.random() < 0.001 or _request_counter >= CLEANUP_THRESHOLD:
+            _request_counter = 0
+            # Evict empty keys inside amortized window block
+            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v or v.get("tokens", 0.0) <= 0.1]
+            for k in empty_keys:
+                del _rate_limit_buckets[k]
+                
+    return allowed
+def _set_cached_response(key: str, value: Any) -> None:
+    try:
+        with _cache_lock:
+            _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    except (RedisError, TypeError):
+        pass
+
+def _clear_response_cache() -> None:
+    with _cache_lock:
+        _response_cache.clear()
+        global _cache_hits, _cache_misses
+        _cache_hits = 0
+        _cache_misses = 0
+
+
+@app.get("/api/cache_metrics")
+def get_cache_metrics():
+    """Expose simple cache hit/miss metrics and configured TTL."""
+    return {
+        "cache_ttl_seconds": CACHE_TTL_SECONDS,
+        "hits": int(_cache_hits),
+        "misses": int(_cache_misses),
+        "current_items": len(_response_cache),
+    }
+
+
+from backend.services.ml_service import _build_tfidf_for_items, cold_start_recommendation, _precompute_recommendation_cache
+
+
+def _normalize_search_query(query: str) -> str:
+    normalized = " ".join((query or "").split())
+    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.",
+        )
+    return normalized
+
+
+def _escape_like_pattern(value: str) -> str:
+    """Escape special LIKE metacharacters to prevent pattern injection."""
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
+
+
+def _validate_user_id(user_id: str) -> str:
+    """Allowlist-validate user_id to block injection via path parameters."""
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id format.")
+    return user_id
+
+
+def _set_cache_headers(response: Response, status: str) -> None:
+    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
+    response.headers["X-Cache"] = status
+
+
+def _get_rate_limit(limit_env: str, default_limit: int) -> int:
+    try:
+        limit = int(os.environ.get(limit_env, str(default_limit)))
+    except ValueError:
+        return default_limit
+    return max(1, limit)
+
+
+def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "Rate limit exceeded",
+            "message": "Too many requests. Please try again later.",
+        },
+        headers={
+            "x-ratelimit-limit": str(rate_limit),
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": str(reset_time),
+        },
+    )
+
+
+def _apply_rate_limit(
+    request: Request,
+    response: Response,
+    scope: str,
+    limit_env: str,
+    default_limit: int,
+) -> JSONResponse | None:
+    rate_limit = _get_rate_limit(limit_env, default_limit)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    bucket_key = (scope, client_ip)
+    now = time.time()
+
+    with _rate_limit_lock:
+        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
+        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+
+        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = max(0, reset_time)
+
+        if len(timestamps) >= rate_limit:
+            return _rate_limit_exceeded_response(rate_limit, reset_time)
+
+        timestamps.append(now)
+        remaining = rate_limit - len(timestamps)
+        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = max(0, reset_time)
+
+        # Garbage Collection: Remove empty buckets to prevent memory leak
+        empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
+        for k in empty_keys:
+            del _rate_limit_buckets[k]
+
+    response.headers["x-ratelimit-limit"] = str(rate_limit)
+    response.headers["x-ratelimit-remaining"] = str(remaining)
+    response.headers["x-ratelimit-reset"] = str(reset_time)
+    return None
+
+
+
+def _extract_bearer_token(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def _require_admin_access(request: Request) -> None:
+    expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
+    if not expected_token:
+        raise HTTPException(
+            status_code=500,
+            detail="Admin token not configured.",
+        )
+
+    provided_token = (
+        request.headers.get("x-admin-token", "").strip()
+        or _extract_bearer_token(request.headers.get("authorization"))
+    )
+    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
+        raise HTTPException(status_code=401, detail="Admin token required.")
+    def _admin_access_dep(request: Request):
+        _require_admin_access(request)
+
+_admin_access_dep = _require_admin_access
+
+
+
+def _admin_access_dep(request: Request) -> None:
+    """FastAPI dependency wrapper around _require_admin_access."""
+    _require_admin_access(request)
+
+
+def _admin_access_dep(request: Request) -> None:
+    """FastAPI dependency wrapper around _require_admin_access."""
+    _require_admin_access(request)
+
+
+CORS_ORIGINS_ENV = "CORS_ORIGINS"
+DEFAULT_CORS_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
+ALLOWED_CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+ALLOWED_CORS_HEADERS = ["Accept", "Authorization", "Content-Type", "X-Admin-Token", "X-CSRF-Token"]
+
+
+def _normalize_cors_origin(origin: str) -> str:
+    normalized = origin.strip().rstrip("/")
+    if not normalized:
+        raise RuntimeError("CORS_ORIGINS cannot contain empty entries.")
+    if normalized == "*":
+        raise RuntimeError("CORS_ORIGINS must not include wildcard origin '*'.")
+
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError(f"Invalid CORS origin: {origin}")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise RuntimeError(f"Invalid CORS origin: {origin}")
+
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _parse_cors_origins(raw_value: str | None = None) -> list[str]:
+    configured_value = os.environ.get(CORS_ORIGINS_ENV, "") if raw_value is None else raw_value
+    if not configured_value.strip():
+        return list(DEFAULT_CORS_ORIGINS)
+
+    origins = []
+    seen = set()
+    for raw_origin in configured_value.split(","):
+        normalized_origin = _normalize_cors_origin(raw_origin)
+        if normalized_origin not in seen:
+            origins.append(normalized_origin)
+            seen.add(normalized_origin)
+
+    return origins
+
+
+@app.on_event("startup")
+def validate_cors_configuration() -> None:
+    _parse_cors_origins()
+
+
+# CORS
+allowed_origins = _parse_cors_origins()
+
+allow_creds = True
+if "*" in allowed_origins:
+    allow_creds = False
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=allow_creds,
+    allow_methods=["*"],
+    allow_headers=["*", "X-CSRF-Token"],
+)
+
+app.add_middleware(CSRFMiddleware)
+
+# ── Response Time Monitoring ─────────────────────────────────────────
+SLOW_RESPONSE_THRESHOLD_MS = 500.0
+METRICS_SAMPLE_SIZE = 1000
+response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
+METRICS_WINDOW_SECONDS = 600
+response_metrics = {
+    "total_requests": 0,
+    "error_requests": 0,
+}
+response_metrics_lock = Lock()
+
+
+def _percentile(values, percentile):
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    index = math.ceil((percentile / 100) * len(sorted_values)) - 1
+    index = max(0, min(index, len(sorted_values) - 1))
+    return sorted_values[index]
+
+
+def record_response_metric(endpoint, method, status_code, response_time_ms):
+    with response_metrics_lock:
+        response_metrics["total_requests"] += 1
+        if status_code >= 400:
+            response_metrics["error_requests"] += 1
+        response_time_samples.append(
+          (time.time(), response_time_ms)
+        )
+
+        current_time = time.time()
+
+        while (
+          response_time_samples
+          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
+        ):
+          response_time_samples.popleft()
+    log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
+    if log_level == logging.WARNING:
+        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
+                       endpoint, method, status_code, response_time_ms, response_time_ms, endpoint)
+    else:
+        logger.info("API request endpoint=%s method=%s status=%s time=%.2fms",
+                    endpoint, method, status_code, response_time_ms)
+
+
+def reset_response_metrics():
+    with response_metrics_lock:
+        response_metrics["total_requests"] = 0
+        response_metrics["error_requests"] = 0
+        response_time_samples.clear()
+
+
+def get_response_metrics_snapshot():
+    with response_metrics_lock:
+        samples = [value for _, value in response_time_samples]
+        total_requests = response_metrics["total_requests"]
+        error_requests = response_metrics["error_requests"]
+    avg_response_time = sum(samples) / len(samples) if samples else 0.0
+    error_rate = (error_requests / total_requests) * 100 if total_requests else 0.0
+    return {
+        "avg_response_time": round(avg_response_time, 2),
+        "p95_response_time": round(_percentile(samples, 95), 2),
+        "total_requests": total_requests,
+        "error_rate": round(error_rate, 2),
+    }
+
+
+@app.middleware("http")
+async def response_time_middleware(request, call_next):
+    start_time = time.perf_counter()
+    response = None
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        response_time_ms = (time.perf_counter() - start_time) * 1000
+        if response is not None:
+            response.headers["X-Response-Time"] = f"{response_time_ms:.2f}ms"
+        record_response_metric(request.url.path, request.method, status_code, response_time_ms)
+
+
+# ── State ─────────────────────────────────────────────────────────────
+models = {
+    "content": None,
+    "collab": None,
+    "hybrid": None,
+    "ready": False,
+    "item_df": None,
+    "build_time": None,
+    "last_trained_at": None,
+}
+
+MODEL_REGISTRY = {}
+ACTIVE_MODEL_VERSION = None
+SHADOW_MODEL_VERSION = None
+STAGING_MODEL_VERSION = None
+
+SHADOW_LOGS = []
+
+def generate_model_version():
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"1.0.0-{timestamp}"
+
+
+from backend.core.websockets import realtime_hub
+
+
+class WeightsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alpha: float = 0.5
+    beta: float = 0.3
+    gamma: float = 0.2
+
+
+class PurchaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    product_id: int = Field(..., gt=0)
+    rating: float = Field(0.0, ge=0.0, le=5.0)
+    review_text: str = Field("", max_length=1000)
+
+
+class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    item: str = Field(..., min_length=1, max_length=500)
+    feedback: str = Field(..., min_length=1, max_length=2000)
+    thumbs: str = Field(..., pattern=r"^(up|down)$")
+
+class RealtimeRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_title: str
+    top_n: int = 10
+    explain: bool = False
+    target_catalog: Optional[str] = None
+
+
+# ── CSRF Token ───────────────────────────────────────────────────────
+@app.get(
+    "/api/csrf-token",
+    response_model=CSRFTokenResponse,
+    summary="Issue a CSRF token",
+    tags=["Security"],
+)
+def get_csrf_token(response: Response):
+    token = generate_csrf_token()
+    set_csrf_cookie(response, token)
+    return CSRFTokenResponse(csrfToken=token)
+
+
+class FederatedTrainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    n_factors: int = 20
+    epochs: int = 5
+    lr: float = 0.05
+    reg: float = 0.05
+
+
+# ── Health ────────────────────────────────────────────────────────────
+@app.get("/health")
+@app.get("/api/health")
+def health_check():
+    """
+    Low-overhead health check endpoint for component tracking.
+    Checks database (Supabase), model readiness, and cache (Redis).
+    """
+    from src.data.db import get_supabase
+    from redis import Redis
+    from redis.exceptions import RedisError
+    import os
 
 def _set_cached_response(key: str, value: Any) -> None:
     if _redis_client is not None:
@@ -1001,85 +1438,10 @@ def search_items(
             except Exception:
                 sentiment_value = "N/A"
     
-        else:
-            sentiment_value = (
-                raw_sentiment
-                if raw_sentiment != 0.0
-                else "N/A"
-            )
     
-        price = _product_price(p)
-    
-        results.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''),
-            'rating': p.get('rating', 0.0),
-            'price': price,
-            'avg_sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0),
-        })
-    
-    
-    result_count = len(results)
-    
-    payload = {
-        "results": results,
-        "count": result_count,
-        "total": result_count,
-        "query": query,
-        "sort": sort,
-        "is_fallback": not query or is_fuzzy_fallback,
-    }
-    
-    _set_cached_response(cache_key, payload)
-    _set_cache_headers(response, "MISS")
-    
-    return payload
-
-
-# ── Autocomplete ──────────────────────────────────────────────────────
-@app.get("/api/autocomplete")
-def autocomplete_products(
-    q: str = Query("", min_length=1),
-    limit: int = Query(5, ge=1, le=10),
-):
-    sb = get_supabase()
-    query = _normalize_search_query(q)
-    if not query:
-        return {"suggestions": []}
-    try:
-        escaped_query = _escape_like_pattern(query)
-        result = (
-            sb.table('products')
-            .select('title')
-            .ilike('title', f'%{escaped_query}%')
-            .limit(limit)
-            .execute()
-        )
-        suggestions = []
-        seen = set()
-        for item in result.data or []:
-            title = item.get('title', '').strip()
-            if title and title.lower() not in seen:
-                suggestions.append(title)
-                seen.add(title.lower())
-        return {"suggestions": suggestions[:limit]}
-    except Exception as e:
-        logger.error("Autocomplete error: %s", e)
-        raise HTTPException(status_code=500, detail="Autocomplete failed")
-
-
-# ── Fuzzy Search Endpoint ─────────────────────────────────────────────
-@app.get("/api/search/fuzzy")
-def fuzzy_search_items(
-    request: Request,
-    response: Response,
-    q: str = "",
-    threshold: float = Query(0.3, ge=0.0, le=1.0),
-):
+# ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
+@app.get("/api/recommendations/{item_id}/explanation")
+async def get_recommendation_explanation(item_id: str, user_id: str):
     """
     Task 3: Executes a typo-tolerant string similarity lookup 
     using the PostgreSQL pg_trgm extension via Supabase RPC.
@@ -1089,11 +1451,39 @@ def fuzzy_search_items(
         return {"results": [], "count": 0, "query": query}
 
     try:
-        sb = get_supabase()
-        result = sb.rpc('fuzzy_search_products', {
-            'q': query, 
-            'threshold': threshold
-        }).execute()
+        from backend.core.state import models, _model_lock
+        
+        if not models.get("ready") or not models.get("hybrid"):
+            raise HTTPException(status_code=400, detail="Models not built yet.")
+            
+        with _model_lock:
+            hybrid_model = models["hybrid"]
+            weights = hybrid_model.get_weights()
+            alpha, beta, gamma = weights['alpha'], weights['beta'], weights['gamma']
+            
+            item_df = models["item_df"]
+            title = str(item_id)
+            if item_df is not None and "id" in item_df.columns:
+                matches = item_df[item_df["id"].astype(str) == str(item_id)]
+                if not matches.empty:
+                    title = matches.iloc[0]["title"]
+                    
+            recs = hybrid_model.recommend_for_user(user_id, top_n=50, explain=True)
+            
+            content_score = 0.0
+            collaborative_score = 0.0
+            sentiment_score = hybrid_model._sentiment_map.get(title, 0.5)
+            
+            for rec in recs:
+                if rec['title'] == title:
+                    content_score = rec.get('content_score', 0.0)
+                    collaborative_score = rec.get('collab_score', 0.0)
+                    sentiment_score = rec.get('sentiment_score', sentiment_score)
+                    break
+            
+        weighted_content = alpha * content_score
+        weighted_collab = beta * collaborative_score
+        weighted_sentiment = gamma * sentiment_score
         
         products = result.data or []
         
