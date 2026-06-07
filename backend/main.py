@@ -221,8 +221,11 @@ def _get_cached_response(key: str):
             cached = _redis_client.get(key)
             if cached is not None:
                 return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
-            pass
+        except RedisError as re:
+            logger.error(f"Redis connectivity failure for key '{key}': {re}", exc_info=True)
+        except json.JSONDecodeError as jde:
+            logger.error(f"Failed to deserialize JSON data for Redis key '{key}': {jde}", exc_info=True)
+            
     with _cache_lock:
         cached = _response_cache.get(key)
         if not cached:
@@ -230,6 +233,7 @@ def _get_cached_response(key: str):
             return None
         expires_at, value = cached
         return value
+
 
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
 def _apply_rate_limit(ip_address: str) -> bool:
