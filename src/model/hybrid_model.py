@@ -59,6 +59,12 @@ model_kwargs=None):
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        # store configurable weights snapshot (for external override support)
+        self._default_weights = {
+             "alpha": alpha,
+              "beta": beta,
+               "gamma": gamma
+               }
 
         # Expose model kwargs explicitly as structural configuration dictionaries
         self.model_kwargs = model_kwargs or {}
@@ -159,9 +165,19 @@ model_kwargs=None):
         self.alpha = alpha / total
         self.beta = beta / total
         self.gamma = gamma / total
+        self._raw_weights = {
+            "alpha": alpha,
+            "beta": beta,
+            "gamma": gamma
+            }
 
     def get_weights(self):
-        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
+        """Return last configured raw weights (not normalized)."""
+        return getattr(self, "_raw_weights", {
+               "alpha": self.alpha,
+                "beta": self.beta,
+                "gamma": self.gamma
+                 })
 
     def set_fairness(self, enabled=None, key=None, max_share=None):
         if enabled is not None:
