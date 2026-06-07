@@ -30,7 +30,7 @@ FIXED_QUERIES = [
 def calculate_top_k_overlap(list1: list, list2: list, k: int) -> float:
     """Fraction of top-K elements shared between list1 and list2."""
     if k <= 0:
-        return 0.0
+        raise ValueError("k must be a positive integer")
     sub1 = list1[:k]
     sub2 = list2[:k]
     if not sub1 or not sub2:
@@ -43,6 +43,12 @@ def calculate_kendall_tau(list1: list, list2: list) -> float:
     Computes Kendall's Tau correlation on the rank alignment of items.
     Handles disjoint elements by mapping the union of items to a standard rank vector,
     where missing items are assigned a default rank of K + 1.
+
+    Edge cases:
+    - Both empty: returns 1.0 (no disagreement)
+    - One empty, one single-item: returns 0.0 (no overlap possible)
+    - Both single-item and identical: returns 1.0 (perfect correlation)
+    - Both single-item but different: returns 0.0 (no overlap)
     """
     if not list1 and not list2:
         return 1.0

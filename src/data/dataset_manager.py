@@ -29,7 +29,8 @@ class DatasetManager:
             if name is None:
                 name = os.path.basename(file_path_or_buffer)
         else:
-            raw_df = pd.read_csv(file_path_or_buffer, on_bad_lines='skip', low_memory=False)
+            # Accept a DataFrame directly (not a path string)
+            raw_df = file_path_or_buffer
             if name is None:
                 name = 'uploaded_dataset'
 
