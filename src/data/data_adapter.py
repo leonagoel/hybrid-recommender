@@ -9,12 +9,21 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
 def remove_duplicate_headers(df):
-    """
-    Normalizes dataframe column headers by lowercasing and stripping whitespace.
-    If duplicate semantic mappings are found, retains the column with fewer null values.
+    """Normalizes dataframe column headers and eliminates semantic duplicates.
+
+    Converts columns to lowercase and strips trailing spaces. If duplicate 
+    mappings are found, it preserves the column containing the lower count of 
+    missing or null entries.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame whose headers need deduplication.
+
+    Returns:
+        pd.DataFrame: A new or modified DataFrame with unique, cleaned headers.
     """
     normalized_cols = {}
     cols_to_drop = []
+
 
     for col in df.columns:
         # Convert to lowercase and strip spaces to detect duplicates like 'Product_ID' and 'product_id'

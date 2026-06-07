@@ -27,9 +27,6 @@ else:
 # Fix the path mapping so internal src imports work perfectly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-
-
-
 from src.data.dataset_manager import DatasetManager
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
@@ -59,6 +56,47 @@ class RecommendationRequest(BaseModel):
 _content_model: Optional[ContentRecommender] = None
 _collab_model: Optional[CollaborativeRecommender] = None
 _item_df = None
+
+
+def _make_trending_fallback(req: RecommendationRequest) -> dict:
+    fallback_titles = []
+
+    # Use active item dataframe if available
+    if _item_df is not None and len(_item_df) > 0 and "title" in _item_df.columns:
+        # Prefer deterministic order
+        fallback_titles = _item_df.head(max(0, req.top_n))[["title"]].copy()
+        fallback_titles = fallback_titles["title"].astype(str).tolist()
+
+    # Absolute zero-dependency static default array
+    if not fallback_titles:
+        fallback_titles = [
+            "Top Trending Item A",
+            "Top Trending Item B",
+            "Top Trending Item C",
+        ][: max(1, req.top_n)]
+
+    # Format payload items to mimic real recommendation results
+    fallback_recs = [
+        {
+            "title": item,
+            "hybrid_score": 1.0,
+            "content_score": "—",
+            "collab_score": "—",
+            "sentiment_score": "—",
+            "rating": "5.0",
+            "category": "Trending",
+        }
+        for item in fallback_titles[: max(0, req.top_n)]
+    ]
+
+    return {
+        "recommendations": fallback_recs,
+        "model_name": "hybrid",
+        "message": "Models not loaded. Serving trending fallback layout.",
+        "causal_debiasing_applied": False,
+        "fallback": True,
+        "note": "Models not loaded. Serving trending fallback layout.",
+    }
 
 
 @app.on_event("startup")
@@ -94,8 +132,12 @@ def startup_event():
 
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
+    # If models haven't loaded (startup missed datasets), serve fallback instead
     if _content_model is None:
-        raise HTTPException(status_code=503, detail="Models not loaded")
+        try:
+            return _make_trending_fallback(req)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Models not loaded")
 
     try:
         causal_cfg = (
@@ -133,9 +175,7 @@ def get_recommendations(req: RecommendationRequest):
         }
 
     except Exception as exc:
-        # ===================================================================
         # Graceful Popularity Fallback Recovery Layer
-        # ===================================================================
         import logging
 
         logger = logging.getLogger("uvicorn.error")
@@ -145,48 +185,19 @@ def get_recommendations(req: RecommendationRequest):
         )
 
         try:
-            fallback_titles = []
-
-            # Use active item dataframe if available
-            if _item_df is not None and len(_item_df) > 0 and "title" in _item_df.columns:
-                # Prefer deterministic order
-                fallback_titles = _item_df.head(max(0, req.top_n))[["title"]].copy()
-                fallback_titles = fallback_titles["title"].astype(str).tolist()
-
-            # Absolute zero-dependency static default array
-            if not fallback_titles:
-                fallback_titles = [
-                    "Top Trending Item A",
-                    "Top Trending Item B",
-                    "Top Trending Item C",
-                ][: max(1, req.top_n)]
-
-            # Format the payload items to mimic real recommendation results
-            fallback_recs = [
-                {
-                    "title": item,
-                    "hybrid_score": 1.0,
-                    "content_score": "—",
-                    "collab_score": "—",
-                    "sentiment_score": "—",
-                    "rating": "5.0",
-                    "category": "Trending",
-                }
-                for item in fallback_titles[: max(0, req.top_n)]
-            ]
-
-            return {
-                "recommendations": fallback_recs,
-                "model_name": "hybrid",
-                "message": "Primary pipeline encountered an error. Serving trending fallback layout.",
-                "causal_debiasing_applied": False,
-                "fallback": True,
-                "note": "Primary pipeline encountered an error. Serving trending fallback layout.",
-            }
-
+            payload = _make_trending_fallback(req)
+            payload["message"] = (
+                "Primary pipeline encountered an error. Serving trending fallback layout."
+            )
+            payload["note"] = (
+                "Primary pipeline encountered an error. Serving trending fallback layout."
+            )
+            payload["causal_debiasing_applied"] = False
+            return payload
         except Exception as fallback_exc:
             logger.critical(
-                "Critical System Outage: Fallback engine failed: %s", str(fallback_exc)
+                "Critical System Outage: Fallback engine failed: %s",
+                str(fallback_exc),
             )
             raise HTTPException(
                 status_code=500,
