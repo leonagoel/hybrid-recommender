@@ -1,4 +1,6 @@
 from __future__ import annotations
+from fastapi import FastAPI # type: ignore
+from backend.routers import recommend
 
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
@@ -17,6 +19,19 @@ import json
 from redis import Redis
 from redis.exceptions import RedisError
 
+app = FastAPI(
+    title="Hybrid Recommender System Core API",
+    version="2.0.0"
+)
+
+# Register the decoupled router file straight into the core FastAPI lifecycle instance
+app.include_router(recommend.router)
+@app.get("/")
+def read_root():
+    """
+    Global application health-check baseline probe.
+    """
+    return {"status": "online", "engine": "FastAPI Unified Microservices Architecture"}
 try:
     import bleach
 except ModuleNotFoundError:
@@ -31,12 +46,12 @@ except ModuleNotFoundError:
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone, timedelta
-import nltk
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
+import nltk # type: ignore
+from nltk.sentiment.vader import SentimentIntensityAnalyzer # type: ignore
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import (
+from fastapi import ( # type: ignore
     FastAPI,
     Depends,
     Header,
@@ -49,14 +64,14 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
-from typing import Dict, List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi.middleware.cors import CORSMiddleware # type: ignore
+from fastapi.staticfiles import StaticFiles # type: ignore
+from fastapi.responses import FileResponse, JSONResponse # type: ignore
+from pydantic import BaseModel # type: ignore
+from typing import Dict, List, Optional # type: ignore
+from pydantic import BaseModel, ConfigDict, Field # type: ignore
 from typing import Any, Optional
-from dotenv import load_dotenv
+from dotenv import load_dotenv # type: ignore
 
 load_dotenv()
 
@@ -66,7 +81,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from celery.result import AsyncResult
+from celery.result import AsyncResult # type: ignore
 from celery_app import celery_app
 from tasks import compute_recommendations
 
