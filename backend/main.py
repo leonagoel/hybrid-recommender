@@ -12,6 +12,7 @@ import time
 import logging
 import math
 import secrets
+<<<<<<< HEAD
 import bleach
 from collections import deque, Counter, OrderedDict
 import re
@@ -32,23 +33,28 @@ try:
     _redis_client.ping()
 except Exception:
     _redis_client = None
+=======
+import random
+from urllib.parse import urlsplit
+import json
+from redis import Redis
+from redis.exceptions import RedisError
+>>>>>>> upstream/main
 
 try:
     import bleach
 except ModuleNotFoundError:
+    import html
     class bleach:
         @staticmethod
         def clean(value, strip=True):
             if not strip:
                 return str(value)
-            return re.sub(r"<[^>]*>", "", str(value))
+            return html.escape(str(value))
 
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone, timedelta
-
-from collections import defaultdict
-
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
@@ -71,7 +77,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -98,7 +104,51 @@ from hybrid_model import HybridRecommender
 # ── App ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
+<<<<<<< HEAD
+=======
+from celery.result import AsyncResult
+from celery_app import celery_app
+from tasks import compute_recommendations
+
+
+# backend/main.py — corrected imports
+from src.data.db import get_supabase, get_supabase_admin
+from src.data.data_adapter import adapt_data, read_file
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.model.trending_model import TrendingRecommender
+from src.model.issue_triage import triage_issue
+from src.model.federated_learning import train_federated_collaborative_model
+from src.api.response_utils import success_response, error_response
+
+from functools import lru_cache
+
+from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
+
+
+# ── OpenAPI CSRF header dependency ────────────────────────────────────
+async def csrf_header_dep(
+    x_csrf_token: str = Header(
+        ...,
+        alias="X-CSRF-Token",
+        description=(
+            "CSRF token obtained from **GET /api/csrf-token**. "
+            "Required on all state-mutating requests (POST / PUT / PATCH / DELETE). "
+            "Must match the value stored in the `csrftoken` cookie."
+        ),
+    ),
+) -> None:
+    """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
+    pass
+
+# ── App ──────────────────────────────────────────────────────────────
+from src.api.exceptions import register_exception_handlers
+
+>>>>>>> upstream/main
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+register_exception_handlers(app)
 
 @app.on_event("startup")
 def download_nltk_assets():
@@ -126,8 +176,11 @@ _response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
+
+# ── FIX #1292: AMORTIZED RATE LIMIT METRICS GLOBALS ──────────────────
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
+<<<<<<< HEAD
 
 
 class _BoundedTTLCache:
@@ -175,6 +228,13 @@ class _BoundedTTLCache:
 
 
 _response_cache = _BoundedTTLCache(CACHE_MAX_ENTRIES, CACHE_TTL_SECONDS)
+=======
+_request_counter = 0
+CLEANUP_THRESHOLD = 10000  # Defensive boundary check to protect physical memory leak
+
+_cache_lock = Lock()
+_redis_client: Redis | None = None
+>>>>>>> upstream/main
 
 MOCK_PRODUCTS = [
     {
@@ -209,20 +269,47 @@ MOCK_PRODUCTS = [
     },
 ]
 
+_model_lock = Lock()
 
 def _get_slow_response_threshold_ms() -> float:
+    """Retrieve the duration threshold used to classify slow API responses.
+
+    Reads from the RESPONSE_TIME_SLOW_MS environment variable, falling back 
+    to a default threshold if the variable is missing or invalid.
+
+    Returns:
+        float: Threshold duration measured in milliseconds.
+    """
     try:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
-
 def _cache_key(*parts: Any) -> str:
+    """Generate a consistent, lowercased cache string key from input segments.
+
+    Args:
+        *parts (Any): Variable length argument list of components to join.
+
+    Returns:
+        str: A colon-separated, lowercase cache key string with trimmed whitespace.
+    """
     return ":".join(str(part).strip().lower() for part in parts)
 
+def _recommendation_cache_key(
+    title: str,
+    top_n: int = 10,
+    explain: bool = False,
+    user_id: str = "",
+    target_catalog: str = "",
+    model_version: str = "",
+    strategy: str = "",
+) -> str:
+    return _cache_key("recommend", title, top_n, explain, user_id or "", target_catalog or "", model_version or "", strategy or "")
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
+<<<<<<< HEAD
     return _response_cache.get(key)
 
 
@@ -243,11 +330,63 @@ def _set_cached_response(key: str, value: Any) -> None:
             return None
 
         _cache_hits += 1
+=======
+    if _redis_client is not None:
+        try:
+            cached = _redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
+        except (RedisError, json.JSONDecodeError):
+            pass
+    with _cache_lock:
+        cached = _response_cache.get(key)
+        if not cached:
+            _cache_misses += 1
+            return None
+        expires_at, value = cached
+>>>>>>> upstream/main
         return value
 
-
+# ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
+def _apply_rate_limit(ip_address: str) -> bool:
+    """
+    Applies token-bucket rate limiting dynamically.
+    Optimized to handle Algorithmic Complexity DoS scenarios.
+    """
+    import time
+    import random
+    current_time = time.time()
+    
+    with _rate_limit_lock:
+        bucket = _rate_limit_buckets.get(ip_address)
+        if bucket is None:
+            bucket = {"tokens": 10.0, "last_updated": current_time}
+        else:
+            elapsed = current_time - bucket["last_updated"]
+            bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
+            bucket["last_updated"] = current_time
+            
+        if bucket["tokens"] >= 1.0:
+            bucket["tokens"] -= 1.0
+            _rate_limit_buckets[ip_address] = bucket
+            allowed = True
+        else:
+            allowed = False
+            
+        # Optimization: Move cleanup out of the request loop path
+        global _request_counter
+        _request_counter += 1
+        if random.random() < 0.001 or _request_counter >= CLEANUP_THRESHOLD:
+            _request_counter = 0
+            # Evict empty keys inside amortized window block
+            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v or v.get("tokens", 0.0) <= 0.1]
+            for k in empty_keys:
+                del _rate_limit_buckets[k]
+                
+    return allowed
 def _set_cached_response(key: str, value: Any) -> None:
     try:
+<<<<<<< HEAD
         if _redis_client:
             _redis_client.setex(
                 key,
@@ -260,6 +399,13 @@ def _set_cached_response(key: str, value: Any) -> None:
     with _cache_lock:
         _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
+=======
+        with _cache_lock:
+            _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    except (RedisError, TypeError):
+        pass
+
+>>>>>>> upstream/main
 def _clear_response_cache() -> None:
     _response_cache.clear()
     with _cache_lock:
@@ -280,6 +426,7 @@ def get_cache_metrics():
     }
 
 
+<<<<<<< HEAD
 def _build_tfidf_for_items(item_df):
     """Build and return a TF-IDF matrix and vectorizer for the given item_df."""
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -384,6 +531,9 @@ def _precompute_recommendation_cache(
         count += 1
 
     return count
+=======
+from backend.services.ml_service import _build_tfidf_for_items, cold_start_recommendation, _precompute_recommendation_cache
+>>>>>>> upstream/main
 
 
 def _normalize_search_query(query: str) -> str:
@@ -471,6 +621,11 @@ def _apply_rate_limit(
         reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
         reset_time = max(0, reset_time)
 
+        # Garbage Collection: Remove empty buckets to prevent memory leak
+        empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
+        for k in empty_keys:
+            del _rate_limit_buckets[k]
+
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
     response.headers["x-ratelimit-reset"] = str(reset_time)
@@ -501,6 +656,64 @@ def _require_admin_access(request: Request) -> None:
     )
     if not provided_token or not secrets.compare_digest(provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
+    def _admin_access_dep(request: Request):
+        _require_admin_access(request)
+
+_admin_access_dep = _require_admin_access
+
+
+
+def _admin_access_dep(request: Request) -> None:
+    """FastAPI dependency wrapper around _require_admin_access."""
+    _require_admin_access(request)
+
+
+def _admin_access_dep(request: Request) -> None:
+    """FastAPI dependency wrapper around _require_admin_access."""
+    _require_admin_access(request)
+
+
+CORS_ORIGINS_ENV = "CORS_ORIGINS"
+DEFAULT_CORS_ORIGINS = ("http://localhost:8000", "http://127.0.0.1:8000")
+ALLOWED_CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+ALLOWED_CORS_HEADERS = ["Accept", "Authorization", "Content-Type", "X-Admin-Token", "X-CSRF-Token"]
+
+
+def _normalize_cors_origin(origin: str) -> str:
+    normalized = origin.strip().rstrip("/")
+    if not normalized:
+        raise RuntimeError("CORS_ORIGINS cannot contain empty entries.")
+    if normalized == "*":
+        raise RuntimeError("CORS_ORIGINS must not include wildcard origin '*'.")
+
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError(f"Invalid CORS origin: {origin}")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise RuntimeError(f"Invalid CORS origin: {origin}")
+
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _parse_cors_origins(raw_value: str | None = None) -> list[str]:
+    configured_value = os.environ.get(CORS_ORIGINS_ENV, "") if raw_value is None else raw_value
+    if not configured_value.strip():
+        return list(DEFAULT_CORS_ORIGINS)
+
+    origins = []
+    seen = set()
+    for raw_origin in configured_value.split(","):
+        normalized_origin = _normalize_cors_origin(raw_origin)
+        if normalized_origin not in seen:
+            origins.append(normalized_origin)
+            seen.add(normalized_origin)
+
+    return origins
+
+
+@app.on_event("startup")
+def validate_cors_configuration() -> None:
+    _parse_cors_origins()
 
 
 def _admin_access_dep(request: Request) -> None:
@@ -515,13 +728,16 @@ def _get_feedback_storage_client():
 
 
 # CORS
-allowed_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
-allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
+allowed_origins = _parse_cors_origins()
+
+allow_creds = True
+if "*" in allowed_origins:
+    allow_creds = False
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials=allow_creds,
     allow_methods=["*"],
     allow_headers=["*", "X-CSRF-Token"],
 )
@@ -635,6 +851,7 @@ def generate_model_version():
     return f"1.0.0-{timestamp}"
 
 
+<<<<<<< HEAD
 class RealtimeConnectionHub:
     def __init__(self):
         self.active_connections = []
@@ -660,6 +877,9 @@ class RealtimeConnectionHub:
             self.disconnect(connection)
 
 realtime_hub = RealtimeConnectionHub()
+=======
+from backend.core.websockets import realtime_hub
+>>>>>>> upstream/main
 
 
 class WeightsUpdate(BaseModel):
@@ -718,12 +938,66 @@ class FederatedTrainRequest(BaseModel):
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
-    return {
-        "status": "healthy",
+    """
+    Low-overhead health check endpoint for component tracking.
+    Checks database (Supabase), model readiness, and cache (Redis).
+    """
+    from src.data.db import get_supabase
+    from redis import Redis
+    from redis.exceptions import RedisError
+    import os
+
+    result = {
+        "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "model_loaded": models["ready"],
+        "components": {
+            "database": {"status": "unknown", "details": None},
+            "model": {"status": "unknown", "details": None},
+            "cache": {"status": "unknown", "details": None},
+        },
     }
 
+    # 1. Database check (Supabase)
+    try:
+        sb = get_supabase()
+        resp = sb.table("products").select("id").limit(1).execute()
+        if resp.data is not None:
+            result["components"]["database"] = {"status": "healthy", "details": "connected"}
+        else:
+            result["components"]["database"] = {"status": "unhealthy", "details": "query returned no data"}
+            result["status"] = "degraded"
+    except Exception as e:
+        result["components"]["database"] = {"status": "unhealthy", "details": str(e)}
+        result["status"] = "degraded"
+
+    # 2. Model readiness check
+    try:
+        if models.get("ready"):
+            result["components"]["model"] = {"status": "ready", "details": "models loaded"}
+        else:
+            result["components"]["model"] = {"status": "not_ready", "details": "models not built"}
+            result["status"] = "degraded"
+    except Exception as e:
+        result["components"]["model"] = {"status": "error", "details": str(e)}
+        result["status"] = "degraded"
+
+    # 3. Cache (Redis) check
+    try:
+        redis_url = os.environ.get("REDIS_URL", "")
+        if redis_url:
+            r = Redis.from_url(redis_url, decode_responses=True)
+            if r.ping():
+                result["components"]["cache"] = {"status": "healthy", "details": "redis ping successful"}
+            else:
+                result["components"]["cache"] = {"status": "unhealthy", "details": "redis ping failed"}
+                result["status"] = "degraded"
+        else:
+            result["components"]["cache"] = {"status": "not_configured", "details": "REDIS_URL not set"}
+    except Exception as e:
+        result["components"]["cache"] = {"status": "error", "details": str(e)}
+        result["status"] = "degraded"
+
+    return result
 
 # ── API Metrics ───────────────────────────────────────────────────────
 @app.get("/api/version")
@@ -748,6 +1022,7 @@ def get_api_metrics():
 def get_config():
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
+        "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
     }
 
 
@@ -936,10 +1211,26 @@ def search_items(
     except Exception as e:
         logger.warning("Search fallback to mock products: %s", e)
 
+<<<<<<< HEAD
     products = MOCK_PRODUCTS
 
     if query:
         query_lower = query.lower()
+=======
+    if query:
+        query_lower = query.lower()
+
+        products = [
+            p for p in products
+            if query_lower in str(p.get('title', '')).lower()
+            or query_lower in str(p.get('description', '')).lower()
+            or query_lower in str(p.get('category', '')).lower()
+        ]
+
+    for p in products:
+        p['rank'] = 0.0
+
+>>>>>>> upstream/main
 
         products = [
             p for p in products
@@ -1034,6 +1325,7 @@ def search_items(
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
     
+<<<<<<< HEAD
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
@@ -1337,30 +1629,18 @@ def build_models(
         logger.warning("Collaborative model data load failed: %s", e)
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
+=======
+        # Newly added products may still have the default
+        # sentiment value before the NLP batch pipeline runs.
+        # Recompute dynamically so the UI never shows misleading 0.0.
+        if raw_sentiment == 0.0 and reviews:
+            try:
+                from nlp_engine import compute_product_sentiment
+>>>>>>> upstream/main
     
-    version = generate_model_version()
-
-    MODEL_REGISTRY[version] = {
-        "content": content_model,
-        "collab": collab_model,
-        "hybrid": hybrid_model,
-        "item_df": item_df,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "training_metadata": {
-            "items": len(item_df),
-            "has_collaborative": collab_model is not None,
-            "build_time_seconds": build_time,
-        },
-        "status": "staging",
-        "metrics": {
-            "ndcg": 0.0,
-            "latency_ms": 0.0,
-            "error_rate": 0.0,
-        },
-    }
-
-    STAGING_MODEL_VERSION = version
+                computed_sentiment = compute_product_sentiment(reviews)
     
+<<<<<<< HEAD
     models["content"] = content_model
     models["collab"] = collab_model
     models["hybrid"] = hybrid_model
@@ -2076,9 +2356,26 @@ def get_trending_products(
     days: int = Query(7, ge=1, le=365),
     limit: int = Query(10, ge=1, le=100),
 ):
+=======
+                sentiment_value = (
+                    computed_sentiment
+                    if computed_sentiment is not None
+                    else "N/A"
+                )
+    
+            except Exception:
+                sentiment_value = "N/A"
+    
+    
+# ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
+@app.get("/api/recommendations/{item_id}/explanation")
+async def get_recommendation_explanation(item_id: str, user_id: str):
+>>>>>>> upstream/main
     """
-    Get trending products based on recent interactions.
+    Fetches the XAI weight tracking details for recommendations.
+    Provides complete explanation percentages summing exactly to 100%.
     """
+<<<<<<< HEAD
     global TRENDING_CACHE
 
     # Cache for 1 hour
@@ -2379,63 +2676,64 @@ async def github_webhook(request: Request, response: Response):
     signature = request.headers.get("X-Hub-Signature-256")
     _verify_github_signature(body_bytes, signature)
     
+=======
+>>>>>>> upstream/main
     try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+        from backend.core.state import models, _model_lock
         
-    event = request.headers.get("X-GitHub-Event")
-    action = payload.get("action")
-    
-    issue_number = None
-    title = None
-    body = None
-    repo_full_name = None
-    should_triage = False
-    
-    if event == "issues" and action == "opened":
-        issue = payload.get("issue", {})
-        issue_number = issue.get("number")
-        title = issue.get("title", "")
-        body = issue.get("body", "")
-        repo_full_name = payload.get("repository", {}).get("full_name")
-        should_triage = True
-        
-    elif event == "issue_comment" and action == "created":
-        comment = payload.get("comment", {})
-        comment_body = comment.get("body", "").strip()
-        if comment_body.startswith("!retriage"):
-            issue = payload.get("issue", {})
-            issue_number = issue.get("number")
-            title = issue.get("title", "")
-            body = issue.get("body", "")
-            repo_full_name = payload.get("repository", {}).get("full_name")
-            should_triage = True
+        if not models.get("ready") or not models.get("hybrid"):
+            raise HTTPException(status_code=400, detail="Models not built yet.")
             
-    if should_triage and issue_number and repo_full_name:
-        token = os.environ.get("GITHUB_TOKEN", "").strip()
-        triage_res = await triage_issue(
-            issue_number=issue_number,
-            title=title,
-            body=body,
-            repo_full_name=repo_full_name,
-            token=token
-        )
-        return {"status": "success", "action": "triaged", "details": triage_res}
+        with _model_lock:
+            hybrid_model = models["hybrid"]
+            weights = hybrid_model.get_weights()
+            alpha, beta, gamma = weights['alpha'], weights['beta'], weights['gamma']
+            
+            item_df = models["item_df"]
+            title = str(item_id)
+            if item_df is not None and "id" in item_df.columns:
+                matches = item_df[item_df["id"].astype(str) == str(item_id)]
+                if not matches.empty:
+                    title = matches.iloc[0]["title"]
+                    
+            recs = hybrid_model.recommend_for_user(user_id, top_n=50, explain=True)
+            
+            content_score = 0.0
+            collaborative_score = 0.0
+            sentiment_score = hybrid_model._sentiment_map.get(title, 0.5)
+            
+            for rec in recs:
+                if rec['title'] == title:
+                    content_score = rec.get('content_score', 0.0)
+                    collaborative_score = rec.get('collab_score', 0.0)
+                    sentiment_score = rec.get('sentiment_score', sentiment_score)
+                    break
+            
+        weighted_content = alpha * content_score
+        weighted_collab = beta * collaborative_score
+        weighted_sentiment = gamma * sentiment_score
         
-    return {"status": "skipped", "reason": f"No triage actions required for event '{event}' action '{action}'."}
-
-
-# ── Frontend Serving ──────────────────────────────────────────────────
-frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
-
-if os.path.isdir(frontend_dir):
-    app.mount("/static", StaticFiles(directory=frontend_dir), name="frontend")
-
-    @app.get("/")
-    def serve_frontend():
-        return FileResponse(os.path.join(frontend_dir, "index.html"))
-
-    @app.get("/dashboard.html")
-    def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
+        total_score = weighted_content + weighted_collab + weighted_sentiment
+        
+        if total_score > 0:
+            p_content = round((weighted_content / total_score) * 100)
+            p_collab = round((weighted_collab / total_score) * 100)
+            p_sentiment = 100 - (p_content + p_collab)  # Structural safety adjustment
+        else:
+            p_content, p_collab, p_sentiment = 0, 0, 0
+            
+        return {
+            "status": "success",
+            "data": {
+                "item_id": item_id,
+                "weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
+                "breakdown_percentages": {
+                    "content": p_content,
+                    "collaborative": p_collab,
+                    "sentiment": p_sentiment
+                },
+                "explanation": f"Recommended because this item has {p_content}% content similarity, {p_collab}% collaborative relevance, and {p_sentiment}% positive sentiment contribution."
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

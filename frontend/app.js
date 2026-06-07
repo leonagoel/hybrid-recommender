@@ -118,6 +118,10 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
+<<<<<<< HEAD
+=======
+    filters: { category: '', rating: '', sentiment: '' },
+>>>>>>> upstream/main
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -255,7 +259,7 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = '${CONFIG.TOAST_EXIT_MS}ms ease';
+        el.style.transition = `${CONFIG.TOAST_EXIT_MS}ms ease`;
         setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
     }, CONFIG.TOAST_DURATION_MS);
 }
@@ -583,6 +587,7 @@ function initTypeToSearch() {
 }
 
 // ── Search ──────────────────────────────────────────────────────────
+<<<<<<< HEAD
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
@@ -595,6 +600,38 @@ function renderSearchDropdown(results, query) {
         return;
     }
 
+=======
+async function handleSearch(query) {
+    if (!query || query.length < 1) {
+        closeSearchDropdown();
+        return;
+    }
+
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8`);
+            state.searchResults = data.items || [];
+            state.selectedSearchIdx = -1;
+            renderSearchDropdown(state.searchResults, query);
+        } catch {
+            closeSearchDropdown();
+        }
+    }, 200);
+}
+
+function renderSearchDropdown(results, query) {
+    if (!results.length) {
+        els.searchDropdown.innerHTML = `
+            <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
+                No results for "${query}"
+            </div>`;
+        els.searchDropdown.classList.add('active');
+        setSearchDropdownExpanded(true);
+        return;
+    }
+
+>>>>>>> upstream/main
     els.searchDropdown.innerHTML = results.map((r, i) => `
         <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
             tabindex="0"
@@ -1647,29 +1684,6 @@ function setupScrollObserver() {
     state.scrollObserver.observe(els.scrollSentinel);
 }
 
-// ── Search ──────────────────────────────────────────────────────────
-async function handleSearch(query) {
-    if (!query || query.length < 1) {
-        els.typingIndicator.hidden = true;
-        closeSearchDropdown();
-        return;
-    }
-
-    clearTimeout(state.searchTimer);
-    els.typingIndicator.hidden = false;
-    state.searchTimer = setTimeout(async () => {
-        try {
-            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8&sort=${getSelectedSort()}`);
-            state.searchResults = data.results || [];
-            state.selectedSearchIdx = -1;
-            renderSearchDropdown(state.searchResults, query);
-            els.typingIndicator.hidden = true;
-        } catch {
-            closeSearchDropdown();
-            els.typingIndicator.hidden = true;
-        }
-    }, 300);
-}
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {

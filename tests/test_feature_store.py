@@ -26,6 +26,7 @@ def test_missing_user_returns_none(tmp_path):
 
 def test_missing_item_returns_none(tmp_path):
     store = FeatureStore(store_path=str(tmp_path))
+<<<<<<< HEAD
     assert store.get_item_embedding("unknown_item") is None
 
 def test_save_user_embedding_overwrites_existing(tmp_path):
@@ -53,3 +54,6 @@ def test_empty_keys_returns_none(tmp_path):
     store = FeatureStore(store_path=str(tmp_path))
     assert store.get_user_embedding("") is None
     assert store.get_item_embedding("") is None
+=======
+    assert store.get_item_embedding("unknown_item") is None
+>>>>>>> upstream/main

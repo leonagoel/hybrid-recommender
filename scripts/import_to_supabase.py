@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 from pathlib import Path
+<<<<<<< HEAD
 
 # --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -20,11 +21,13 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 
 # Safely append project root to sys.path using absolute system reference strings
 sys.path.insert(0, str(PROJECT_ROOT))
+=======
+>>>>>>> upstream/main
 
 import pandas as pd
 from tqdm import tqdm
-from src.data.data_adapter import adapt_data
-from src.data.db import get_supabase_admin
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def chunked(df, size):
@@ -63,9 +66,19 @@ def build_product_row(row):
 
 def import_dataset(file_path, batch_size=1000, run_sentiment=False):
     """Import a single dataset file into the products table."""
+<<<<<<< HEAD
     # Ensure we use an absolute Path object for cross-platform naming resolution
     file_path_obj = Path(file_path).resolve()
     
+=======
+    file_path_obj = Path(file_path)
+    if not file_path_obj.is_absolute():
+        file_path_obj = (PROJECT_ROOT / file_path_obj).resolve()
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from src.data.data_adapter import adapt_data
+    from src.data.db import get_supabase_admin
+>>>>>>> upstream/main
     print(f"\n{'='*60}")
     print(f"  Importing: {file_path_obj.name}")
     print(f"  Batch size: {batch_size}")
@@ -140,7 +153,14 @@ def main():
     data_dir = PROJECT_ROOT / "datasets"
 
     if args.file:
+<<<<<<< HEAD
         files = [Path(args.file)]
+=======
+        file_path = Path(args.file)
+        if not file_path.is_absolute():
+            file_path = (PROJECT_ROOT / file_path).resolve()
+        files = [file_path]
+>>>>>>> upstream/main
     else:
         # Default: import all CSV/JSON files in datasets/
         files = []

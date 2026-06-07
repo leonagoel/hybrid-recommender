@@ -6,6 +6,9 @@ import sys
 from pathlib import Path  # <-- Added
 from dotenv import load_dotenv  # <-- Added
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from src.api.response_utils import success_response, error_response
+
 from pydantic import BaseModel
 from typing import Optional
 import csv
@@ -16,6 +19,12 @@ from fastapi import Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+<<<<<<< HEAD
+=======
+import logging
+logger = logging.getLogger(__name__)
+
+>>>>>>> upstream/main
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
@@ -36,7 +45,10 @@ from src.model.hybrid_model import HybridRecommender
 from src.model.causal_config import CausalConfig
 
 app = FastAPI(title="Hybrid Recommender API")
+<<<<<<< HEAD
 app.mount("/static", StaticFiles(directory=str(PROJECT_ROOT / "frontend")), name="static")
+=======
+>>>>>>> upstream/main
 # ===========================================================================
 # NEW: Dynamic Configuration Layout Environment Fetching
 # ===========================================================================
@@ -70,9 +82,12 @@ class RecommendationRequest(BaseModel):
 _content_model: Optional[ContentRecommender] = None
 _collab_model: Optional[CollaborativeRecommender] = None
 _item_df = None
+<<<<<<< HEAD
 fairness: Optional[bool] = None
 fairness_key: Optional[str] = None
 fairness_max_share: Optional[float] = None
+=======
+>>>>>>> upstream/main
 
 
 @app.on_event("startup")
@@ -93,7 +108,7 @@ def startup_event():
             break
 
     if not loaded:
-        print("Warning: No datasets found for API startup.")
+        logger.warning("Warning: No datasets found for API startup.")
         return
 
     interaction_df, item_df = dm.merge_all()
@@ -105,7 +120,10 @@ def startup_event():
 
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
+    from src.model.validation import validate_recommendations
+
     if _content_model is None:
+<<<<<<< HEAD
         raise HTTPException(status_code=503, detail="Models not loaded")
 
     # ===================================================================
@@ -122,12 +140,42 @@ def get_recommendations(req: RecommendationRequest):
             else CausalConfig.disabled()
         )
 
+=======
+        fallback_recs = validate_recommendations(
+            None,
+            top_n=req.top_n,
+            default_fallback_items=_item_df["title"].tolist() if _item_df is not None and not _item_df.empty else None,
+            context="hybrid"
+        )
+        return success_response(
+            recommendations=fallback_recs,
+            model_name="hybrid",
+            message="Models not loaded. Serving trending fallback layout.",
+            causal_debiasing_applied=req.use_causal,
+            fallback=True,
+            note="Models not loaded. Serving trending fallback layout."
+        )
+
+    # Try the Primary Hybrid Pipeline
+    try:
+        causal_cfg = (
+            CausalConfig(
+                enabled=True,
+                blend_lambda=req.causal_lambda,
+                clip_max=req.causal_clip,
+            )
+            if req.use_causal
+            else CausalConfig.disabled()
+        )
+
+>>>>>>> upstream/main
         model = HybridRecommender(
             _content_model,
             _collab_model,
             _item_df,
             causal_config=causal_cfg,
         )
+<<<<<<< HEAD
 
         recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
         return {
@@ -230,3 +278,70 @@ async def export_recommendations(request: Request):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+=======
+
+
+
+
+        recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
+        return success_response(
+            recommendations=recs,
+            model_name="hybrid",
+            message="Recommendations retrieved successfully",
+            causal_debiasing_applied=req.use_causal,
+            fallback=False
+        )
+
+    # Graceful Popularity Fallback Recovery Layer (#678)
+    except Exception as exc:
+        import logging
+        logger = logging.getLogger("uvicorn.error")
+        logger.error(f"Primary recommendation engine failed: {str(exc)}. Triggering popularity fallback.")
+        
+        try:
+            # Fallback calculation: safe data pull from the global item dataframe
+            if '_item_df' in globals() and _item_df is not None and not _item_df.empty:
+                # Fall back to picking items safely from your active dataframe asset
+                popular_items = _item_df.head(req.top_n)["title"].tolist()
+            else:
+                # Absolute zero-dependency static default array
+                popular_items = ["Top Trending Item A", "Top Trending Item B", "Top Trending Item C"]
+            
+            # Format the payload items to mimic real recommendation results
+            fallback_recs = [
+                {
+                    "title": item,
+                    "hybrid_score": 1.0,
+                    "content_score": "—",
+                    "collab_score": "—",
+                    "sentiment_score": "—",
+                    "rating": "5.0",
+                    "category": "Trending"
+                }
+                for item in popular_items
+            ]
+            
+            return success_response(
+                recommendations=fallback_recs,
+                model_name="hybrid",
+                message="Primary pipeline encountered an error. Serving trending fallback layout.",
+                causal_debiasing_applied=False,
+                fallback=True,
+                note="Primary pipeline encountered an error. Serving trending fallback layout."
+            )
+            
+        except Exception as fallback_exc:
+            logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
+
+            return JSONResponse(
+                status_code=500,
+                content=error_response(
+                    message="Recommendation engine completely offline.",
+                    model_name="hybrid",
+                    detail="Recommendation engine completely offline."
+                )
+            )
+
+
+
+>>>>>>> upstream/main

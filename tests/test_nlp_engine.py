@@ -102,6 +102,7 @@ class TestSentimentLabel:
         """Test boundary case at -0.05."""
         assert sentiment_label(-0.05) == "negative"
 
+<<<<<<< HEAD
     def test_boundary_precision_cases(self):
         """Test fine boundary values close to 0.05 and -0.05."""
         assert sentiment_label(0.0499) == "neutral"
@@ -109,6 +110,8 @@ class TestSentimentLabel:
         assert sentiment_label(-0.0499) == "neutral"
         assert sentiment_label(-0.0501) == "negative"
 
+=======
+>>>>>>> upstream/main
 
 class TestBatchAnalyze:
     """Test batch_analyze function."""
@@ -202,6 +205,7 @@ class TestAggregateSentimentByItem:
         assert "product_name" in result.columns
 
 
+<<<<<<< HEAD
 class TestComputeProductSentiment:
     """Test compute_product_sentiment function."""
 
@@ -248,5 +252,7 @@ class TestComputeProductSentiment:
         assert isinstance(score, float)
 
 
+=======
+>>>>>>> upstream/main
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1,3 +1,9 @@
+<<<<<<< HEAD
+=======
+"""
+Tests for cold-start recommendation endpoint and cache hit/miss metrics.
+"""
+>>>>>>> upstream/main
 import pandas as pd
 from fastapi.testclient import TestClient
 
@@ -40,4 +46,8 @@ def test_cache_metrics_hit_miss():
     backend._set_cached_response('k1', {'ok': True})
     _ = backend._get_cached_response('k1')
     after = client.get('/api/cache_metrics').json()
+<<<<<<< HEAD
     assert after['hits'] >= 1
+=======
+    assert after['hits'] >= 1
+>>>>>>> upstream/main

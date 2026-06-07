@@ -185,6 +185,7 @@ class TestContentRecommender:
         model = ContentRecommender(sample_item_df, batch_size=2)
         assert model.matrix.shape[0] == len(sample_item_df)
 
+<<<<<<< HEAD
     def test_search_metadata_fallbacks(self, sample_item_df):
         # Create a df missing 'item_id', 'category', 'description', and 'top_reviews' columns
         df = pd.DataFrame({
@@ -214,3 +215,5 @@ class TestContentRecommender:
         # Should gracefully ignore or return empty
         assert isinstance(recs, list)
 
+=======
+>>>>>>> upstream/main

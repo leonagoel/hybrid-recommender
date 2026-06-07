@@ -134,6 +134,7 @@ class TestPropensityModelSpec:
         assert scores['A'] > scores['B']
         assert pm.get_ips_weight('A') < pm.get_ips_weight('B')
 
+<<<<<<< HEAD
     def test_propensity_ips_weight_clipping_bounds(self, sample_catalog):
         pm = PropensityModel(sample_catalog)
         assert pm.get_ips_weight('D', clip_max=2.0) == 2.0
@@ -163,3 +164,5 @@ class TestPropensityModelSpec:
         # Minimum propensity is 1e-6, so weight is 1.0 / 1e-6 = 1000000, capped at clip_max (5.0)
         assert w == 5.0
 
+=======
+>>>>>>> upstream/main

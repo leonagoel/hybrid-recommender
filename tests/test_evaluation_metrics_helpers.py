@@ -156,6 +156,7 @@ class TestNDCGAtK:
         result = _ndcg_at_k(recommended, relevant, 2)
         assert result == 0.0
 
+<<<<<<< HEAD
 
 class TestSupplementaryMetrics:
     """Test supplementary metrics helper functions."""
@@ -183,6 +184,8 @@ class TestSupplementaryMetrics:
         df = pd.DataFrame({"title": ["a"]})
         assert _intra_list_diversity(["a"], df, None) == 0.0
 
+=======
+>>>>>>> upstream/main
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

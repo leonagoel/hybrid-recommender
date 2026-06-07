@@ -2,7 +2,6 @@
 Two-Tower Neural Retrieval Model for Scalable Candidate Generation.
 Uses dual encoders for users and items, indexed via FAISS for sub-10ms retrieval.
 """
-import os
 import numpy as np
 import pandas as pd
 import torch
@@ -114,4 +113,8 @@ class TwoTowerRetrievalEngine:
             if idx == -1 or idx >= len(self.faiss_index_to_item):
                 continue
             retrieved_items.append(self.faiss_index_to_item[idx])
+<<<<<<< HEAD
         return retrieved_items
+=======
+        return retrieved_items
+>>>>>>> upstream/main

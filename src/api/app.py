@@ -56,6 +56,23 @@ with st.sidebar:
         "Top-N Recommendations",
         min_value=5, max_value=20, value=10, step=1,
     )
+    diversity = st.slider(
+        "🌈 Recommendation Diversity",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.1,
+        help="Increase recommendation variety by reducing similar recommendations."
+    )
+
+    serendipity = st.slider(
+        "✨ Recommendation Serendipity",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.0,
+        step=0.1,
+        help="Discover more unexpected recommendations."
+    )
 
     enable_llm_explanations = st.checkbox(
         "🤖 Enable LLM Explanations",
@@ -330,16 +347,15 @@ else:
                         st.info(f"Exact match not found. Using closest match: **{item_title}**")
                     else:
                         item_title = exact.iloc[0]
-
-                    recs = hybrid_model.recommend(item_title, top_n=top_n)
+                        recs = hybrid_model.recommend(item_title,top_n=top_n,explain=True,diversity=diversity,serendipity=serendipity,)
 
                     if collab_model is None:
-                        badge       = "📄 CONTENT-BASED"
-                        badge_color = "green"
+                            badge       = "📄 CONTENT-BASED"
+                            badge_color = "green"
                     else:
-                        badge       = "🔀 HYBRID"
-                        badge_color = "violet"
-                    
+                            badge       = "🔀 HYBRID"
+                            badge_color = "violet"
+                        
                     query_item_for_explanation = item_title
 
                 # ── Generate LLM explanations if enabled ──────────────────
@@ -427,6 +443,30 @@ else:
                             st.write(f"**💡 Why this match:** {explanation}")
                         else:
                             st.write("*Explanation not available*")
+                        # Explainable AI Dashboard
+                        exp = rec.get("explanation")
+                        if exp and exp.get("human_explanation"):
+                            st.info(exp["human_explanation"])
+
+                        if exp:
+                            with st.expander("📊 Explainable AI Dashboard", expanded=False):
+
+                                st.subheader("Model Weights")
+                                st.json(exp.get("active_weights", {}))
+
+                                st.subheader("Component Scores")
+                                st.json(exp.get("component_scores", {}))
+
+                                st.subheader("Weighted Contributions")
+                                st.json(exp.get("weighted_components", {}))
+
+                                st.subheader("Signals")
+                                st.json(exp.get("signals", {}))
+
+                                terms = exp.get("top_content_terms", [])
+                                if terms:
+                                    st.subheader("Top Content Terms")
+                                    st.write(", ".join(map(str, terms)))
 
                         st.divider()
 

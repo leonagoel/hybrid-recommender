@@ -1,10 +1,23 @@
 import pandas as pd
+<<<<<<< HEAD
+=======
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+>>>>>>> upstream/main
 
 from src.model.knowledge_graph_model import KnowledgeGraphRecommender
 
 
 if __name__ == '__main__':
+<<<<<<< HEAD
     df = pd.read_csv('datasets/books.csv')
+=======
+    df = pd.read_csv(PROJECT_ROOT / 'datasets' / 'booksdata.csv')
+>>>>>>> upstream/main
 
     model = KnowledgeGraphRecommender(df)
 

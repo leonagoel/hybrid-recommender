@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import uuid
+from typing import Any, Dict, List, Optional, Tuple
 from src.data.data_adapter import adapt_data
 from src.data.data_preprocessing import preprocess
 
@@ -16,7 +17,7 @@ class DatasetManager:
         self._datasets = {}  # id → { 'name': str, 'raw': df, 'adapted': df, 'meta': dict }
 
     # ------------------------------------------------------------------
-    def load_csv(self, file_path_or_buffer, name=None, catalog=None):
+    def load_csv(self, file_path_or_buffer: Any, name: Optional[str] = None, catalog: Optional[str] = None) -> str:
         """
         Load a CSV file (path string or file-like object) into the manager.
         Returns the dataset ID.

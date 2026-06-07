@@ -10,9 +10,18 @@ def test_minmax_normalization():
     assert res[2] == 1.0
 
 
-def test_zscore_constant_fallback():
+def test_zscore_all_zero_returns_zeros():
+    # An all-zero input represents "no signal".  The correct output is all zeros,
+    # not the midpoint 0.5 that would inject phantom signal into hybrid scores.
     h = HybridRecommender(None, None, item_df=None, normalization='zscore')
     res = h._normalize_scores([0.0, 0.0, 0.0])
+    assert all(v == 0.0 for v in res), "All-zero input must stay all-zero"
+
+
+def test_zscore_constant_nonzero_fallback():
+    # A constant non-zero input is a legitimate tie; 0.5 is the correct midpoint.
+    h = HybridRecommender(None, None, item_df=None, normalization='zscore')
+    res = h._normalize_scores([3.0, 3.0, 3.0])
     assert all(abs(v - 0.5) < 1e-6 for v in res)
 
 
@@ -44,6 +53,7 @@ def test_weight_matrix_warm_user_override():
     assert abs(a - (0.2 / tot)) < 1e-6
 
 
+<<<<<<< HEAD
 def test_diversity_rerank_empty_results():
     h = HybridRecommender(None, None, item_df=None)
     assert h._diversity_rerank([], top_n=5) == []
@@ -66,3 +76,43 @@ def test_diversity_rerank_applies_diversity_penalty():
     assert len(reranked) == 2
     assert reranked[0]["title"] == "A"
     assert reranked[1]["title"] == "C"
+=======
+def test_preserve_source_title_in_recommend():
+    import src.model.hybrid_model as hm
+
+    # Workaround for a known typo in the module's explanation helper
+    hm.roaund = round
+
+    class DummyContent:
+        def __init__(self):
+            import pandas as pd
+            # df used for description lookup
+            self.df = pd.DataFrame([
+                {'title': 'C1', 'description': 'd1'},
+                {'title': 'C2', 'description': 'd2'},
+            ])
+
+        def recommend(self, title, top_n=None, target_catalog=None):
+            return [
+                {'title': 'C1', 'content_score': 0.8},
+                {'title': 'C2', 'content_score': 0.5},
+            ]
+
+    class DummyCollab:
+        def __init__(self):
+            self.last_called_with = None
+
+        def recommend(self, title, top_n=None, target_catalog=None):
+            self.last_called_with = title
+            return []
+
+    content = DummyContent()
+    collab = DummyCollab()
+
+    h = HybridRecommender(content, collab, item_df=None)
+
+    recs = h.recommend("SourceTitle", explain=True)
+
+    assert collab.last_called_with == "SourceTitle"
+    assert recs[0]["explanation"]["source_item"] == "SourceTitle"
+>>>>>>> upstream/main

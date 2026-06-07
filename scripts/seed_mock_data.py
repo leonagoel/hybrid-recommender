@@ -16,6 +16,7 @@ import argparse
 import secrets
 import string
 from pathlib import Path
+<<<<<<< HEAD
 
 # --- FIX FOR ISSUE #490: Standardize absolute resource paths using pathlib utilities ---
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -23,9 +24,10 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 
 # Safely append project root to sys.path using absolute system reference strings
 sys.path.insert(0, str(PROJECT_ROOT))
+=======
+>>>>>>> upstream/main
 
 from tqdm import tqdm
-from src.data.db import get_supabase_admin
 
 
 FIRST_NAMES = [
@@ -35,6 +37,12 @@ FIRST_NAMES = [
     "Jamie", "Kendall", "Peyton", "Charlie", "Frankie", "Jesse", "Remy", "Shay",
     "Lane", "Silver", "Storm", "River", "Wren", "Aspen", "Cedar", "Indigo",
 ]
+
+def generate_mock_password(length: int = 12) -> str:
+    """Generate a secure random password for mock users."""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
 
 REVIEW_TEMPLATES = [
     "Great product, really enjoyed it!",
@@ -55,25 +63,9 @@ REVIEW_TEMPLATES = [
 ]
 
 
-def generate_mock_password(length=24):
-    """Generate a high-entropy password for throwaway mock accounts."""
-    if length < 16:
-        raise ValueError("Mock user passwords must be at least 16 characters.")
-
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
-    required = [
-        secrets.choice(string.ascii_lowercase),
-        secrets.choice(string.ascii_uppercase),
-        secrets.choice(string.digits),
-        secrets.choice("!@#$%^&*()-_=+"),
-    ]
-    remaining = [secrets.choice(alphabet) for _ in range(length - len(required))]
-    chars = required + remaining
-    secrets.SystemRandom().shuffle(chars)
-    return ''.join(chars)
-
-
-def seed_mock_data(num_users=100, num_purchases=5000):
+def seed_mock_data(num_users: int = 100, num_purchases: int = 5000) -> None:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from src.data.db import get_supabase_admin
     sb = get_supabase_admin()
 
     # Get available products

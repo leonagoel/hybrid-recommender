@@ -45,24 +45,27 @@ def get_supabase_admin() -> Client:
     """
     Return the shared admin Supabase client (bypasses RLS).
 
-    Same lazy singleton pattern as get_supabase().
-    Raises RuntimeError if required env vars are absent.
+    Same lazy double-checked singleton pattern as get_supabase().
+
+    Raises:
+        RuntimeError: if SUPABASE_URL or SUPABASE_SERVICE_KEY env vars
+            are not set, or if the client cannot be created.
     """
     global _admin_client
     if _admin_client is None:
-        url = os.environ.get("SUPABASE_URL", "")
-        key = os.environ.get("SUPABASE_SERVICE_KEY", "")
-        
-        # FIX FOR ISSUE #487: Dynamic fallback check prevents global execution crashes
-        if not url or not key:
-            logger.warning("Supabase admin credentials missing (SUPABASE_URL/SUPABASE_SERVICE_KEY). Admin features disabled.")
-            return None
-            
-        try:
-            from supabase import create_client
-            _admin_client = create_client(url, key)
-        except Exception as e:
-            logger.error(f"Failed to initialize Supabase admin client: {e}")
-            return None
-            
+        with _admin_client_lock:
+            if _admin_client is None:  # re-check after acquiring lock
+                url = os.environ.get("SUPABASE_URL", "")
+                key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+                if not url or not key:
+                    raise RuntimeError(
+                        "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env"
+                    )
+                try:
+                    _admin_client = create_client(url, key)
+                    logger.info("Supabase admin client initialised.")
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to initialise Supabase admin client: {e}"
+                    ) from e
     return _admin_client

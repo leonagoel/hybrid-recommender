@@ -506,6 +506,10 @@ def test_cold_start_user():
     df = sample_data()
     model = CollaborativeRecommender(df)
     results = model.predict_for_user(999)
+<<<<<<< HEAD
+=======
+
+>>>>>>> upstream/main
     assert len(results) > 0
     assert all(r.get("fallback") is True for r in results)
 

@@ -38,6 +38,7 @@ class TestCausalConfigSpec:
         with pytest.raises(ValueError, match="score_key must be a non-empty string"):
             CausalConfig(score_key="").validate()
 
+<<<<<<< HEAD
     def test_exact_lambda_clip_max_boundaries(self):
         # blend_lambda at lower bound 0.0
         cfg_lower = CausalConfig(blend_lambda=0.0)
@@ -51,6 +52,8 @@ class TestCausalConfigSpec:
         cfg_clip = CausalConfig(clip_max=0.0001)
         assert cfg_clip.validate().clip_max == 0.0001
 
+=======
+>>>>>>> upstream/main
     def test_presets(self):
         disabled = CausalConfig.disabled()
         assert disabled.enabled is False
@@ -89,6 +92,7 @@ class TestCausalConfigSpec:
     def test_from_dict_validation_error(self):
         with pytest.raises(ValueError):
             CausalConfig.from_dict({'blend_lambda': -5.0})
+<<<<<<< HEAD
 
     def test_from_dict_non_numeric_lambda_raises_value_error(self):
         with pytest.raises(ValueError):
@@ -112,3 +116,5 @@ class TestCausalConfigSpec:
         aggressive_2 = CausalConfig.aggressive()
         assert aggressive_1 is not aggressive_2
         assert aggressive_1.validate() is aggressive_1
+=======
+>>>>>>> upstream/main

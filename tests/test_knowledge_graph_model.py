@@ -24,6 +24,7 @@ def test_kg_recommendations():
     assert len(recs) > 0
     assert 'title' in recs[0]
     assert 'kg_score' in recs[0]
+<<<<<<< HEAD
 
 
 def test_kg_recommendations_invalid_title():
@@ -53,3 +54,5 @@ def test_kg_recommendations_missing_optional_columns():
     model = KnowledgeGraphRecommender(df)
     recs = model.recommend('Book A', top_n=1)
     assert len(recs) == 1
+=======
+>>>>>>> upstream/main

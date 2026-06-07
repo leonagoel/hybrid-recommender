@@ -478,6 +478,7 @@ class TestHybridCausalIntegration:
         w = d.get_ips_weight('Rare E')
         assert w <= 100.0
 
+<<<<<<< HEAD
     def test_debias_batch_missing_score_key_defaults_to_zero(self, item_df):
         d = CausalDebiaser(item_df, blend_lambda=0.5)
         items = [{'title': 'Blockbuster A'}]
@@ -496,3 +497,5 @@ class TestHybridCausalIntegration:
         finally:
             d._propensity_model.get_ips_weight = original_get_ips_weight
 
+=======
+>>>>>>> upstream/main
