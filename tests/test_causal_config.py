@@ -76,3 +76,43 @@ class TestCausalConfigSpec:
     def test_from_dict_validation_error(self):
         with pytest.raises(ValueError):
             CausalConfig.from_dict({'blend_lambda': -5.0})
+
+    def test_to_dict_keys(self):
+        cfg = CausalConfig()
+        d = cfg.to_dict()
+        assert set(d.keys()) == {'enabled', 'blend_lambda', 'clip_max', 'score_key'}
+
+    def test_roundtrip_identical(self):
+        original = CausalConfig(enabled=True, blend_lambda=0.75, clip_max=4.2, score_key='custom')
+        d = original.to_dict()
+        restored = CausalConfig.from_dict(d)
+        assert restored.enabled == original.enabled
+        assert restored.blend_lambda == original.blend_lambda
+        assert restored.clip_max == original.clip_max
+        assert restored.score_key == original.score_key
+
+    def test_from_dict_missing_keys_uses_defaults(self):
+        restored = CausalConfig.from_dict({'enabled': False})
+        assert restored.enabled is False
+        assert restored.blend_lambda == 0.5  # default
+        assert restored.clip_max == 5.0  # default
+        assert restored.score_key == 'hybrid_score'  # default
+
+    def test_disabled_preset_to_dict(self):
+        cfg = CausalConfig.disabled()
+        d = cfg.to_dict()
+        assert d['enabled'] is False
+
+    def test_conservative_preset_to_dict(self):
+        cfg = CausalConfig.conservative()
+        d = cfg.to_dict()
+        assert d['enabled'] is True
+        assert d['blend_lambda'] == 0.3
+        assert d['clip_max'] == 3.0
+
+    def test_aggressive_preset_to_dict(self):
+        cfg = CausalConfig.aggressive()
+        d = cfg.to_dict()
+        assert d['enabled'] is True
+        assert d['blend_lambda'] == 0.8
+        assert d['clip_max'] == 8.0

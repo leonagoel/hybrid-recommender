@@ -77,7 +77,8 @@ class FeatureStore:
         """Validate joblib magic bytes before deserializing."""
         with open(path, "rb") as f:
             header = f.read(2)
-        if header[:1] not in (b'\x78', b'\x1f'):
+        # Joblib files use zlib compression (0x78) or numpy pickle format (0x80)
+        if header[:1] not in (b'\x78', b'\x80'):
             raise RuntimeError(
                 f"Invalid file format for '{path}'. Expected joblib file."
             )
@@ -89,19 +90,23 @@ class FeatureStore:
 
     def _load(self, filename, target):
         path = os.path.join(self.store_path, filename)
-        if os.path.exists(path) and not target:
+        if os.path.exists(path):
+            # Always verify integrity on every load, regardless of cache state
             self._verify_hash(path)
             self._validate_magic_bytes(path)
-            result = subprocess.run(
-                [sys.executable, "-c",
-                 f"import joblib, json; data = joblib.load('{path}'); "
-                 f"print(json.dumps({{k: v.tolist() "
-                 f"if hasattr(v, 'tolist') else v "
-                 f"for k, v in data.items()}}))"],
-                capture_output=True, text=True, timeout=30
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"Failed to load '{path}' safely: {result.stderr}"
+
+            # Only re-load from disk if target dict is empty (not yet populated)
+            if not target:
+                result = subprocess.run(
+                    [sys.executable, "-c",
+                     f"import joblib, json; data = joblib.load('{path}'); "
+                     f"print(json.dumps({{k: v.tolist() "
+                     f"if hasattr(v, 'tolist') else v "
+                     f"for k, v in data.items()}}))"],
+                    capture_output=True, text=True, timeout=30
                 )
-            target.update(joblib.load(path))
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"Failed to load '{path}' safely: {result.stderr}"
+                    )
+                target.update(joblib.load(path))
