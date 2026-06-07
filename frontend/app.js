@@ -1,7 +1,85 @@
+import { initBenchmarkingDashboard } from './js/benchmarking.js';
+
+// ===== THEME TOGGLE =====
+const themeToggle = document.getElementById('theme-toggle');
+const root = document.documentElement;
+
+function initThemeToggle() {
+  if (!themeToggle) return;
+
+  const savedTheme = localStorage.getItem('theme') || 'dark';
+
+  root.setAttribute('data-theme', savedTheme);
+  themeToggle.textContent = savedTheme === 'dark' ? '🌙' : '☀️';
+
+  themeToggle.setAttribute(
+    'aria-label',
+    savedTheme === 'dark'
+      ? 'Switch to light mode'
+      : 'Switch to dark mode'
+  );
+
+  themeToggle.addEventListener('click', () => {
+    const current = root.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+
+    root.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+    themeToggle.textContent = next === 'dark' ? '🌙' : '☀️';
+
+    themeToggle.setAttribute(
+      'aria-label',
+      next === 'dark'
+        ? 'Switch to light mode'
+        : 'Switch to dark mode'
+    );
+  });
+
+  themeToggle.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      themeToggle.click();
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', initThemeToggle);
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    }[char]));
+}
+
 /**
  * HybridRec — Frontend Application v3
  * Supabase Auth + PostgreSQL FTS Search + Modern UI
  */
+
+// ── CSRF Token ──────────────────────────────────────────────────────
+// Fetched once from /api/csrf-token and kept in memory.
+// Every mutating request (POST / PUT / PATCH / DELETE) must include it
+// as the X-CSRF-Token header to satisfy the Double Submit Cookie check.
+let _csrfToken = null;
+
+async function initCsrf() {
+    try {
+        const res = await fetch('/api/csrf-token');
+        if (!res.ok) throw new Error(`CSRF fetch failed: ${res.status}`);
+        const data = await res.json();
+        _csrfToken = data.csrfToken || null;
+    } catch (e) {
+        console.warn('CSRF init failed:', e.message);
+    }
+}
+
+function _csrfHeaders() {
+    return _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {};
+}
 
 // ── Supabase Client ─────────────────────────────────────────────────
 // Loaded dynamically from backend — no hardcoded credentials
@@ -22,6 +100,7 @@ async function initSupabase() {
     return sbClient;
 }
 
+
 // ── State ───────────────────────────────────────────────────────────
 const state = {
     user: null,
@@ -32,14 +111,14 @@ const state = {
     isLoading: false,
     hasMore: true,
     searchTimer: null,
-    searchResults: [],
+    searchRequestId: 0,
+    isSearchLoading: false,
+    autocompleteResults: [],
     selectedSearchIdx: -1,
     isAuthSignUp: false,
     modelReady: false,
-    recommendationSocket: null,
-    realtimeReady: false,
-    realtimeFallbackTimer: null,
-    pendingRecommendationTitle: null,
+    scrollObserver: null,
+    filters: { category: '', rating: '', sentiment: '' },
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -47,7 +126,9 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
     searchInput: $('search-input'),
+    searchContainer: $('search-container'),
     searchDropdown: $('search-dropdown'),
+    searchSpinner: $('search-spinner'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),
     authLabel: $('auth-label'),
@@ -86,9 +167,65 @@ const els = {
     weightAlpha: $('weight-alpha'),
     weightBeta: $('weight-beta'),
     weightGamma: $('weight-gamma'),
+    productModal: $('product-modal'),
+    productModalClose: $('product-modal-close'),
+    modalProductTitle: $('modal-product-title'),
+    modalProductCategory: $('modal-product-category'),
+    modalProductRating: $('modal-product-rating'),
+    modalProductSentiment: $('modal-product-sentiment'),
+    modalProductDescription: $('modal-product-description'),
+    modalProductScore: $('modal-product-score'),
+    modalRecommendationsList: $('modal-recommendations-list'),
+    categoryFilter: $('category-filter'),
+    sortFilter: $('sort-filter'),
+    ratingFilter: $('rating-filter'),
+    sentimentFilter: $('sentiment-filter'),
+    clearFiltersBtn: $('clear-filters'),
+};
+// ===== CONFIG=====
+const CONFIG = {
+  TOAST_DURATION_MS: 3500,
+  TOAST_EXIT_MS: 300,
+  SEARCH_DEBOUNCE_MS: 300,
+  SENTIMENT_POSITIVE: 0.05,
+  SENTIMENT_NEGATIVE: -0.05,
+  SEARCH_LIMIT: 5,
+  MAX_COMPARE_ITEMS: 20
 };
 
+function loadPreferences() {
+    const saved = localStorage.getItem('userPreferences');
+
+    if (!saved) return;
+
+    try {
+        const prefs = JSON.parse(saved);
+
+        state.filters.category = prefs.category || '';
+        state.filters.rating = prefs.rating || '';
+        state.filters.sentiment = prefs.sentiment || '';
+
+        els.categoryFilter.value = state.filters.category;
+        els.ratingFilter.value = state.filters.rating;
+        els.sentimentFilter.value = state.filters.sentiment;
+
+    } catch (err) {
+        console.warn('Failed to load preferences:', err);
+    }
+}
 // ── Utilities ───────────────────────────────────────────────────────
+function setPageMeta(title, description) {
+    if (title) {
+        document.title = `${title} — HybridRec`;
+    } else {
+        document.title = 'HybridRec — Smart Recommendations';
+    }
+    const metaDesc = document.querySelector('meta[name="description"]');
+    if (metaDesc && description) {
+        metaDesc.setAttribute('content', description);
+    }
+}
+
 function toast(message, type = 'info') {
     const el = document.createElement('div');
     el.className = `toast ${type}`;
@@ -97,9 +234,9 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = '300ms ease';
-        setTimeout(() => el.remove(), 300);
-    }, 3500);
+        el.style.transition = `${CONFIG.TOAST_EXIT_MS}ms ease`;
+        setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
+    }, CONFIG.TOAST_DURATION_MS);
 }
 
 function createSkeletonCard() {
@@ -128,6 +265,13 @@ function showSkeletons(container, count = 8) {
         .join("");
 }
 
+function setSearchLoading(isLoading) {
+    state.isSearchLoading = isLoading;
+    els.searchContainer.classList.toggle('is-loading', isLoading);
+    els.searchSpinner.hidden = !isLoading;
+    els.searchInput.setAttribute('aria-busy', String(isLoading));
+}
+
 function renderStars(rating) {
     const full = Math.floor(rating);
     const half = rating - full >= 0.5;
@@ -140,10 +284,104 @@ function renderStars(rating) {
     return html;
 }
 
+function formatReviewCount(count) {
+    if (!count || count === 0) {
+        return "No reviews yet";
+    }
+
+    if (count >= 1000) {
+        return `(${(count / 1000).toFixed(1)}k reviews)`;
+    }
+
+    return `(${count} reviews)`;
+}
+
 function sentimentBadge(score) {
-    if (score > 0.05) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
-    if (score < -0.05) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
+    if (score > CONFIG.SENTIMENT_POSITIVE) return '<span class="product-card__sentiment sentiment-positive">Positive</span>';
+    if (score < CONFIG.SENTIMENT_NEGATIVE) return '<span class="product-card__sentiment sentiment-negative">Negative</span>';
     return '<span class="product-card__sentiment sentiment-neutral">Neutral</span>';
+}
+
+function applyFilters(products) {
+    // Pre-calculate chip states to avoid recomputing for every product
+    const hasAll = state.activeChips.has('all');
+    const activeCategories = Array.from(state.activeChips).filter(c => c.startsWith('category:')).map(c => c.split(':')[1]);
+    const hasTopRated = state.activeChips.has('rating:top-rated');
+    const hasPositive = state.activeChips.has('sentiment:positive');
+    const hasTrending = state.activeChips.has('special:trending');
+
+    return products.filter((p) => {
+
+        const matchesCategory =
+            !state.filters.category ||
+            p.category === state.filters.category;
+
+        const matchesRating =
+            !state.filters.rating ||
+            (p.rating || 0) >= Number(state.filters.rating);
+
+        let sentiment = 'neutral';
+
+        if ((p.avg_sentiment || 0) > CONFIG.SENTIMENT_POSITIVE) {
+            sentiment = 'positive';
+        } else if ((p.avg_sentiment || 0) < CONFIG.SENTIMENT_NEGATIVE) {
+            sentiment = 'negative';
+        }
+
+        const matchesSentiment =
+            !state.filters.sentiment ||
+            sentiment === state.filters.sentiment;
+
+        let traditionalMatch = matchesCategory && matchesRating && matchesSentiment;
+
+        // Chip logic
+        if (hasAll) {
+            return traditionalMatch;
+        }
+
+        let pass = true;
+
+        // Categories OR logic
+        if (activeCategories.length > 0) {
+            if (!activeCategories.includes(p.category)) pass = false;
+        }
+
+        // Ratings & Sentiments AND logic
+        if (hasTopRated && (p.rating || 0) < 4.0) pass = false;
+        if (hasPositive && sentiment !== 'positive') pass = false;
+        if (hasTrending && (p.rating || 0) < 4.2) pass = false;
+
+        return traditionalMatch && pass;
+    });
+}
+
+function sortProducts(products, sortType) {
+    const sorted = [...products];
+
+    switch (sortType) {
+        case 'price-low':
+            return sorted.sort((a, b) => (a.price || 0) - (b.price || 0));
+
+        case 'price-high':
+            return sorted.sort((a, b) => (b.price || 0) - (a.price || 0));
+
+        case 'rating':
+            return sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+
+        case 'relevance':
+        default:
+            return sorted;
+    }
+}
+
+function applySorting() {
+    const sortType = els.sortFilter?.value || 'relevance';
+    const sortedProducts = sortProducts(state.allProducts || [], sortType);
+    renderProducts(sortedProducts, { append: false, skipSorting: true });
+}
+
+function getSelectedSort() {
+    return encodeURIComponent(els.sortFilter?.value || 'relevance');
 }
 
 function categoryIcon(cat) {
@@ -161,6 +399,37 @@ function categoryIcon(cat) {
     return '📦';
 }
 
+// ── Wishlist ────────────────────────────────────────────────────────
+function getWishlist() {
+    return JSON.parse(localStorage.getItem('wishlist')) || [];
+}
+
+function saveWishlist(items) {
+    localStorage.setItem('wishlist', JSON.stringify(items));
+}
+
+function isWishlisted(title) {
+    return getWishlist().some(item => item.title === title);
+}
+
+function toggleWishlist(product) {
+    let wishlist = getWishlist();
+
+    const exists = wishlist.some(item => item.title === product.title);
+
+    if (exists) {
+        wishlist = wishlist.filter(item => item.title !== product.title);
+        toast('Removed from wishlist', 'info');
+    } else {
+        wishlist.push(product);
+        toast('Added to wishlist', 'success');
+    }
+
+    saveWishlist(wishlist);
+
+    renderProducts(state.allProducts, { append: false });
+}
+
 // ── API Helpers ─────────────────────────────────────────────────────
 const API = {
     async get(url) {
@@ -171,7 +440,7 @@ const API = {
     async post(url, data) {
         const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -180,7 +449,7 @@ const API = {
     async put(url, data) {
         const res = await fetch(url, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ..._csrfHeaders() },
             body: JSON.stringify(data),
         });
         if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -319,11 +588,14 @@ function renderSearchDropdown(results, query) {
                 No results for "${query}"
             </div>`;
         els.searchDropdown.classList.add('active');
+        setSearchDropdownExpanded(true);
         return;
     }
 
     els.searchDropdown.innerHTML = results.map((r, i) => `
         <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
+            tabindex="0"
+            role="button"
              data-title="${r.title}" data-idx="${i}">
             <span style="font-size:20px;">${categoryIcon(r.category)}</span>
             <div class="search-result__info">
@@ -333,58 +605,170 @@ function renderSearchDropdown(results, query) {
                     ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
                 </div>
             </div>
-        </div>
-    `).join('');
-    els.searchDropdown.classList.add('active');
+        `;
+        })
+        .join('');
 
-    // Click handlers
+    els.searchDropdown.classList.add('active');
+    setSearchDropdownExpanded(true);
+
+    // Click suggestion
     els.searchDropdown.querySelectorAll('.search-result').forEach((el) => {
         el.addEventListener('click', () => {
             const title = el.dataset.title;
             selectSearchResult(title);
         });
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        el.click();
+            }
+        });
+        el.addEventListener('keydown', (e) => {
+    const items = [...els.searchDropdown.querySelectorAll('.search-result')];
+    const currentIndex = items.indexOf(el);
+
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = items[(currentIndex + 1) % items.length];
+        next.focus();
+    }
+
+    if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = items[(currentIndex - 1 + items.length) % items.length];
+        prev.focus();
+    }
+});
     });
 }
 
 function highlightMatch(text, query) {
-    if (!query) return text;
-    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    return text.replace(regex, '<strong>$1</strong>');
+    const safeText = escapeHtml(text);
+    if (!query) return safeText;
+    const safeQuery = escapeHtml(query);
+    const regex = new RegExp(`(${safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return safeText.replace(regex, '<strong>$1</strong>');
 }
 
 function selectSearchResult(title) {
     els.searchInput.value = title;
+
     closeSearchDropdown();
+
+    // Trigger actual search
     loadSearchResults(title);
+
+    // Optional recommendation refresh
     loadRecommendations(title);
+}
+
+function setSearchDropdownExpanded(expanded) {
+    els.searchInput.setAttribute('aria-expanded', expanded ? 'true' : 'false');
 }
 
 function closeSearchDropdown() {
     els.searchDropdown.classList.remove('active');
     state.selectedSearchIdx = -1;
+    setSearchDropdownExpanded(false);
 }
 
+// Close dropdown when clicking outside
+window.addEventListener('click', (e) => {
+    const container = document.getElementById('search-container');
+
+    if (!container.contains(e.target)) {
+        closeSearchDropdown();
+    }
+});
+
 function handleSearchKeydown(e) {
-    const results = state.searchResults;
-    if (!results.length || !els.searchDropdown.classList.contains('active')) return;
+    const results = state.autocompleteResults;
+
+    if (e.key === 'Enter') {
+        e.preventDefault();
+
+        if (state.selectedSearchIdx >= 0 && results.length && els.searchDropdown.classList.contains('active')) {
+            const selected = results[state.selectedSearchIdx];
+            selectSearchResult(selected);
+        } else if (els.searchInput.value.trim().length > 0) {
+            selectSearchResult(els.searchInput.value.trim());
+        }
+        return;
+    }
+
+    if (e.key === 'Escape') {
+        closeSearchDropdown();
+        return;
+    }
+
+    if (!results.length || !els.searchDropdown.classList.contains('active')) {
+        return;
+    }
 
     if (e.key === 'ArrowDown') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.min(state.selectedSearchIdx + 1, results.length - 1);
+
+        state.selectedSearchIdx = Math.min(
+            state.selectedSearchIdx + 1,
+            results.length - 1
+        );
+
         renderSearchDropdown(results, els.searchInput.value);
-    } else if (e.key === 'ArrowUp') {
+    }
+
+    else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, -1);
+
+        state.selectedSearchIdx = Math.max(
+            state.selectedSearchIdx - 1,
+            0
+        );
+
         renderSearchDropdown(results, els.searchInput.value);
-    } else if (e.key === 'Enter' && state.selectedSearchIdx >= 0) {
-        e.preventDefault();
-        selectSearchResult(results[state.selectedSearchIdx].title);
-    } else if (e.key === 'Escape') {
-        closeSearchDropdown();
     }
 }
 
+
+
+function handleSearch(query) {
+    if (!query || query.trim().length < 1) {
+        state.searchRequestId++;
+        setSearchLoading(false);
+        closeSearchDropdown();
+        return;
+    }
+
+    clearTimeout(state.searchTimer);
+
+    // 300ms debounce
+    state.searchTimer = setTimeout(async () => {
+        const requestId = ++state.searchRequestId;
+        setSearchLoading(true);
+        try {
+            const data = await API.get(
+                `/api/autocomplete?q=${encodeURIComponent(query)}&limit=${CONFIG.SEARCH_LIMIT}`
+            );
+
+            if (requestId !== state.searchRequestId) return;
+            state.autocompleteResults = data.suggestions || [];
+            state.selectedSearchIdx = -1;
+
+            renderSearchDropdown(state.autocompleteResults, query);
+        } catch (err) {
+            if (requestId === state.searchRequestId) {
+                console.error('Autocomplete failed:', err);
+                closeSearchDropdown();
+            }
+        } finally {
+            if (requestId === state.searchRequestId) setSearchLoading(false);
+        }
+    }, CONFIG.SEARCH_DEBOUNCE_MS);
+}
+
+// ── Product Loading ─────────────────────────────────────────────────
 // ── Product Loading (Infinite Scroll) ───────────────────────────────
+
 async function loadProducts(append = false) {
     // Guard: prevent duplicate requests and loading past end
     if (state.isLoading) return;
@@ -393,14 +777,20 @@ async function loadProducts(append = false) {
     state.isLoading = true;
 
     if (!append) {
-    showSkeletons(els.productGrid, 8);
+        setPageMeta(
+            'All Products',
+            'Browse all products on HybridRec — personalised recommendations just for you.'
+        );
+    }
 
-    els.skeletonLoader.hidden = true;
-    els.infiniteEnd.hidden = true;
-
-    state.page = 1;
-    state.hasMore = true;
-    state.products = [];
+    if (!append) {
+        els.productGrid.innerHTML = '';
+        showSkeletons(els.productGrid, 8);
+        els.skeletonLoader.hidden = false;
+        els.infiniteEnd.hidden = true;
+        state.page = 1;
+        state.hasMore = true;
+        state.products = [];
     } else {
         els.infiniteLoader.hidden = false;
     }
@@ -414,10 +804,13 @@ async function loadProducts(append = false) {
         state.hasMore = data.has_more ?? products.length >= state.perPage;
 
         if (!append) {
+            state.allProducts = [...products];
             els.skeletonLoader.hidden = true;
+        } else {
+            state.allProducts = [...(state.allProducts || []), ...products];
         }
 
-        renderProducts(products, append);
+        renderProducts(products, { append });
         els.productCount.textContent = `${state.products.length} of ${state.totalProducts} products`;
 
         if (!state.hasMore) {
@@ -459,6 +852,10 @@ function renderTrending(items) {
     const fragment = document.createDocumentFragment();
 
     items.forEach((item, index) => {
+        const title = item.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(item.category || '');
+        const safeDescription = escapeHtml(item.description || 'No description available.');
         const card = document.createElement('div');
         card.className = 'product-card trending-card';
         card.style.animationDelay = `${index * 35}ms`;
@@ -467,9 +864,9 @@ function renderTrending(items) {
                 ${categoryIcon(item.category)}
             </div>
             <div class="product-card__body">
-                ${item.category ? `<span class="product-card__category">${item.category}</span>` : ''}
-                <h3 class="product-card__title">${item.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${item.description || 'No description available.'}</p>
+                ${item.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title">${safeTitle}</h3>
+                <p class="product-card__desc">${safeDescription}</p>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(item.rating || 0)}</div>
@@ -479,7 +876,7 @@ function renderTrending(items) {
                 </div>
             </div>
             <div class="product-card__actions">
-                <button class="btn--add-cart" data-title="${item.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     View Trending
                 </button>
             </div>
@@ -489,12 +886,12 @@ function renderTrending(items) {
         if (actionButton) {
             actionButton.addEventListener('click', (e) => {
                 e.stopPropagation();
-                loadRecommendations(item.title);
-                toast(`Showing recommendations for trending product "${item.title.substring(0, 40)}"`, 'info');
+                loadRecommendations(title);
+                toast(`Showing recommendations for trending product "${title.substring(0, 40)}"`, 'info');
             });
         }
 
-        card.addEventListener('click', () => loadRecommendations(item.title));
+        card.addEventListener('click', () => loadRecommendations(title));
         fragment.appendChild(card);
     });
 
@@ -505,44 +902,153 @@ async function loadSearchResults(query) {
     // Pause infinite scroll during search
     destroyScrollObserver();
 
+    const requestId = ++state.searchRequestId;
+    setSearchLoading(true);
     els.productGrid.innerHTML = '';
     els.skeletonLoader.hidden = false;
     els.productsTitle.textContent = `Results for "${query}"`;
+    setPageMeta(`Search: ${query}`, `Showing results for "${query}" on HybridRec.`);
     els.infiniteEnd.hidden = true;
 
     try {
-        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
-        const products = data.items || [];
+        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40&sort=${getSelectedSort()}`);
+        const products = data.results || [];
         els.skeletonLoader.hidden = true;
-        els.productCount.textContent = `${products.length} results`;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
         state.products = [];
         state.hasMore = false;
-        renderProducts(products, false);
+        state.allProducts = [...products];
+        renderProducts(products, { append: false, ignoreFilters: true });
     } catch {
         els.skeletonLoader.hidden = true;
         toast('Search failed', 'error');
+    } finally {
+        if (requestId === state.searchRequestId) setSearchLoading(false);
     }
 }
 
-function renderProducts(products, append) {
+// ── Lazy Loading ────────────────────────────────────────────────────
+const lazyObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const img = entry.target;
+        img.src = img.dataset.src;
+        img.onload = () => img.classList.add('loaded');
+        lazyObserver.unobserve(img);
+    });
+}, { rootMargin: '200px 0px', threshold: 0.01 });
+
+function createLazyImage(src, alt) {
+    const img = document.createElement('img');
+    img.alt = alt || '';
+    img.setAttribute('loading', 'lazy');
+
+    if ('IntersectionObserver' in window) {
+        img.dataset.src = src;
+        img.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"%3E%3Crect width="400" height="300" fill="%23232f3e"/%3E%3C/svg%3E';
+        lazyObserver.observe(img);
+    } else {
+        img.src = src;
+        img.classList.add('loaded');
+    }
+
+    img.addEventListener('error', () => img.classList.add('error'));
+    return img;
+}
+
+function renderProducts(products, options = {}) {
+    const append = options.append || false;
+    const ignoreFilters = options.ignoreFilters || false;
+
+    if (!ignoreFilters) {
+        products = applyFilters(products);
+    }
+    els.productCount.textContent = `${products.length} products`;
+    if (!append) {
+    els.productGrid.innerHTML = '';
+}
     if (!append) state.products = [];
+    if (!products.length) {
+        els.productGrid.innerHTML = `
+            <div class="no-results animate-fade-in">
+                <svg class="no-results-svg" width="180" height="180" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="blue-grad" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+                            <stop offset="0%" stop-color="var(--primary)" stop-opacity="0.8"/>
+                            <stop offset="100%" stop-color="#3b82f6" stop-opacity="0.1"/>
+                        </linearGradient>
+                        <linearGradient id="amber-grad" x1="0" y1="0" x2="200" y2="200" gradientUnits="userSpaceOnUse">
+                            <stop offset="0%" stop-color="var(--accent)"/>
+                            <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.3"/>
+                        </linearGradient>
+                    </defs>
+                    <circle cx="100" cy="100" r="70" fill="url(#blue-grad)" filter="blur(8px)" opacity="0.15" />
+                    <circle cx="120" cy="80" r="40" fill="url(#amber-grad)" filter="blur(6px)" opacity="0.1" />
+
+                    <path d="M50 80 L65 140 H135 L150 80" stroke="var(--text-muted)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M40 80 H160" stroke="var(--text-muted)" stroke-width="4" stroke-linecap="round" />
+
+                    <circle cx="130" cy="65" r="28" stroke="var(--primary)" stroke-width="2" stroke-dasharray="5 5" opacity="0.6"/>
+
+                    <g class="search-glass">
+                        <circle cx="130" cy="65" r="16" stroke="var(--accent)" stroke-width="3.5" fill="var(--bg-card)"/>
+                        <path d="M142 77 L158 93" stroke="var(--accent)" stroke-width="3.5" stroke-linecap="round"/>
+                    </g>
+
+                    <path d="M129 60 C129 57.5, 131 56, 133 57.5 C135 59, 132 62, 132 64 M132 67 H132.01" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+                    <circle cx="65" cy="105" r="2.5" fill="var(--accent)" opacity="0.6"/>
+                    <circle cx="85" cy="105" r="3.5" fill="var(--primary)" opacity="0.5"/>
+                    <circle cx="145" cy="125" r="2" fill="var(--text-muted)" opacity="0.4"/>
+                </svg>
+                <h3 class="no-results__title">No products found</h3>
+                <p class="no-results__subtitle">Try adjusting your search keywords or clearing active filters to find what you're looking for.</p>
+                <button class="btn btn--primary btn--clear-search" id="empty-state-clear-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px; display:inline-block; vertical-align:middle;">
+                        <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+                        <polyline points="21 3 21 8 16 8"/>
+                    </svg>
+                    Clear Search & Filters
+                </button>
+            </div>
+        `;
+
+        const clearBtn = document.getElementById('empty-state-clear-btn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', resetAllFiltersAndSearch);
+        }
+        return;
+    }
 
     const fragment = document.createDocumentFragment();
 
     products.forEach((p, i) => {
         state.products.push(p);
+        const title = p.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(p.category || '');
+        const safeDescription = escapeHtml(p.description || 'No description available.');
         const card = document.createElement('div');
-        card.className = 'product-card';
+        card.className = p.image ? 'product-card' : 'product-card product-card--skeleton';
         card.style.animationDelay = `${i * 50}ms`;
-        const isChecked = state.heatmapSelected.includes(p.title);
+        const isChecked = state.heatmapSelected.includes(title);
         card.innerHTML = `
-            <div class="product-card__image">
-                ${categoryIcon(p.category)}
+           <div class="product-card__image">
+            <button class="wishlist-btn" data-title="${safeTitle}">
+                ${isWishlisted(title) ? '❤️' : '🤍'}
+            </button>
+
+            ${categoryIcon(p.category)}
             </div>
             <div class="product-card__body">
-                ${p.category ? `<span class="product-card__category">${p.category}</span>` : ''}
-                <h3 class="product-card__title">${p.title || 'Untitled'}</h3>
-                <p class="product-card__desc">${p.description || 'No description available.'}</p>
+                ${p.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title" title="${safeTitle}">
+                ${safeTitle}
+                </h3>
+                <p class="product-card__desc">${safeDescription}</p>
+                <div class="product-card__price">
+                ₹${p.price || 0}
+                </div>
                 <div class="product-card__footer">
                     <div class="product-card__rating">
                         <div class="star-rating">${renderStars(p.rating || 0)}</div>
@@ -553,14 +1059,32 @@ function renderProducts(products, append) {
             </div>
             <div class="product-card__actions">
                 <label class="compare-label">
-                    <input type="checkbox" class="compare-checkbox" data-title="${p.title}" ${isChecked ? 'checked' : ''}>
+                    <input type="checkbox" class="compare-checkbox" data-title="${safeTitle}" ${isChecked ? 'checked' : ''}>
+                    Heatmap
+                </label>
+                <label class="compare-label">
+                    <input type="checkbox" class="side-compare-checkbox" data-title="${safeTitle}">
                     Compare
                 </label>
-                <button class="btn--add-cart" data-title="${p.title}">
+                <button class="btn--add-cart" data-title="${safeTitle}">
                     Get Recommendations
                 </button>
             </div>
         `;
+        if (p.image) {
+            const imgEl = createLazyImage(p.image, title);
+            card.querySelector('.product-card__image').appendChild(imgEl);
+        }
+
+        // Wishlist button
+        const wishlistBtn = card.querySelector('.wishlist-btn');
+
+        if (wishlistBtn) {
+            wishlistBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleWishlist(p);
+            });
+        }
 
         // Click → get recommendations
         card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
@@ -577,7 +1101,7 @@ function renderProducts(products, append) {
                 e.stopPropagation();
                 const title = checkbox.dataset.title;
                 if (checkbox.checked) {
-                    if (state.heatmapSelected.length >= 20) {
+                    if (state.heatmapSelected.length >= CONFIG.MAX_COMPARE_ITEMS) {
                         checkbox.checked = false;
                         toast('Maximum 20 items for comparison', 'error');
                         return;
@@ -592,6 +1116,16 @@ function renderProducts(products, append) {
             });
         }
 
+        // Side-by-side compare checkbox
+        const sideCheckbox = card.querySelector('.side-compare-checkbox');
+        if (sideCheckbox) {
+            sideCheckbox.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const success = toggleCompare(p, sideCheckbox.checked);
+                if (!success) sideCheckbox.checked = false;
+            });
+        }
+
         card.addEventListener('click', () => {
             loadRecommendations(p.title);
         });
@@ -600,6 +1134,21 @@ function renderProducts(products, append) {
     });
 
     els.productGrid.appendChild(fragment);
+}
+
+function handleRecommendationClick(e) {
+    e.stopPropagation();
+
+    const title = e.currentTarget.dataset.title;
+
+    if (!title) return;
+
+    loadRecommendations(title);
+
+    toast(
+        `Finding recommendations for "${title.substring(0, 40)}..."`,
+        'info'
+    );
 }
 
 // ── Recommendations ─────────────────────────────────────────────────
@@ -671,19 +1220,25 @@ async function fallbackRecommendationRequest(title) {
 }
 
 function renderRecommendations(data) {
-    const recs = data.recommendations || [];
+    const recs = data.results || data.recommendations || [];
 
     els.recsLoader.hidden = true;
     els.recsStrip.hidden = false;
 
     if (!recs.length) {
-        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
+        els.recsStrip.innerHTML = "";
+        document.getElementById("empty-state").hidden = false;
         return;
     }
 
-    els.recsStrip.innerHTML = recs.map((r) => `
-        <div class="rec-card" data-title="${r.title}">
-            <div class="rec-card__title">${r.title}</div>
+    document.getElementById("empty-state").hidden = true;
+
+    els.recsStrip.innerHTML = recs.map((r) => {
+        const title = r.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        return `
+        <div class="rec-card" data-title="${safeTitle}">
+            <div class="rec-card__title">${safeTitle}</div>
             <div class="rec-card__rating">
                 <div class="star-rating">${renderStars(r.rating || 0)}</div>
                 <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
@@ -694,7 +1249,8 @@ function renderRecommendations(data) {
                 · Collab: ${(r.collab_score || 0).toFixed(2)}
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
 
     els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
         card.addEventListener('click', () => {
@@ -717,14 +1273,44 @@ async function loadRecommendations(title) {
     }
 
     els.recsSection.hidden = false;
+    setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
+    document
+.getElementById(
+"empty-state"
+)
+.hidden=true;
+
+els.recsStrip.innerHTML=`
+<div class="recommendation-loading">
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+</div>
+`;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
 
     try {
-        if (!requestRealtimeRecommendations(title)) {
-            await fallbackRecommendationRequest(title);
-        }
+        const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
+        const recs = data.results || data.recommendations || [];
+
+        els.recsLoader.hidden = true;
+        els.recsStrip.hidden = false;
+
+        if (!recs.length) {
+    els.recsStrip.innerHTML = `
+        <div class="empty-recommendations">
+            <span class="empty-icon" aria-hidden="true">🔍</span>
+            <p>No recommendations found. Try a different product!</p>
+        </div>
+    `;
+    return;
+}
     } catch {
         try {
             await loadRecommendationsOverHttp(title);
@@ -743,7 +1329,13 @@ async function handleUpload(file) {
     form.append('file', file);
 
     try {
-        const res = await fetch('/api/upload', { method: 'POST', body: form });
+        // FormData POST — Content-Type is set automatically by the browser.
+        // We only inject the CSRF header manually.
+        const res = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { ..._csrfHeaders() },
+            body: form,
+        });
         if (!res.ok) throw new Error('Upload failed');
         const data = await res.json();
         toast(`Imported ${data.imported?.toLocaleString()} products!`, 'success');
@@ -828,9 +1420,53 @@ async function handleWeightChange() {
     } catch {}
 }
 
+async function openProductModal(product) {
+    els.modalProductTitle.textContent = product.title || 'Untitled';
+
+    els.modalProductCategory.textContent =
+        `Category: ${product.category || 'Unknown'}`;
+
+    els.modalProductRating.textContent =
+        `Rating: ${(product.rating || 0).toFixed(1)}`;
+
+    els.modalProductSentiment.textContent =
+        `Sentiment: ${(product.avg_sentiment || 0).toFixed(2)}`;
+
+    els.modalProductDescription.textContent =
+        product.description || 'No description available.';
+
+    els.modalProductScore.textContent =
+        (product.hybrid_score || 0).toFixed(3);
+
+    els.modalRecommendationsList.innerHTML =
+        '<li>Loading recommendations...</li>';
+
+    els.productModal.hidden = false;
+
+    // Fetch top recommendations
+    try {
+        const data = await API.get(
+            `/api/recommend/${encodeURIComponent(product.title)}?top_n=5`
+        );
+
+        const recs = data.results || data.recommendations || [];
+
+        els.modalRecommendationsList.innerHTML = recs.map((r) => `
+            <li>${r.title}</li>
+        `).join('');
+    } catch {
+        els.modalRecommendationsList.innerHTML =
+            '<li>No recommendations available.</li>';
+    }
+}
+
+function closeProductModal() {
+    els.productModal.hidden = true;
+}
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
+    els.searchInput.setAttribute('aria-expanded', 'false');
     els.searchInput.addEventListener('input', (e) => handleSearch(e.target.value));
     els.searchInput.addEventListener('keydown', handleSearchKeydown);
     els.searchInput.addEventListener('focus', () => {
@@ -879,6 +1515,10 @@ function bindEvents() {
     [els.weightAlpha, els.weightBeta, els.weightGamma].forEach((slider) => {
         slider.addEventListener('change', handleWeightChange);
     });
+
+    if (els.sortFilter) {
+        els.sortFilter.addEventListener('change', applySorting);
+    }
 
     // Heatmap close
     els.heatmapCloseBtn.addEventListener('click', () => {
@@ -1004,47 +1644,453 @@ function setupScrollObserver() {
     state.scrollObserver.observe(els.scrollSentinel);
 }
 
-function destroyScrollObserver() {
-    if (state.scrollObserver) {
-        state.scrollObserver.disconnect();
-        state.scrollObserver = null;
+
+function renderSearchDropdown(results, query) {
+    if (!results.length) {
+        els.searchDropdown.innerHTML = `
+            <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;">
+                No results for "${escapeHtml(query)}"
+            </div>`;
+        els.searchDropdown.classList.add('active');
+        return;
+    }
+
+    els.searchDropdown.innerHTML = results.map((r, i) => {
+        const title = r.title || '';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(r.category || '');
+        return `
+        <div class="search-result ${i === state.selectedSearchIdx ? 'active' : ''}"
+             data-title="${safeTitle}" data-idx="${i}">
+            <span style="font-size:20px;">${categoryIcon(r.category)}</span>
+            <div class="search-result__info">
+                <div class="search-result__title">${highlightMatch(title, query)}</div>
+                <div class="search-result__meta">
+                    ★ ${(r.rating || 0).toFixed(1)}
+                    ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
+                </div>
+            </div>
+        </div>
+    `;
+    }).join('');
+    els.searchDropdown.classList.add('active');
+
+    // Click handlers
+    els.searchDropdown.querySelectorAll('.search-result').forEach((el) => {
+        el.addEventListener('click', () => {
+            const title = el.dataset.title;
+            selectSearchResult(title);
+        });
+    });
+}
+
+function highlightMatch(text, query) {
+    const safeText = escapeHtml(text);
+    if (!query) return safeText;
+    const safeQuery = escapeHtml(query);
+    const regex = new RegExp(`(${safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    return safeText.replace(regex, '<strong>$1</strong>');
+}
+
+function selectSearchResult(title) {
+    addToSearchHistory(title);
+    els.searchInput.value = title;
+    closeSearchDropdown();
+    loadSearchResults(title);
+    loadRecommendations(title);
+}
+
+function closeSearchDropdown() {
+    els.searchDropdown.classList.remove('active');
+    state.selectedSearchIdx = -1;
+}
+
+function handleSearchKeydown(e) {
+    const results = state.searchResults;
+    if (!results.length || !els.searchDropdown.classList.contains('active')) return;
+
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        state.selectedSearchIdx = Math.min(state.selectedSearchIdx + 1, results.length - 1);
+        renderSearchDropdown(results, els.searchInput.value);
+    } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, -1);
+        renderSearchDropdown(results, els.searchInput.value);
+    } else if (e.key === 'Enter' && state.selectedSearchIdx >= 0) {
+        e.preventDefault();
+        selectSearchResult(results[state.selectedSearchIdx].title);
+    } else if (e.key === 'Escape') {
+        closeSearchDropdown();
     }
 }
+
+// ── Product Loading ─────────────────────────────────────────────────
+async function loadProducts(append = false) {
+    if (!append) {
+        els.productGrid.innerHTML = '';
+        els.skeletonLoader.hidden = true;
+        state.page = 1;
+    }
+
+    try {
+        const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}&sort=${getSelectedSort()}`);
+        const products = data.results || [];
+        state.totalProducts = data.total || products.length;
+        state.allProducts = append
+            ? [...(state.allProducts || []), ...products]
+            : [...products];
+
+        if (!append) {
+            els.skeletonLoader.hidden = true;
+        }
+
+        if (append) {
+            renderProducts(products, { append });
+        } else {
+            applySorting();
+        }
+        const visibleCount = applyFilters(products).length;
+        els.productCount.textContent = `${visibleCount} products loaded`;
+
+        // Show load more if there might be more
+        if (els.loadMoreContainer) {
+            els.loadMoreContainer.hidden = products.length < state.perPage;
+        }
+    } catch (err) {
+        els.skeletonLoader.hidden = true;
+        toast('Failed to load products', 'error');
+    }
+}
+
+async function loadSearchResults(query) {
+    els.productGrid.innerHTML = '';
+    els.skeletonLoader.hidden = false;
+    els.productsTitle.textContent = `Results for "${query}"`;
+
+    try {
+        const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=40&sort=${getSelectedSort()}`);
+        const products = data.results || [];
+        els.skeletonLoader.hidden = true;
+        els.productCount.textContent = `${data.count ?? products.length} results`;
+        state.products = [];
+        state.allProducts = [...products];
+        applySorting();
+        els.searchInput.select();
+        els.productGrid.classList.remove('fade-in');
+
+        requestAnimationFrame(() => {
+        els.productGrid.classList.add('fade-in');
+        });
+        if (els.loadMoreContainer) {
+            els.loadMoreContainer.hidden = true;
+        }
+    } catch {
+        els.skeletonLoader.hidden = true;
+        toast('Search failed', 'error');
+    }
+}
+
+function renderProducts(products, options = {}) {
+    const append = typeof options === 'object' ? options.append || false : Boolean(options);
+    const skipSorting = typeof options === 'object' ? options.skipSorting || false : false;
+
+    products = applyFilters(products || []);
+
+    if (!skipSorting) {
+        products = sortProducts(products, els.sortFilter?.value || 'relevance');
+    }
+
+    if (!append) {
+        els.productGrid.innerHTML = '';
+    }
+
+    if (!append) state.products = [];
+
+    const fragment = document.createDocumentFragment();
+    const filteredProducts = products;
+    filteredProducts.forEach((p, i) => {
+        state.products.push(p);
+        const title = p.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        const safeCategory = escapeHtml(p.category || '');
+        const safeDescription = escapeHtml(p.description || 'No description available.');
+        const safeImage = escapeHtml(p.image || '');
+        const card = document.createElement('div');
+        card.className = 'product-card';
+        card.style.animationDelay = `${i * 50}ms`;
+        card.innerHTML = `
+            <div class="product-card__image">
+            ${
+                !p.image || p.image === 'undefined'
+                ? `<div class="product-placeholder">${categoryIcon(p.category)}</div>`
+                : `<img src="${safeImage}" alt="${safeTitle}" class="product-image" loading="lazy" />`
+             }
+            </div>
+            <div class="product-card__body">
+                ${p.category ? `<span class="product-card__category">${safeCategory}</span>` : ''}
+                <h3 class="product-card__title">${safeTitle}</h3>
+                <p class="product-card__desc">${safeDescription}</p>
+                <div class="product-card__footer">
+                    <div class="product-card__rating">
+                        <div class="star-rating">${renderStars(p.rating || 0)}</div>
+                        <span class="rating-value">${(p.rating || 0).toFixed(1)}</span>
+                    </div>
+                    <div class="product-review-count">
+                        ${formatReviewCount(p.review_count)}
+                    </div>
+                    ${sentimentBadge(p.avg_sentiment || 0)}
+                </div>
+            </div>
+            <div class="product-card__actions">
+                <button class="btn--add-cart" data-title="${safeTitle}">
+                    Get Recommendations
+                </button>
+            </div>
+        `;
+
+        // Click → get recommendations
+        card.querySelector('.btn--add-cart').addEventListener('click', (e) => {
+            e.stopPropagation();
+            const title = e.target.dataset.title;
+            loadRecommendations(title);
+            toast(`Finding recommendations for "${title.substring(0, 40)}..."`, 'info');
+        });
+
+        card.addEventListener('click', () => {
+            openProductModal(p);
+        });
+
+        fragment.appendChild(card);
+    });
+
+    els.productGrid.appendChild(fragment);
+}
+
+// ── Recommendations ─────────────────────────────────────────────────
+async function loadRecommendations(title) {
+    if (!state.modelReady) {
+        toast('Build models first to get recommendations', 'info');
+        return;
+    }
+
+    els.recsSection.hidden = false;
+    els.recsSection.classList.remove('slide-up');
+
+        requestAnimationFrame(() => {
+    els.recsSection.classList.add('slide-up');
+    });
+    els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px;">Loading recommendations...</div>';
+
+    try {
+        const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
+        const recs = data.results || data.recommendations || [];
+
+        if (!recs.length) {
+            els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">No recommendations found.</div>';
+            return;
+        }
+
+        els.recsStrip.innerHTML = recs.map((r) => {
+            const title = r.title || 'Untitled';
+            const safeTitle = escapeHtml(title);
+            return `
+            <div class="rec-card" data-title="${safeTitle}">
+                <div class="rec-card__title">${safeTitle}</div>
+                <div class="rec-card__rating">
+                    <div class="star-rating">${renderStars(r.rating || 0)}</div>
+                    <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
+                </div>
+                <div class="rec-card__score">
+                    Score: ${(r.hybrid_score || 0).toFixed(3)}
+                    · Content: ${(r.content_score || 0).toFixed(2)}
+                    · Collab: ${(r.collab_score || 0).toFixed(2)}
+                </div>
+            </div>
+        `;
+        }).join('');
+
+        // Click to chain recommendations
+        els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
+            card.addEventListener('click', () => {
+                loadRecommendations(card.dataset.title);
+            });
+        });
+
+        // Scroll to recs
+        els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch {
+        els.recsStrip.innerHTML = '<div style="padding:16px;color:var(--text-muted);">Could not load recommendations.</div>';
+    }
+}
+
+
 
 // ── CSS spin animation ──────────────────────────────────────────────
 const spinStyle = document.createElement('style');
 spinStyle.textContent = `@keyframes spin { to { transform: rotate(360deg); } } .spin { animation: spin 1s linear infinite; }`;
 document.head.appendChild(spinStyle);
 
-// ── Back To Top ─────────────────────────────────────────────────────
-function initBackToTop() {
-    const backToTop = document.getElementById('backToTop');
-
-    if (!backToTop) return;
-
-    
-    backToTop.style.display = 'none';
-
-    window.addEventListener('scroll', () => {
-        backToTop.style.display =
-            window.scrollY > 700 ? 'block' : 'none';
-    });
-
-    backToTop.addEventListener('click', () => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    });
-}
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
+    initDebugMode();
+    loadSavedWeights();
     initTypeToSearch();
-    initBackToTop();
+    initFilterChips();
+
+    // Fetch CSRF token first — must complete before any mutating request.
+    await initCsrf();
 
     // Initialize Supabase client from backend config (no hardcoded keys)
     await initSupabase();
-
+    loadCategories();
     // Run auth and status independently — neither blocks the other
     initAuth().catch((e) => console.warn('Auth error:', e));
     checkStatus().catch((e) => console.warn('Status error:', e));
+
+    // Benchmarking dashboard
+    initBenchmarkingDashboard();
 }
+
+async function loadCategories() {
+    try {
+        const data = await API.get('/api/categories');
+        const categories = data.categories || [];
+
+        els.categoryFilter.textContent = '';
+
+        const allOption = document.createElement('option');
+        allOption.value = 'All Categories';
+        allOption.textContent = 'All Categories';
+        els.categoryFilter.appendChild(allOption);
+
+        categories.forEach((category) => {
+            const option = document.createElement('option');
+            option.value = String(category ?? '');
+            option.textContent = String(category ?? '');
+            els.categoryFilter.appendChild(option);
+        });
+    } catch (err) {
+        console.error('Failed to load categories', err);
+    }
+}
+
+// Store previous scroll position
+let previousScrollPosition = 0;
+
+// Create back button dynamically
+const backButton = document.createElement("button");
+backButton.id = "backToResultsBtn";
+backButton.innerHTML = "← Back to Results";
+document.body.appendChild(backButton);
+
+// Hide initially
+backButton.style.display = "none";
+
+// Product grid container
+const productGrid = document.querySelector(".product-grid");
+
+// Example function when opening product detail
+function openProductDetail(productId) {
+    // Save current scroll position
+    previousScrollPosition = window.scrollY;
+
+    // Open detail logic
+    const detailView = document.querySelector(".product-detail");
+    detailView.classList.add("active");
+
+    // Show button
+    backButton.style.display = "flex";
+}
+
+// Close detail function
+function closeProductDetail() {
+    const detailView = document.querySelector(".product-detail");
+    detailView.classList.remove("active");
+
+    // Hide button
+    backButton.style.display = "none";
+
+    // Restore scroll position smoothly
+    window.scrollTo({
+        top: previousScrollPosition,
+        behavior: "smooth"
+    });
+}
+
+// Back button click
+backButton.addEventListener("click", () => {
+    closeProductDetail();
+});
+
+// Example existing product card click listeners
+document.querySelectorAll(".product-card").forEach(card => {
+    card.addEventListener("click", () => {
+        const productId = card.dataset.id;
+        openProductDetail(productId);
+    });
+});
+
 document.addEventListener('DOMContentLoaded', init);
+
+// ── Language Toggle ─────────────────────────────────────────────────
+let currentLang = 'EN';
+
+function toggleLanguage() {
+    currentLang = currentLang === 'EN' ? 'HI' : 'EN';
+    document.getElementById('lang-toggle').textContent = currentLang;
+
+    if (currentLang === 'HI') {
+        document.getElementById('search-input').placeholder = 'हिंदी में खोजें...';
+        document.getElementById('hindi-indicator').style.display = 'inline';
+        document.getElementById('search-shortcut').style.display = 'none';
+    } else {
+        document.getElementById('search-input').placeholder = 'Search products...';
+        document.getElementById('hindi-indicator').style.display = 'none';
+        document.getElementById('search-shortcut').style.display = 'block';
+    }
+}
+
+// -- Filter Chips ----------------------------------------------------
+function initFilterChips() {
+    const chipsContainer = document.getElementById('filter-chips');
+    if (!chipsContainer) return;
+
+    const chips = chipsContainer.querySelectorAll('.chip');
+
+    chips.forEach(chip => {
+        chip.addEventListener('click', (e) => {
+            const filterVal = e.currentTarget.dataset.filter;
+
+            if (filterVal === 'all') {
+                state.activeChips.clear();
+                state.activeChips.add('all');
+            } else {
+                state.activeChips.delete('all');
+
+                if (state.activeChips.has(filterVal)) {
+                    state.activeChips.delete(filterVal);
+                } else {
+                    state.activeChips.add(filterVal);
+                }
+
+                if (state.activeChips.size === 0) {
+                    state.activeChips.add('all');
+                }
+            }
+
+            // Update UI
+            chips.forEach(c => {
+                if (state.activeChips.has(c.dataset.filter)) {
+                    c.classList.add('active');
+                } else {
+                    c.classList.remove('active');
+                }
+            });
+
+            // Re-render
+            renderProducts(state.allProducts, false);
+        });
+    });
+}
