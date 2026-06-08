@@ -1645,6 +1645,7 @@ def update_weights(w: WeightsUpdate) -> dict:
 def list_items(page: int = 1, per_page: int = 50) -> dict:
     """List products from Supabase with pagination."""
     sb = get_supabase()
+    limit = per_page
     offset = (page - 1) * limit
     result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).range(offset, offset + limit - 1).execute()
     count_result = sb.table('products').select('id', count='exact').limit(0).execute()
