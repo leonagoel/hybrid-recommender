@@ -67,6 +67,30 @@ load_dotenv()
 
 from db import get_supabase, get_supabase_admin
 from backend.auth import _require_admin_access
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(levelname)s] %(asctime)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+from celery.result import AsyncResult
+from celery_app import celery_app
+
+
+# backend/main.py — corrected imports
+from src.data.db import get_supabase, get_supabase_admin
+from src.data.data_adapter import adapt_data, read_file
+from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.model.trending_model import TrendingRecommender
+from src.model.issue_triage import triage_issue
+from src.model.federated_learning import train_federated_collaborative_model
+from src.api.response_utils import success_response, error_response
+
+from functools import lru_cache
+
 from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
@@ -104,8 +128,13 @@ _response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
-_rate_limit_buckets: dict = {}
+
+# ── FIX #1292: O(1) LRU RATE LIMIT METRICS GLOBALS ──────────────────
+from collections import OrderedDict
+_rate_limit_buckets = OrderedDict()
 _rate_limit_lock = Lock()
+MAX_RATE_LIMIT_IPS = 10000
+
 _cache_lock = Lock()
 
 # ── Redis client ──────────────────────────────────────────────────────
@@ -169,7 +198,7 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
-    global _cache_hits, _cache_misses
+    global _cache_misses
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -196,7 +225,7 @@ def _get_cached_response(key: str):
         return value
 
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
-def _apply_rate_limit(ip_address: str) -> bool:
+def _apply_rate_limit(*args, **kwargs):
     """
     Applies token-bucket rate limiting dynamically.
     Optimized to handle Algorithmic Complexity DoS scenarios.
@@ -209,6 +238,9 @@ def _apply_rate_limit(ip_address: str) -> bool:
         bucket = _rate_limit_buckets.get(ip_address)
         if bucket is None:
             bucket = {"tokens": 10.0, "last_updated": current_time}
+            _rate_limit_buckets[ip_address] = bucket
+        else:
+            _rate_limit_buckets.move_to_end(ip_address)
         else:
             elapsed = current_time - bucket["last_updated"]
             bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
@@ -221,6 +253,9 @@ def _apply_rate_limit(ip_address: str) -> bool:
         else:
             allowed = False
             
+        # Optimization: O(1) Eviction to prevent memory leak and Algorithmic Complexity DoS
+        if len(_rate_limit_buckets) > MAX_RATE_LIMIT_IPS:
+            _rate_limit_buckets.popitem(last=False)
         # Optimization: Move cleanup out of the request loop path
         global _request_counter
         _request_counter += 1
@@ -1437,8 +1472,38 @@ def search_items(
     
             except Exception:
                 sentiment_value = "N/A"
+        else:
+            sentiment_value = raw_sentiment
+
+        results.append({
+            'id': p.get('id'),
+            'title': p.get('title'),
+            'description': p.get('description'),
+            'category': p.get('category'),
+            'price': _product_price(p),
+            'rating': float(p.get('rating') or 0),
+            'sentiment': sentiment_value,
+            'review_count': p.get('review_count', 0)
+        })
+
+    final_output = {
+        'query': query,
+        'limit': limit,
+        'offset': offset,
+        'total_found': len(results),
+        'results': results
+    }
     
-    
+    try:
+        if _redis_client is not None:
+            _redis_client.setex(cache_key, 300, json.dumps(final_output))
+    except Exception:
+        pass
+        
+    return final_output
+
+
+
 # ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
 @app.get("/api/recommendations/{item_id}/explanation")
 async def get_recommendation_explanation(item_id: str, user_id: str):
