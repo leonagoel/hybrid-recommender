@@ -1532,7 +1532,6 @@ async def recommend_item(
     Returns paginated hybrid recommendations for the given item title.
     Supports limit/offset pagination with a pagination metadata block.
     """
-    try:
     all_results: list[dict] = []
 
     # Attempt to use the hybrid model via Celery task
@@ -1588,8 +1587,6 @@ async def recommend_item(
                 "has_more": (offset + limit) < total,
             },
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
