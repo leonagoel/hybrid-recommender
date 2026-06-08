@@ -16,6 +16,7 @@ import numpy as np
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
+from src.model.validation import validate_recommendations
 
 
 def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
