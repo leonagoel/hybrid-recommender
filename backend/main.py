@@ -728,6 +728,8 @@ class RealtimeConnectionHub:
 
 realtime_hub = RealtimeConnectionHub()
 
+USER_INTERACTIONS = []
+
 
 class WeightsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -751,6 +753,16 @@ class FeedbackCreate(BaseModel):
     item: str = Field(..., min_length=1, max_length=500)
     feedback: str = Field(..., min_length=1, max_length=2000)
     thumbs: str = Field(..., pattern=r"^(up|down)$")
+
+class InteractionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(..., min_length=1, max_length=128)
+    item_id: int = Field(..., gt=0)
+    interaction_type: str = Field(
+        ...,
+        pattern=r"^(view|click|search)$"
+    )
 
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -2419,6 +2431,21 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
+    
+    @app.post("/api/interactions")
+def log_interaction(data: InteractionCreate):
+
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
@@ -2591,6 +2618,28 @@ def submit_feedback(data: FeedbackCreate):
     return {
         "message": "Feedback submitted successfully",
         "feedback": {"user_id": data.user_id, "item": data.item, "feedback": data.feedback}
+    }
+
+@app.get("/api/user-preferences/{user_id}")
+def get_user_preferences(user_id: str):
+
+    user_logs = [
+        x for x in USER_INTERACTIONS
+        if x["user_id"] == user_id
+    ]
+
+    interaction_count = {}
+
+    for item in user_logs:
+        key = item["interaction_type"]
+
+        interaction_count[key] = (
+            interaction_count.get(key, 0) + 1
+        )
+
+    return {
+        "user_id": user_id,
+        "preferences": interaction_count
     }
 
 
