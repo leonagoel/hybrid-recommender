@@ -1,4 +1,6 @@
 from __future__ import annotations
+from fastapi import FastAPI # type: ignore
+from backend.routers import recommend
 
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
@@ -12,33 +14,38 @@ import time
 import logging
 import math
 import secrets
-import random
-import asyncio
-from urllib.parse import urlsplit
+
 import json
 from redis import Redis
 from redis.exceptions import RedisError
 
+logger = logging.getLogger(__name__)
+
 try:
     import bleach
 except ModuleNotFoundError:
-    import html
     class bleach:
         @staticmethod
         def clean(value, strip=True):
             if not strip:
                 return str(value)
-            return html.escape(str(value))
+            return re.sub(r"<[^>]*>", "", str(value))
 
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone, timedelta
+
+from collections import defaultdict
+
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+_project_root = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, "src", "data"))
+sys.path.insert(0, os.path.join(_project_root, "src", "model"))
 
-from fastapi import (
+from fastapi import ( # type: ignore
     FastAPI,
     Depends,
     Header,
@@ -51,24 +58,33 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.middleware.cors import CORSMiddleware # type: ignore
+from fastapi.staticfiles import StaticFiles # type: ignore
+from fastapi.responses import FileResponse, JSONResponse # type: ignore
+from pydantic import BaseModel # type: ignore
+from typing import Dict, List, Optional # type: ignore
+from pydantic import BaseModel, ConfigDict, Field # type: ignore
+from typing import Any, Optional
+from dotenv import load_dotenv # type: ignore
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Dict, List, Optional, Any
+from typing import Any, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from db import get_supabase, get_supabase_admin
+from backend.auth import _require_admin_access
 logging.basicConfig(
     level=logging.INFO,
     format="[%(levelname)s] %(asctime)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-from celery.result import AsyncResult
+from celery.result import AsyncResult # type: ignore
 from celery_app import celery_app
-from tasks import compute_recommendations
 
 
 # backend/main.py — corrected imports
@@ -86,28 +102,16 @@ from src.api.response_utils import success_response, error_response
 from functools import lru_cache
 
 from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
-
-
-# ── OpenAPI CSRF header dependency ────────────────────────────────────
-async def csrf_header_dep(
-    x_csrf_token: str = Header(
-        ...,
-        alias="X-CSRF-Token",
-        description=(
-            "CSRF token obtained from **GET /api/csrf-token**. "
-            "Required on all state-mutating requests (POST / PUT / PATCH / DELETE). "
-            "Must match the value stored in the `csrftoken` cookie."
-        ),
-    ),
-) -> None:
-    """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
-    pass
+from data_adapter import adapt_data, read_file
+from nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from content_model import ContentRecommender
+from collaborative_model import CollaborativeRecommender
+from hybrid_model import HybridRecommender
+from federated_learning import train_federated_collaborative_model
+from issue_triage import triage_issue
 
 # ── App ──────────────────────────────────────────────────────────────
-from src.api.exceptions import register_exception_handlers
-
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
-register_exception_handlers(app)
 
 # 🚀 DEGRADED MODE TELEMETRY TRACKER GLOBALS
 _model_degraded = False
@@ -135,19 +139,34 @@ CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
+MOCK_PRODUCTS = []
 _response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 
-# ── FIX #1292: AMORTIZED RATE LIMIT METRICS GLOBALS ──────────────────
-_rate_limit_buckets: dict = {}
+# ── FIX #1292: O(1) LRU RATE LIMIT METRICS GLOBALS ──────────────────
+from collections import OrderedDict
+_rate_limit_buckets = OrderedDict()
 _rate_limit_lock = Lock()
-_request_counter = 0
-CLEANUP_THRESHOLD = 10000  # Defensive boundary check to protect physical memory leak
+MAX_RATE_LIMIT_IPS = 10000
 
 _cache_lock = Lock()
-_redis_client: Redis | None = None
+
+# ── Redis client ──────────────────────────────────────────────────────
+_redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+try:
+    _redis_client = Redis.from_url(_redis_url, decode_responses=True, socket_connect_timeout=2)
+    _redis_client.ping()
+    logger.info("Redis connected at %s", _redis_url)
+except Exception:
+    _redis_client = None
+    logger.warning("Redis unavailable at %s — falling back to in-memory cache.", _redis_url)
+
+
+def csrf_header_dep(request: Request) -> None:
+    """No-op dependency; actual CSRF validation is handled by CSRFMiddleware."""
+    pass
 
 MOCK_PRODUCTS = [
     {
@@ -182,49 +201,47 @@ MOCK_PRODUCTS = [
     },
 ]
 
-_model_lock = Lock()
 
 def _get_slow_response_threshold_ms() -> float:
-    """Retrieve the duration threshold used to classify slow API responses."""
+
     try:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
-def _cache_key(*parts: Any) -> str:
-    """Generate a consistent, lowercased cache string key from input segments."""
+
     return ":".join(str(part).strip().lower() for part in parts)
 
-def _recommendation_cache_key(
-    title: str,
-    top_n: int = 10,
-    explain: bool = False,
-    user_id: str = "",
-    target_catalog: str = "",
-    model_version: str = "",
-    strategy: str = "",
-) -> str:
-    return _cache_key("recommend", title, top_n, explain, user_id or "", target_catalog or "", model_version or "", strategy or "")
 
 def _get_cached_response(key: str):
-    global _cache_hits, _cache_misses
+    global _cache_misses
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
             if cached is not None:
+                _cache_hits += 1
                 return json.loads(cached)
         except (RedisError, json.JSONDecodeError):
             pass
+
     with _cache_lock:
         cached = _response_cache.get(key)
+
         if not cached:
             _cache_misses += 1
             return None
+
         expires_at, value = cached
+
+        if expires_at <= time.time():
+            _response_cache.pop(key, None)
+            _cache_misses += 1
+            return None
+        _cache_hits += 1
         return value
 
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
-def _apply_rate_limit(ip_address: str) -> bool:
+def _apply_rate_limit(*args, **kwargs):
     """
     Applies token-bucket rate limiting dynamically.
     Optimized to handle Algorithmic Complexity DoS scenarios.
@@ -236,6 +253,9 @@ def _apply_rate_limit(ip_address: str) -> bool:
         bucket = _rate_limit_buckets.get(ip_address)
         if bucket is None:
             bucket = {"tokens": 10.0, "last_updated": current_time}
+            _rate_limit_buckets[ip_address] = bucket
+        else:
+            _rate_limit_buckets.move_to_end(ip_address)
         else:
             elapsed = current_time - bucket["last_updated"]
             bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
@@ -246,7 +266,7 @@ def _apply_rate_limit(ip_address: str) -> bool:
             _rate_limit_buckets[ip_address] = bucket
             allowed = True
             
-        # Optimization: Move cleanup out of the request loop path securely
+
         global _request_counter
         _request_counter += 1
         if random.random() < 0.01 or _request_counter >= CLEANUP_THRESHOLD:
@@ -415,166 +435,10 @@ async def get_hybrid_recommendations(
     Fetch hybrid recommendations securely without blocking the FastAPI event loop.
     Enforces pure keyword lookup fallbacks if ML weights are corrupted or offline.
     """
-    global _model_degraded, _model_degraded_reason
-    cache_key = _recommendation_cache_key(title, top_n, user_id=user_id)
-    
-    cached_res = _get_cached_response(cache_key)
-    if cached_res:
-        return success_response(cached_res)
 
-    # 🚀 DEGRADED FALLBACK LOOP INTERCEPTION
-    if _model_degraded:
-        logger.warning(f"Serving degraded lookup fallback results. System tracking anomaly: {_model_degraded_reason}")
-        fallback_data = MOCK_PRODUCTS[:top_n]
-        return success_response({
-            "status": "degraded_mode_active",
-            "reason": _model_degraded_reason,
-            "data": fallback_data
-        })
-
-    try:
-        # Offload heavy ML Cosine Similarity math to a separate threadpool
-        recommendations = await asyncio.to_thread(
-            HybridRecommender.get_recommendations, 
-            title=title, 
-            top_n=top_n, 
-            user_id=user_id
-        )
-        
-        if _redis_client:
-            try:
-                await asyncio.to_thread(
-                    _redis_client.setex, cache_key, CACHE_TTL_SECONDS, json.dumps(recommendations)
-                )
-            except RedisError:
-                pass
-                
-        return success_response(recommendations)
-        
-    except Exception as e:
-        # Catch unexpected model processing crashes at runtime to dynamically swap state flags
-        logger.error(f"Runtime ML calculation failed. Activating degraded state: {e}", exc_info=True)
-        _model_degraded = True
-        _model_degraded_reason = f"Runtime pipeline error: {str(e)}"
-        
-        fallback_data = MOCK_PRODUCTS[:top_n]
-        return success_response({
-            "status": "degraded_mode_activated",
-            "reason": _model_degraded_reason,
-            "data": fallback_data
-        })
-
-@app.post("/api/v1/search")
-async def search_catalog(req: SearchRequest, request: Request):
-    """Performs dynamic full-text search against the product database."""
-    ip = request.client.host if request.client else "unknown"
-    if not _apply_rate_limit(ip):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please slow down.")
-
-    cleaned_query = bleach.clean(req.query.strip())
-    if not cleaned_query:
-        return success_response([])
-
-    try:
-        supabase = get_supabase()
-        res = supabase.rpc("search_products_fts", {"search_query": cleaned_query, "row_limit": req.limit or 5}).execute()
-        return success_response(res.data or [])
-    except Exception as e:
-        logger.error(f"Full-text search failure: {e}", exc_info=True)
-        return error_response("Catalog search service is temporarily unavailable.")
-
-@app.post("/api/v1/upload")
-async def upload_dataset(
-    file: UploadFile = File(...),
-    dependencies: None = Depends(csrf_header_dep)
-):
-    """Processes, adapts, and validates custom CSV/JSON product file uploads."""
-    contents = await file.read()
-    if len(contents) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File payload configuration exceeds maximum allowed limits.")
-
-    try:
-        file_extension = os.path.splitext(file.filename or "").lower()
-        raw_df = read_file(io.BytesIO(contents), file_extension)
-        adapted_df = adapt_data(raw_df)
-        
-        # Guard text analyzer load crashes
-        try:
-            scored_df = await asyncio.to_thread(batch_analyze, adapted_df)
-        except Exception as model_err:
-            logger.error(f"ML Batch analysis failed. Using fallback non-ML formatting: {model_err}")
-            scored_df = adapted_df
-            if "sentiment_score" not in scored_df.columns:
-                scored_df["sentiment_score"] = 0.0
-
-        records = scored_df.to_dict(orient="records")
-        return success_response({
-            "filename": file.filename,
-            "total_records": len(records),
-            "preview": records[:3]
-        })
-    except Exception as e:
-        logger.error(f"Dataset upload pipeline error: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Failed to process dataset file structure: {str(e)}")
-
-@app.post("/api/v1/tune-weights")
-async def update_hybrid_weights(weights: TuningWeights, dependencies: None = Depends(csrf_header_dep)):
-    """Dynamically scales model weights for the multi-signal hybrid recommendation system."""
-    total = weights.alpha + weights.beta + weights.gamma
-    if total == 0:
-        raise HTTPException(status_code=400, detail="Combined component weights cannot equal zero.")
-    
-    normalized = {
-        "alpha": weights.alpha / total,
-        "beta": weights.beta / total,
-        "gamma": weights.gamma / total
-    }
-    return success_response({"message": "Weights updated successfully", "normalized_weights": normalized})
-
-# ---------------------------------------------------------------------------
-# Real-Time Asynchronous WebSockets
-# ---------------------------------------------------------------------------
-
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict):
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except Exception:
-                pass
-
-manager = ConnectionManager()
-
-@app.websocket("/ws/realtime")
-async def websocket_endpoint(websocket: WebSocket):
-    """Establishes real-time persistent connections to broadcast system updates."""
-    await manager.connect(websocket)
-    try:
-        while True:
-                      parsed = json.loads(data)
-            await manager.broadcast({"event": "client_ping", "timestamp": str(datetime.now(timezone.utc))})
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-    except Exception as e:
-        logger.error(f"WebSocket runtime drop: {e}")
-        manager.disconnect(websocket)
-
-# ---------------------------------------------------------------------------
-# Fallback Server Static Files Mount
-# ---------------------------------------------------------------------------
-
-frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
-if os.path.exists(os.path.join(frontend_path, "index.html")):
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 
 
