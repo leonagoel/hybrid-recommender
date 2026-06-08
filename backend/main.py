@@ -667,16 +667,6 @@ class FederatedTrainRequest(BaseModel):
 # ── Health ────────────────────────────────────────────────────────────
 @app.get("/health")
 @app.get("/api/health")
-def health_check():
-    """
-    Low-overhead health check endpoint for component tracking.
-    Checks database (Supabase), model readiness, and cache (Redis).
-    """
-    from src.data.db import get_supabase
-    from redis import Redis
-    from redis.exceptions import RedisError
-    import os
-
 def _set_cached_response(key: str, value: Any) -> None:
     if _redis_client is not None:
         try:
@@ -697,7 +687,6 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
-    return result
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
@@ -2289,7 +2278,6 @@ def similarity_matrix(items: str = Query(...)):
     result = {"labels": valid_titles, "matrix": matrix, "size": len(valid_titles)}
     if not_found:
         result["not_found"] = not_found
-    return result
 
 # ── Weights ───────────────────────────────────────────────────────────
 @app.get("/api/models")
