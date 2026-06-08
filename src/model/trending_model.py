@@ -9,6 +9,8 @@ class TrendingRecommender:
             self.df = pd.read_csv(data_path)
 
     def get_trending_products(self, top_n=10):
+        if not isinstance(top_n, int) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer")
         product_stats = (
             self.df.groupby(["item_id", "title"])
             .agg(
