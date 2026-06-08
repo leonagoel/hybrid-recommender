@@ -164,7 +164,18 @@ class CollaborativeRecommender:
             raise ValueError("top_n must be a positive integer.")
         top_n = min(top_n, 100)
 
+        # Safe type-aware existence check
+        mapped_user_id = user_id
         if user_id not in self._user_to_idx:
+            # Try type conversion to see if it matches (e.g., str "1" to int 1)
+            for key in self._user_to_idx.keys():
+                if str(key) == str(user_id):
+                    mapped_user_id = key
+                    break
+
+        if mapped_user_id not in self._user_to_idx:
+            import logging
+            logger = logging.getLogger(__name__)
             logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
             recs = self._popularity_fallback(top_n)
             return validate_recommendations(
@@ -223,9 +234,16 @@ class CollaborativeRecommender:
 
     def predict_rating(self, user_id, title):
         """Predict the rating a user would give to an item."""
-        if user_id not in self._user_to_idx or title not in self._title_to_idx:
+        mapped_user_id = user_id
+        if user_id not in self._user_to_idx:
+            for key in self._user_to_idx.keys():
+                if str(key) == str(user_id):
+                    mapped_user_id = key
+                    break
+
+        if mapped_user_id not in self._user_to_idx or title not in self._title_to_idx:
             return None
-        u_idx = self._user_to_idx[user_id]
+        u_idx = self._user_to_idx[mapped_user_id]
         i_idx = self._title_to_idx[title]
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
     
@@ -237,20 +255,36 @@ class CollaborativeRecommender:
     
         item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
     
-        # Bayesian rating
-        global_avg = item_counts['mean'].mean()
-        m = 5
-        item_counts['bayesian'] = (
-            (item_counts['count'] / (item_counts['count'] + m)) * item_counts['mean'] +
-            (m / (item_counts['count'] + m)) * global_avg
-        )
-    
-        top_items = item_counts.nlargest(top_n, 'bayesian')
+        # 1. Most popular items
+        if 'count' in item_counts.columns and not item_counts.empty:
+            top_items = item_counts.nlargest(top_n, 'count')
+        # 2. Highest rated items
+        elif 'mean' in item_counts.columns and not item_counts.empty:
+            top_items = item_counts.nlargest(top_n, 'mean')
+        # 3. Trending items
+        else:
+            try:
+                from src.model.trending_model import TrendingRecommender
+                trending_model = TrendingRecommender(df=self.df)
+                trending_results = trending_model.get_trending_products(top_n=top_n)
+                if trending_results:
+                    return [
+                        {
+                            'title': row['title'],
+                            'predicted_score': float(row.get('avg_rating', 0.0)),
+                            'fallback': True
+                        }
+                        for row in trending_results
+                    ]
+            except Exception:
+                pass
+            # 4. Empty list
+            return []
     
         return [
         {
             'title': row['title'],
-            'predicted_score': round(float(row['bayesian']), 4),
+            'predicted_score': round(float(row.get('mean', 0.0)), 4),
             'fallback': True
         }
         for _, row in top_items.iterrows()

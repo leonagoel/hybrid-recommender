@@ -27,6 +27,7 @@ WebSocket upgrades are also skipped — they are not affected by CSRF.
 import os
 import secrets
 import logging
+import string
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -225,6 +226,23 @@ class CSRFMiddleware:
             response = JSONResponse(
                 status_code=403,
                 content={"detail": "CSRF token missing."},
+            )
+            await response(scope, receive, send)
+            return
+
+        # 5.5 Reject immediately if tokens do not match expected format and length.
+        def _is_valid_token(t: str) -> bool:
+            return len(t) == CSRF_TOKEN_BYTES * 2 and all(c in string.hexdigits for c in t)
+
+        if not _is_valid_token(cookie_token) or not _is_valid_token(header_token):
+            logger.warning(
+                "CSRF validation failed (invalid token format) path=%s method=%s",
+                request.url.path,
+                request.method,
+            )
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token invalid format."},
             )
             await response(scope, receive, send)
             return
