@@ -215,7 +215,7 @@ def _recommendation_cache_key(
     return _cache_key("recommend", title, top_n, explain, user_id or "", target_catalog or "", model_version or "", strategy or "")
 
 def _get_cached_response(key: str):
-    global _cache_hits, _cache_misses
+    global _cache_misses
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -573,6 +573,7 @@ def search_items(
             except Exception:
                 sentiment_value = "N/A"
     
+    global _request_counter
     with _rate_limit_lock:
         bucket = _rate_limit_buckets.get(ip_address)
         if bucket is None:

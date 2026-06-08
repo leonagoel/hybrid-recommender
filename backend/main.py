@@ -209,7 +209,7 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
-    global _cache_misses
+    global _cache_hits, _cache_misses
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
