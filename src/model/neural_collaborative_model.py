@@ -7,7 +7,6 @@ __all__ = ["NeuralCollaborativeRecommender"]
 
 import logging
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -29,8 +28,10 @@ class NCFDataset(Dataset):
         return self.user_indices[idx], self.item_indices[idx], self.ratings[idx]
 
 class NCFNetwork(nn.Module):
-    def __init__(self, num_users, num_items, embedding_dim=32, layers=[64, 32, 16]):
+    def __init__(self, num_users, num_items, embedding_dim=32, layers=None):
         super(NCFNetwork, self).__init__()
+        if layers is None:
+            layers = [64, 32, 16]
         self.user_embedding = nn.Embedding(num_users, embedding_dim)
         self.item_embedding = nn.Embedding(num_items, embedding_dim)
 
@@ -142,9 +143,12 @@ class NeuralCollaborativeRecommender:
             with torch.no_grad():
                 item_embeddings = self.model.item_embedding.weight.cpu().numpy()
             
-            query_vec = item_embeddings[idx].reshape(1, -1)
-            from sklearn.metrics.pairwise import cosine_similarity
-            scores = cosine_similarity(query_vec, item_embeddings).flatten()
+            query_vec = item_embeddings[idx]
+            
+            norm_q = np.linalg.norm(query_vec)
+            norm_items = np.linalg.norm(item_embeddings, axis=1)
+            scores = np.dot(item_embeddings, query_vec) / (norm_q * norm_items + 1e-8)
+            
             sim_scores = list(enumerate(scores))
             sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
         except Exception as e:
@@ -173,7 +177,7 @@ class NeuralCollaborativeRecommender:
 
         return validate_recommendations(
             results,
-            fallback_fn=lambda top_n: self._popularity_fallback(top_n),
+            fallback_fn=lambda top_n: self._popularity_fallback(top_n, use_collab_score=True),
             top_n=top_n,
             context="NCF",
             force_padding=False
@@ -217,7 +221,7 @@ class NeuralCollaborativeRecommender:
                 scores = self.model(u_indices, i_indices).cpu().numpy()
 
             seen_items = set(
-                self.df[self.df['user_id'] == user_id]['title'].tolist()
+                self.df[self.df['user_id'] == mapped_user_id]['title'].tolist()
             )
 
             scored = []
@@ -269,7 +273,7 @@ class NeuralCollaborativeRecommender:
             
         return float(score)
     
-    def _popularity_fallback(self, top_n=10):
+    def _popularity_fallback(self, top_n=10, use_collab_score=False):
         logger.info("Using popularity-based fallback for cold-start user in NCF.")
         item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
     
@@ -283,7 +287,7 @@ class NeuralCollaborativeRecommender:
         return [
             {
                 'title': row['title'],
-                'predicted_score': round(float(row.get('mean', 0.0)), 4),
+                'collab_score' if use_collab_score else 'predicted_score': round(float(row.get('mean', 0.0)), 4),
                 'fallback': True
             }
             for _, row in top_items.iterrows()

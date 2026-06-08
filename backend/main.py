@@ -94,7 +94,6 @@ from src.data.data_adapter import adapt_data, read_file
 from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
-from src.model.neural_collaborative_model import NeuralCollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
 from src.model.trending_model import TrendingRecommender
 from src.model.issue_triage import triage_issue
