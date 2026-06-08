@@ -662,18 +662,7 @@ class FederatedTrainRequest(BaseModel):
     reg: float = 0.05
 
 
-# ── Health ────────────────────────────────────────────────────────────
-@app.get("/health")
-@app.get("/api/health")
-def health_check():
-    """
-    Low-overhead health check endpoint for component tracking.
-    Checks database (Supabase), model readiness, and cache (Redis).
-    """
-    from src.data.db import get_supabase
-    from redis import Redis
-    from redis.exceptions import RedisError
-    import os
+
 
 def _set_cached_response(key: str, value: Any) -> None:
     if _redis_client is not None:
@@ -695,7 +684,7 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
-    return result
+
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
@@ -820,27 +809,6 @@ def _normalize_search_query(query: str) -> str:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
     return normalized
-
-@app.get("/api/search")
-def search_items(
-    request: Request,
-    response: Response,
-    q: str = "",
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0, le=10000),
-    sort: str = Query(
-        "relevance",
-        pattern="^(relevance|price-low|price-high|rating)$",
-    ),
-):
-    query = _normalize_search_query(q)
-    rate_limited = _apply_rate_limit(
-        request,
-        response,
-        scope="search",
-        limit_env="RATE_LIMIT_SEARCH_PER_MIN",
-        default_limit=60,
-    )
 
 
 _USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
