@@ -21,7 +21,7 @@ cp .env.example .env
 
 Fill in:
 ```
-SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_KEY=your-service-role-key
 ```
@@ -57,7 +57,7 @@ python -m uvicorn backend.main:app --host $env:HOST --port $env:PORT --reload
 ```
 ## Windows Local Setup (Recommended)
 
-If you encounter dependency issues on Windows, it is recommended to create a clean conda environment.
+If you encounter dependency issues on Windows, create a clean Conda environment.
 
 ### Create Environment
 
@@ -67,10 +67,13 @@ conda activate hybridrec
 
 pip install -r requirements.txt
 pip install sentence-transformers
+```
 
-## Run your streamlit app easy way to run the app 
+## Run your streamlit app easy way to run the app
+```bash
 $env:PYTHONPATH="."
 streamlit run src/api/app.py
+```
 
 ### 6. Run with Docker
 Build the container image from the repository root:
@@ -167,4 +170,4 @@ hybrid-recommender/
 - **Recommendations:** Hybrid (Content + Collaborative + Sentiment)
 - **Upload:** CSV and JSON format support
 - **UI:** Amazon-like modern design with animations
-
+- **Streamlit UI:** Upload a CSV locally, build models, and get recommendations — no Supabase or server setup needed (`streamlit run src/api/app.py`)

@@ -6,8 +6,6 @@ across decentralized client nodes without centralizing raw user interactions.
 
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix
-from sklearn.decomposition import TruncatedSVD
 from src.model.collaborative_model import CollaborativeRecommender
 
 
@@ -72,8 +70,8 @@ class FederatedClient:
             pred_rating = np.dot(self.user_factor, v_i)
             error = rating - pred_rating
 
-            # Update vector = error * user_factor - regularization * item_factor
-            updates[title] = error * self.user_factor - reg * v_i
+            # Update vector = error * user_factor (regularization applied globally by server)
+            updates[title] = error * self.user_factor
         return updates
 
 
@@ -123,7 +121,9 @@ class FederatedServer:
             idx = self.title_to_idx[title]
             # Average update across all contributing clients
             avg_update = np.mean(updates, axis=0)
-            self.global_item_factors[:, idx] += self.lr * avg_update
+            
+            # Apply global gradient descent update: average data gradient - global regularization
+            self.global_item_factors[:, idx] += self.lr * (avg_update - self.reg * self.global_item_factors[:, idx])
 
 
 def train_federated_collaborative_model(

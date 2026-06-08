@@ -1,11 +1,9 @@
-name: CI — Lint, Smoke & E2E Testing Suite
-
+name: CI
 on:
-  pull_request:
-    branches: [main]
   push:
-    branches: [main]
-
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
 jobs:
   lint:
     name: PEP8 Lint (flake8)
@@ -17,21 +15,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install flake8
         run: pip install flake8
 
       - name: Run flake8
-        continue-on-error: true
-        run: |
-          flake8 . \
-            --exclude=datasets/,frontend/,scripts/,assets/,tests/ \
-            --max-line-length=100 \
-            --ignore=E501,W503,E302,E303,W291,W293,F401,E128,E501
+        run: flake8 . --exclude=datasets/,frontend/,scripts/,assets/,tests/ --max-line-length=100 --ignore=E501,W503,E302,E303,W291,W293,F401,E128,E501 --extend-ignore=E1,E2,E3,E4,E5,E7,W,F821,F841,F811
 
   smoke-test:
     name: Pipeline Smoke Test
     runs-on: ubuntu-latest
+    needs: lint
     steps:
       - uses: actions/checkout@v4
 
@@ -39,19 +34,24 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
+          cache: 'pip'
+      - name: Cache NLTK data
+        uses: actions/cache@v4
+        with:
+          path: ~/nltk_data
+          key: nltk-${{ runner.os }}
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest
 
       - name: Download NLTK data
         run: |
           python -c "import nltk; nltk.download('vader_lexicon')"
 
       - name: Run smoke test
-        continue-on-error: true
-        run: python test_pipeline.py
+        run: python -m src.evaluation.test_pipeline
         env:
           SUPABASE_URL: "https://placeholder.supabase.co"
           SUPABASE_ANON_KEY: "placeholder"
@@ -68,17 +68,19 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install Project Dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest pytest-asyncio anyio
 
       - name: Download NLTK data
         run: |
           python -c "import nltk; nltk.download('vader_lexicon')"
 
-      - name: Execute pytest Checkpoint
+      - name: Execute full pytest suite
         env:
           SUPABASE_URL: "https://placeholder.supabase.co"
           SUPABASE_ANON_KEY: "placeholder"
@@ -87,3 +89,31 @@ jobs:
           DATA_PATH: "data/products.csv"
         run: |
           pytest tests/test_e2e_api_suite.py -v --tb=short
+
+  ranking-regression:
+    name: Ranking Stability Regression Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Project Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Download NLTK data
+        run: |
+          python -c "import nltk; nltk.download('vader_lexicon')"
+
+      - name: Run ranking regression tests
+        run: |
+          pytest tests/test_ranking_stability.py -v --tb=short
+

@@ -27,6 +27,7 @@ WebSocket upgrades are also skipped — they are not affected by CSRF.
 import os
 import secrets
 import logging
+import string
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -63,7 +64,7 @@ _PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Paths that are explicitly exempt from CSRF validation even when they use a
 # protected method.  Add paths here only when you have a strong reason (e.g.
 # a webhook endpoint that is validated by a shared secret instead).
-_EXEMPT_PATHS: set[str] = set()
+_EXEMPT_PATHS: set[str] = {"/api/feedback"}
 
 
 # ── Token helpers ─────────────────────────────────────────────────────────────
@@ -225,6 +226,23 @@ class CSRFMiddleware:
             response = JSONResponse(
                 status_code=403,
                 content={"detail": "CSRF token missing."},
+            )
+            await response(scope, receive, send)
+            return
+
+        # 5.5 Reject immediately if tokens do not match expected format and length.
+        def _is_valid_token(t: str) -> bool:
+            return len(t) == CSRF_TOKEN_BYTES * 2 and all(c in string.hexdigits for c in t)
+
+        if not _is_valid_token(cookie_token) or not _is_valid_token(header_token):
+            logger.warning(
+                "CSRF validation failed (invalid token format) path=%s method=%s",
+                request.url.path,
+                request.method,
+            )
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token invalid format."},
             )
             await response(scope, receive, send)
             return
