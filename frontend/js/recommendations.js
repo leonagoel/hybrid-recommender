@@ -4,6 +4,11 @@
 import { state, setState, getAnonymousUserId } from './state.js';
 import { renderProductCards, showToast, setLoadingState, showLoadingBar, hideLoadingBar } from './ui.js';
 
+const PAGE_SIZE = 20;
+let currentOffset = 0;
+let currentTitle = '';
+let hasMoreRecs = false;
+
 function getRealtimeUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/ws/recommendations`;
@@ -93,7 +98,7 @@ function _updateRecsHeading(hasHistory) {
     : `${icon} Recommended for you`;
 }
 
-function renderRecommendations(data) {
+function renderRecommendations(data, append = false) {
   const recs = data.recommendations || [];
 
   _updateRecsHeading(!!data.has_history);
@@ -106,16 +111,18 @@ function renderRecommendations(data) {
   recsStrip.hidden = false;
 
   if (!recs.length) {
-    recsStrip.innerHTML = `
-      <div class="empty-recommendations">
-        <span class="empty-icon" aria-hidden="true">🔍</span>
-        <p>No recommendations found. Try a different product!</p>
-      </div>
-    `;
+    if (!append) {
+      recsStrip.innerHTML = `
+        <div class="empty-recommendations">
+          <span class="empty-icon" aria-hidden="true">🔍</span>
+          <p>No recommendations found. Try a different product!</p>
+        </div>
+      `;
+    }
     return;
   }
 
-  recsStrip.innerHTML = recs.map((r) => `
+  const cardsHtml = recs.map((r) => `
     <div class="rec-card" data-title="${escapeHtml(r.title)}">
       <div class="rec-card__title">${escapeHtml(r.title)}</div>
       <div class="rec-card__rating">
@@ -131,6 +138,12 @@ function renderRecommendations(data) {
     </div>
   `).join('');
 
+  if (append) {
+    recsStrip.insertAdjacentHTML('beforeend', cardsHtml);
+  } else {
+    recsStrip.innerHTML = cardsHtml;
+  }
+
   recsStrip.querySelectorAll('.rec-card').forEach((card) => {
     card.addEventListener('click', () => {
       loadRecommendations(card.dataset.title);
@@ -143,14 +156,22 @@ function renderRecommendations(data) {
 
 async function loadRecommendationsOverHttp(title) {
   showLoadingBar();
+  currentTitle = title;
+  if (currentOffset === 0) {
+    const recsStrip = document.getElementById('recs-strip');
+    if (recsStrip) recsStrip.innerHTML = '';
+  }
   try {
     const userId = getAnonymousUserId();
     const res = await fetch(
-      `/api/recommend/${encodeURIComponent(title)}?top_n=12&user_id=${encodeURIComponent(userId)}`
+      `/api/recommend?title=${encodeURIComponent(title)}&limit=${PAGE_SIZE}&offset=${currentOffset}&user_id=${encodeURIComponent(userId)}`
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    renderRecommendations(data);
+    renderRecommendations(data, currentOffset > 0);
+    currentOffset = data.pagination.next_offset ?? currentOffset + PAGE_SIZE;
+    hasMoreRecs = data.pagination.has_more;
+    updateLoadMoreButton();
   } catch (err) {
     console.error('Recommendation HTTP fallback error:', err);
     showToast('Could not load recommendations.', 'error');
@@ -172,19 +193,28 @@ export async function loadRecommendations(title) {
 
   recsSection.hidden = false;
   if (recsLoader) recsLoader.hidden = false;
-  recsStrip.hidden = true;
+
+  // Reset pagination on new search
+  currentTitle = title;
+  currentOffset = 0;
+  hasMoreRecs = false;
   recsStrip.innerHTML = '';
+  recsStrip.hidden = true;
+  updateLoadMoreButton();
 
   showLoadingBar();
 
   try {
     const userId = getAnonymousUserId();
     const res = await fetch(
-      `/api/recommend?title=${encodeURIComponent(title)}&top_n=12&user_id=${encodeURIComponent(userId)}`
+      `/api/recommend?title=${encodeURIComponent(title)}&limit=${PAGE_SIZE}&offset=0&user_id=${encodeURIComponent(userId)}`
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    renderRecommendations(data);
+    renderRecommendations(data, false);
+    currentOffset = data.pagination.next_offset ?? PAGE_SIZE;
+    hasMoreRecs = data.pagination.has_more;
+    updateLoadMoreButton();
   } catch (err) {
     console.error('Recommendation fetch error:', err);
     try {
@@ -196,6 +226,7 @@ export async function loadRecommendations(title) {
     }
   } finally {
     hideLoadingBar();
+    if (recsLoader) recsLoader.hidden = true;
   }
 }
 
@@ -230,3 +261,42 @@ const API = {
     return res.json();
   },
 };
+
+// ── Load More ──────────────────────────────────────────────────────────────────
+function updateLoadMoreButton() {
+  const btn = document.getElementById('load-more-btn');
+  if (!btn) return;
+  if (hasMoreRecs && currentTitle) {
+    btn.hidden = false;
+  } else {
+    btn.hidden = true;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('load-more-btn');
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = 'Loading...';
+      try {
+        const userId = getAnonymousUserId();
+        const res = await fetch(
+          `/api/recommend?title=${encodeURIComponent(currentTitle)}&limit=${PAGE_SIZE}&offset=${currentOffset}&user_id=${encodeURIComponent(userId)}`
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        renderRecommendations(data, true);
+        currentOffset = data.pagination.next_offset ?? currentOffset + PAGE_SIZE;
+        hasMoreRecs = data.pagination.has_more;
+        updateLoadMoreButton();
+      } catch (err) {
+        console.error('Load more error:', err);
+        showToast('Failed to load more recommendations.', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Load More Recommendations';
+      }
+    });
+  }
+});
