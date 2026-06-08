@@ -14,7 +14,7 @@ import time
 import logging
 import math
 import secrets
-import re
+
 import json
 from redis import Redis
 from redis.exceptions import RedisError
@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.join(_project_root, "src", "model"))
 
 from fastapi import ( # type: ignore
     FastAPI,
+    APIRouter,
     Depends,
     Header,
     UploadFile,
@@ -113,19 +114,24 @@ from issue_triage import triage_issue
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
+# 🚀 DEGRADED MODE TELEMETRY TRACKER GLOBALS
+_model_degraded = False
+_model_degraded_reason: Optional[str] = None
+
 @app.on_event("startup")
 def download_nltk_assets():
     """
-    Ensures NLTK VADER assets are downloaded safely at startup
-    to prevent multi-worker download race conditions.
+    Ensures NLTK VADER assets are downloaded safely at startup.
+    Gracefully intercepts infrastructure failures to activate degraded fallback loops.
     """
+    global _model_degraded, _model_degraded_reason
     try:
         SentimentIntensityAnalyzer()
         logger.info("NLTK VADER lexicon verified successfully.")
-    except LookupError:
-        logger.info("VADER lexicon missing. Downloading safely at startup...")
-        nltk.download('vader_lexicon', quiet=True)
-        logger.info("NLTK VADER lexicon downloaded successfully.")
+    except Exception as e:
+        logger.error(f"VADER framework load crash encountered. Triggering clean degraded fallback mode: {e}")
+        _model_degraded = True
+        _model_degraded_reason = f"NLTK VADER initialization failed: {str(e)}"
 
 
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
@@ -198,13 +204,13 @@ MOCK_PRODUCTS = [
 
 
 def _get_slow_response_threshold_ms() -> float:
+
     try:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
 
-def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
@@ -216,8 +222,6 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
-            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -235,15 +239,15 @@ def _get_cached_response(key: str):
         _cache_hits += 1
         return value
 
+
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
 def _apply_rate_limit(*args, **kwargs):
     """
     Applies token-bucket rate limiting dynamically.
     Optimized to handle Algorithmic Complexity DoS scenarios.
     """
-    import time
-    import random
     current_time = time.time()
+    allowed = False
     
     with _rate_limit_lock:
         bucket = _rate_limit_buckets.get(ip_address)
@@ -260,20 +264,16 @@ def _apply_rate_limit(*args, **kwargs):
             bucket["tokens"] -= 1.0
             _rate_limit_buckets[ip_address] = bucket
             allowed = True
-        else:
-            allowed = False
             
-        # Optimization: O(1) Eviction to prevent memory leak and Algorithmic Complexity DoS
-        if len(_rate_limit_buckets) > MAX_RATE_LIMIT_IPS:
-            _rate_limit_buckets.popitem(last=False)
-        # Optimization: Move cleanup out of the request loop path
+
         global _request_counter
         _request_counter += 1
-        if random.random() < 0.001 or _request_counter >= CLEANUP_THRESHOLD:
+        if random.random() < 0.01 or _request_counter >= CLEANUP_THRESHOLD:
             _request_counter = 0
-            # Evict empty keys inside amortized window block
-            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v or v.get("tokens", 0.0) <= 0.1]
-            for k in empty_keys:
+            # Evict stale buckets older than 1 hour to prevent memory leaks
+            cutoff = current_time - 3600
+            to_remove = [k for k, v in _rate_limit_buckets.items() if v["last_updated"] < cutoff]
+            for k in to_remove:
                 del _rate_limit_buckets[k]
                 
     return allowed
@@ -2791,17 +2791,13 @@ async def github_webhook(request: Request, response: Response):
         
     return {"status": "skipped", "reason": f"No triage actions required for event '{event}' action '{action}'."}
 
+# ---------------------------------------------------------------------------
+# Pydantic Schemas for Validation
+# ---------------------------------------------------------------------------
 
-# ── Frontend Serving ──────────────────────────────────────────────────
-frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
+class SearchRequest(BaseModel):
+    query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
+    limit: Optional[int] = 5
 
-if os.path.isdir(frontend_dir):
-    app.mount("/static", StaticFiles(directory=frontend_dir), name="frontend")
 
-    @app.get("/")
-    def serve_frontend():
-        return FileResponse(os.path.join(frontend_dir, "index.html"))
 
-    @app.get("/dashboard.html")
-    def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
