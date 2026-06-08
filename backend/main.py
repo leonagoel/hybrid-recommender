@@ -94,7 +94,6 @@ from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
-from src.model.knowledge_graph import KnowledgeGraphRecommender
 from src.model.trending_model import TrendingRecommender
 from src.model.issue_triage import triage_issue
 from src.model.federated_learning import train_federated_collaborative_model
@@ -614,495 +613,6 @@ class WeightsUpdate(BaseModel):
     alpha: float = 0.5
     beta: float = 0.3
     gamma: float = 0.2
-    delta: float = 0.0
-
-
-class PurchaseCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    product_id: int = Field(..., gt=0)
-    rating: float = Field(0.0, ge=0.0, le=5.0)
-    review_text: str = Field("", max_length=1000)
-
-
-class FeedbackCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    item: str = Field(..., min_length=1, max_length=500)
-    feedback: str = Field(..., min_length=1, max_length=2000)
-    thumbs: str = Field(..., pattern=r"^(up|down)$")
-
-class RealtimeRecommendationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    item_title: str
-    top_n: int = 10
-    explain: bool = False
-    target_catalog: Optional[str] = None
-
-
-# ── CSRF Token ───────────────────────────────────────────────────────
-@app.get(
-    "/api/csrf-token",
-    response_model=CSRFTokenResponse,
-    summary="Issue a CSRF token",
-    tags=["Security"],
-)
-def get_csrf_token(response: Response):
-    token = generate_csrf_token()
-    set_csrf_cookie(response, token)
-    return CSRFTokenResponse(csrfToken=token)
-
-
-class FederatedTrainRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    n_factors: int = 20
-    epochs: int = 5
-    lr: float = 0.05
-    reg: float = 0.05
-
-
-# ── Health ────────────────────────────────────────────────────────────
-@app.get("/health")
-@app.get("/api/health")
-def health_check():
-    """
-    Low-overhead health check endpoint for component tracking.
-    Checks database (Supabase), model readiness, and cache (Redis).
-    """
-    from src.data.db import get_supabase
-    from redis import Redis
-    from redis.exceptions import RedisError
-    import os
-
-def _set_cached_response(key: str, value: Any) -> None:
-    if _redis_client is not None:
-        try:
-            _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
-        except (RedisError, TypeError):
-            pass
-
-    with _cache_lock:
-        _response_cache[key] = (
-            time.time() + CACHE_TTL_SECONDS,
-            value,
-        )
-
-def _clear_response_cache() -> None:
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
-
-
-@app.get("/api/cache_metrics")
-def get_cache_metrics():
-    """Expose simple cache hit/miss metrics and configured TTL."""
-    return {
-        "cache_ttl_seconds": CACHE_TTL_SECONDS,
-        "hits": int(_cache_hits),
-        "misses": int(_cache_misses),
-        "current_items": len(_response_cache),
-    }
-
-
-def _build_tfidf_for_items(item_df):
-    """Build and return a TF-IDF matrix and vectorizer for the given item_df."""
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    texts = (item_df.get('combined') or item_df.get('title')).fillna('').astype(str).tolist()
-    vec = TfidfVectorizer(max_features=16384, stop_words='english')
-    matrix = vec.fit_transform(texts)
-    return vec, matrix
-
-
-def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tuple[float, float, float] = (0.6, 0.3, 0.1), target_catalog: Optional[str] = None):
-    """Cold-start blending of content similarity (TF-IDF) and simple popularity/rating signals.
-
-    Returns list of dicts with blended score and components.
-    """
-    import numpy as np
-    from sklearn.metrics.pairwise import cosine_similarity
-
-    item_df = models.get('item_df')
-    if item_df is None or item_df.empty:
-        return []
-
-    vec, matrix = _build_tfidf_for_items(item_df)
-    try:
-        qv = vec.transform([combined_text])
-    except Exception:
-        return []
-
-    scores = cosine_similarity(qv, matrix).flatten()
-
-    # Popularity normalization (review_count) and rating normalization
-    review_counts = item_df.get('review_count', None)
-    if review_counts is None or len(review_counts) == 0:
-        pop_norm = np.zeros_like(scores)
-    else:
-        max_rc = float(max(1, int(review_counts.max())))
-        pop_norm = (np.array(item_df.get('review_count').fillna(0).astype(float)) / max_rc)
-
-    ratings = item_df.get('rating')
-    if ratings is None or len(ratings) == 0:
-        rating_norm = np.zeros_like(scores)
-    else:
-        rating_norm = (np.array(item_df.get('rating').fillna(0).astype(float)) / 5.0)
-
-    alpha, beta, gamma = weights
-
-    blended = alpha * scores + beta * pop_norm + gamma * rating_norm
-
-    idxs = blended.argsort()[::-1]
-    results = []
-    seen = set()
-    for idx in idxs:
-        title = str(item_df.iloc[idx].get('title', ''))
-        if not title or title in seen:
-            continue
-        if target_catalog and 'category' in item_df.columns:
-            cat = str(item_df.iloc[idx].get('category', ''))
-            if cat and cat.casefold() != target_catalog.casefold():
-                continue
-        seen.add(title)
-        results.append({
-            'title': title,
-            'blended_score': float(blended[idx]),
-            'content_score': float(scores[idx]),
-            'popularity_score': float(pop_norm[idx]),
-            'rating_norm': float(rating_norm[idx]),
-        })
-        if len(results) >= top_n:
-            break
-
-    return results
-
-def _precompute_recommendation_cache(
-    top_n: int = 10,
-    explain: bool = False,
-) -> int:
-    if not models.get("ready") or models.get("item_df") is None:
-        return 0
-
-    count = 0
-    item_df = models["item_df"]
-
-    for title in item_df["title"].dropna().astype(str).unique():
-        cache_key = _cache_key("recommend", title, top_n, explain, "")
-
-        recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
-
-        if not recs:
-            continue
-
-        payload = {
-            "query_item": title,
-            "recommendations": recs,
-            "weights": models["hybrid"].get_weights(),
-            "explain": explain,
-            "target_catalog": None,
-            "model_version": ACTIVE_MODEL_VERSION,
-            "has_history": False,
-            "cache_precomputed": True,
-        }
-
-        _set_cached_response(cache_key, payload)
-        count += 1
-
-    return count
-
-# ── Search ────────────────────────────────────────────────────────────
-def _normalize_search_query(query: str) -> str:
-    normalized = " ".join((query or "").split())
-    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
-    return normalized
-
-@app.get("/api/search")
-def search_items(
-    request: Request,
-    response: Response,
-    q: str = "",
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0, le=10000),
-    sort: str = Query(
-        "relevance",
-        pattern="^(relevance|price-low|price-high|rating)$",
-    ),
-):
-    query = _normalize_search_query(q)
-    rate_limited = _apply_rate_limit(
-        request,
-        response,
-        scope="search",
-        limit_env="RATE_LIMIT_SEARCH_PER_MIN",
-        default_limit=60,
-    )
-
-
-_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
-
-
-def _validate_user_id(user_id: str) -> str:
-    """Allowlist-validate user_id to block injection via path parameters."""
-    if not _USER_ID_RE.match(user_id):
-        raise HTTPException(status_code=400, detail="Invalid user_id format.")
-    return user_id
-
-
-def _set_cache_headers(response: Response, status: str) -> None:
-    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
-    response.headers["X-Cache"] = status
-
-
-def _get_rate_limit(limit_env: str, default_limit: int) -> int:
-    try:
-        limit = int(os.environ.get(limit_env, str(default_limit)))
-    except ValueError:
-        return default_limit
-    return max(1, limit)
-
-
-def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
-    return JSONResponse(
-        status_code=429,
-        content={
-            "error": "Rate limit exceeded",
-            "message": "Too many requests. Please try again later.",
-        },
-        headers={
-            "x-ratelimit-limit": str(rate_limit),
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": str(reset_time),
-        },
-    )
-
-
-def _apply_rate_limit(
-    request: Request,
-    response: Response,
-    scope: str,
-    limit_env: str,
-    default_limit: int,
-) -> JSONResponse | None:
-    rate_limit = _get_rate_limit(limit_env, default_limit)
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    bucket_key = (scope, client_ip)
-    now = time.time()
-
-    with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
-
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
-
-        timestamps.append(now)
-        remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-    response.headers["x-ratelimit-limit"] = str(rate_limit)
-    response.headers["x-ratelimit-remaining"] = str(remaining)
-    response.headers["x-ratelimit-reset"] = str(reset_time)
-    return None
-
-
-
-def _extract_bearer_token(value: str | None) -> str:
-    if not value:
-        return ""
-    scheme, _, token = value.partition(" ")
-    if scheme.lower() != "bearer":
-        return ""
-    return token.strip()
-
-
-def _require_admin_access(request: Request) -> None:
-    expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
-    _placeholders = {"change-me-to-a-random-secret", "changeme_admin_token", "your-secret-admin-token-here"}
-    if not expected_token or expected_token in _placeholders:
-        # No real admin token configured — allow access (local dev mode)
-        return
-
-    provided_token = (
-        request.headers.get("x-admin-token", "").strip()
-        or _extract_bearer_token(request.headers.get("authorization"))
-    )
-    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
-        raise HTTPException(status_code=401, detail="Admin token required.")
-
-
-def _admin_access_dep(request: Request) -> None:
-    _require_admin_access(request)
-
-
-def _get_feedback_storage_client():
-    client = get_supabase_admin()
-    if client is None:
-        raise HTTPException(status_code=500, detail="Feedback storage is unavailable.")
-    return client
-
-
-# CORS
-allowed_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
-allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*", "X-CSRF-Token"],
-)
-
-app.add_middleware(CSRFMiddleware)
-
-# ── Response Time Monitoring ─────────────────────────────────────────
-SLOW_RESPONSE_THRESHOLD_MS = 500.0
-METRICS_SAMPLE_SIZE = 1000
-response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
-METRICS_WINDOW_SECONDS = 600
-response_metrics = {
-    "total_requests": 0,
-    "error_requests": 0,
-}
-response_metrics_lock = Lock()
-
-
-def _percentile(values, percentile):
-    if not values:
-        return 0.0
-    sorted_values = sorted(values)
-    index = math.ceil((percentile / 100) * len(sorted_values)) - 1
-    index = max(0, min(index, len(sorted_values) - 1))
-    return sorted_values[index]
-
-
-def record_response_metric(endpoint, method, status_code, response_time_ms):
-    with response_metrics_lock:
-        response_metrics["total_requests"] += 1
-        if status_code >= 400:
-            response_metrics["error_requests"] += 1
-        response_time_samples.append(
-          (time.time(), response_time_ms)
-        )
-
-        current_time = time.time()
-
-        while (
-          response_time_samples
-          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
-        ):
-          response_time_samples.popleft()
-    log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
-    if log_level == logging.WARNING:
-        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
-                       endpoint, method, status_code, response_time_ms, response_time_ms, endpoint)
-    else:
-        logger.info("API request endpoint=%s method=%s status=%s time=%.2fms",
-                    endpoint, method, status_code, response_time_ms)
-
-
-def reset_response_metrics():
-    with response_metrics_lock:
-        response_metrics["total_requests"] = 0
-        response_metrics["error_requests"] = 0
-        response_time_samples.clear()
-
-
-def get_response_metrics_snapshot():
-    with response_metrics_lock:
-        samples = [value for _, value in response_time_samples]
-        total_requests = response_metrics["total_requests"]
-        error_requests = response_metrics["error_requests"]
-    avg_response_time = sum(samples) / len(samples) if samples else 0.0
-    error_rate = (error_requests / total_requests) * 100 if total_requests else 0.0
-    return {
-        "avg_response_time": round(avg_response_time, 2),
-        "p95_response_time": round(_percentile(samples, 95), 2),
-        "total_requests": total_requests,
-        "error_rate": round(error_rate, 2),
-    }
-
-
-@app.middleware("http")
-async def response_time_middleware(request, call_next):
-    start_time = time.perf_counter()
-    response = None
-    status_code = 500
-    try:
-        response = await call_next(request)
-        status_code = response.status_code
-        return response
-    finally:
-        response_time_ms = (time.perf_counter() - start_time) * 1000
-        if response is not None:
-            response.headers["X-Response-Time"] = f"{response_time_ms:.2f}ms"
-        record_response_metric(request.url.path, request.method, status_code, response_time_ms)
-
-
-# ── State ─────────────────────────────────────────────────────────────
-models = {
-    "content": None,
-    "collab": None,
-    "hybrid": None,
-    "ready": False,
-    "item_df": None,
-    "build_time": None,
-    "last_trained_at": None,
-}
-
-MODEL_REGISTRY = {}
-ACTIVE_MODEL_VERSION = None
-SHADOW_MODEL_VERSION = None
-STAGING_MODEL_VERSION = None
-
-SHADOW_LOGS = []
-
-def generate_model_version():
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    return f"1.0.0-{timestamp}"
-
-
-class RealtimeConnectionHub:
-    def __init__(self):
-        self.active_connections = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict):
-        disconnected = []
-
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(message)
-            except Exception:
-                disconnected.append(connection)
-
-        for connection in disconnected:
-            self.disconnect(connection)
-
-realtime_hub = RealtimeConnectionHub()
-
-
-class WeightsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    alpha: float = 0.5
-    beta: float = 0.3
-    gamma: float = 0.2
-    delta: float = 0.0
 
 
 class PurchaseCreate(BaseModel):
@@ -1525,61 +1035,64 @@ async def recommend_item(
     Returns paginated hybrid recommendations for the given item title.
     Supports limit/offset pagination with a pagination metadata block.
     """
-    all_results: list[dict] = []
-
-    # Attempt to use the hybrid model via Celery task
     try:
-        from src.model.hybrid_model import HybridRecommender
-        from src.model.content_model import ContentRecommender
-        from src.model.collaborative_model import CollaborativeRecommender
+        all_results: list[dict] = []
 
-        dm = getattr(sys.modules.get("__main__"), "_dataset_manager", None)
-        if dm is None:
-            from src.data.dataset_manager import DatasetManager
-            dm = DatasetManager()
-        item_df = getattr(dm, "_item_df", None) or getattr(dm, "item_df", None)
-        interaction_df = getattr(dm, "_interaction_df", None) or getattr(dm, "interaction_df", None)
+        # Attempt to use the hybrid model via Celery task
+        try:
+            from src.model.hybrid_model import HybridRecommender
+            from src.model.content_model import ContentRecommender
+            from src.model.collaborative_model import CollaborativeRecommender
 
-        if item_df is not None and not item_df.empty:
-            content_model = ContentRecommender(item_df)
-            collab_model = CollaborativeRecommender(interaction_df) if interaction_df is not None and not interaction_df.empty else None
-            hybrid = HybridRecommender(content_model, collab_model, item_df)
-            all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
-    except Exception:
-        logger.warning("Hybrid model unavailable, using fallback recommendations")
+            dm = getattr(sys.modules.get("__main__"), "_dataset_manager", None)
+            if dm is None:
+                from src.data.dataset_manager import DatasetManager
+                dm = DatasetManager()
+            item_df = getattr(dm, "_item_df", None) or getattr(dm, "item_df", None)
+            interaction_df = getattr(dm, "_interaction_df", None) or getattr(dm, "interaction_df", None)
 
-        # Fallback: return mock products sorted by title similarity
-        if not all_results:
-            query = title.lower()
-            scored = []
-            for p in MOCK_PRODUCTS:
-                score = sum(1 for w in query.split() if w in p["title"].lower())
-                if score > 0 or query in p["category"].lower():
-                    scored.append({**p, "hybrid_score": score, "content_score": score, "collab_score": 0})
-            scored.sort(key=lambda x: x["hybrid_score"], reverse=True)
-            all_results = scored if scored else [{
-                "title": p["title"],
-                "rating": p["rating"],
-                "hybrid_score": 0.5,
-                "content_score": 0.3,
-                "collab_score": 0.2,
-                "category": p["category"],
-                "review_count": p.get("review_count", 0),
-            } for p in MOCK_PRODUCTS[:3]]
+            if item_df is not None and not item_df.empty:
+                content_model = ContentRecommender(item_df)
+                collab_model = CollaborativeRecommender(interaction_df) if interaction_df is not None and not interaction_df.empty else None
+                hybrid = HybridRecommender(content_model, collab_model, item_df)
+                all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
+        except Exception:
+            logger.warning("Hybrid model unavailable, using fallback recommendations")
 
-        total = len(all_results)
-        paginated = all_results[offset:offset + limit]
+            # Fallback: return mock products sorted by title similarity
+            if not all_results:
+                query = title.lower()
+                scored = []
+                for p in MOCK_PRODUCTS:
+                    score = sum(1 for w in query.split() if w in p["title"].lower())
+                    if score > 0 or query in p["category"].lower():
+                        scored.append({**p, "hybrid_score": score, "content_score": score, "collab_score": 0})
+                scored.sort(key=lambda x: x["hybrid_score"], reverse=True)
+                all_results = scored if scored else [{
+                    "title": p["title"],
+                    "rating": p["rating"],
+                    "hybrid_score": 0.5,
+                    "content_score": 0.3,
+                    "collab_score": 0.2,
+                    "category": p["category"],
+                    "review_count": p.get("review_count", 0),
+                } for p in MOCK_PRODUCTS[:3]]
 
-        return {
-            "recommendations": paginated,
-            "pagination": {
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-                "next_offset": offset + limit if offset + limit < total else None,
-                "has_more": (offset + limit) < total,
-            },
-        }
+            total = len(all_results)
+            paginated = all_results[offset:offset + limit]
+
+            return {
+                "recommendations": paginated,
+                "pagination": {
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "next_offset": offset + limit if offset + limit < total else None,
+                    "has_more": (offset + limit) < total,
+                },
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
@@ -1797,14 +1310,7 @@ def build_models(
                     collab_model = CollaborativeRecommender(interaction_df)
     except Exception as e:
         logger.warning("Collaborative model data load failed: %s", e)
-        
-    kg_model = None
-    try:
-        kg_model = KnowledgeGraphRecommender(item_df, epochs=50)
-    except Exception as e:
-        logger.warning("Knowledge Graph model initialization failed: %s", e)
-        
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df, kg_model=kg_model)
+    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
     
     version = generate_model_version()
@@ -1812,7 +1318,6 @@ def build_models(
     MODEL_REGISTRY[version] = {
         "content": content_model,
         "collab": collab_model,
-        "kg": kg_model,
         "hybrid": hybrid_model,
         "item_df": item_df,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1833,7 +1338,6 @@ def build_models(
     
     models["content"] = content_model
     models["collab"] = collab_model
-    models["kg"] = kg_model
     models["hybrid"] = hybrid_model
     models["item_df"] = item_df
     models["ready"] = True
@@ -1847,7 +1351,6 @@ def build_models(
         "status": "staging",
         "items": len(item_df),
         "has_collaborative": collab_model is not None,
-        "has_knowledge_graph": kg_model is not None,
         "build_time_seconds": build_time,
 	"precomputed_recommendations": precomputed_count,
     }
@@ -1919,13 +1422,11 @@ def train_federated(
         logger.error("Federated training execution failed: %s", e)
         raise HTTPException(500, f"Federated training execution failed: {str(e)}")
 
-    kg_model = models.get("kg")
-    hybrid_model = HybridRecommender(content_model, collab_model, item_df, kg_model=kg_model)
+    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
 
     models["content"] = content_model
     models["collab"] = collab_model
-    models["kg"] = kg_model
     models["hybrid"] = hybrid_model
     models["item_df"] = item_df
     models["ready"] = True
@@ -2385,7 +1886,7 @@ def move_model_to_shadow(
 @app.get("/api/weights")
 def get_weights():
     if not models["ready"]:
-        return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2, "delta": 0.0}
+        return {"alpha": 0.5, "beta": 0.3, "gamma": 0.2}
     return models["hybrid"].get_weights()
 
 
@@ -2397,7 +1898,7 @@ def update_weights(
 ):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
-    models["hybrid"].set_weights(w.alpha, w.beta, w.gamma, w.delta)
+    models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
     _clear_response_cache()
     return {"message": "Weights updated", "weights": models["hybrid"].get_weights()}
 
