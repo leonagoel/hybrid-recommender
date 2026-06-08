@@ -140,7 +140,7 @@ class ContentRecommender:
 
         return validate_recommendations(
             results,
-            fallback_fn=lambda top_n: self._popularity_fallback(top_n),
+            fallback_fn=lambda top_n: self._popularity_fallback(top_n, exclude_title=title),
             top_n=top_n,
             context="content",
             force_padding=True
@@ -247,8 +247,11 @@ class ContentRecommender:
             force_padding=True
         )
 
-    def _popularity_fallback(self, top_n=10):
+    def _popularity_fallback(self, top_n=10, exclude_title=None):
         df = self.df.copy()
+        if exclude_title is not None and 'title' in df.columns:
+            df = df[df['title'].str.lower() != exclude_title.lower()]
+            
         if "rating" in df.columns:
             df = df.sort_values("rating", ascending=False)
         elif "review_count" in df.columns:
