@@ -665,7 +665,6 @@ class FederatedTrainRequest(BaseModel):
 
 
 # ── Health ────────────────────────────────────────────────────────────
-@app.get("/health")
 def _set_cached_response(key: str, value: Any) -> None:
     if _redis_client is not None:
         try:
