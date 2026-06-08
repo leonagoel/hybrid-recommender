@@ -164,6 +164,13 @@ class CollaborativeRecommender:
             raise ValueError("top_n must be a positive integer.")
         top_n = min(top_n, 100)
 
+        # Resolve type mismatch: try string coercion before cold-start fallback
+        if user_id not in self._user_to_idx:
+            for k in self._user_to_idx.keys():
+                if str(k) == str(user_id):
+                    user_id = k
+                    break
+
         if user_id not in self._user_to_idx:
             logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
             recs = self._popularity_fallback(top_n)
@@ -223,6 +230,13 @@ class CollaborativeRecommender:
 
     def predict_rating(self, user_id, title):
         """Predict the rating a user would give to an item."""
+        # Resolve type mismatch: try string coercion before returning None
+        if user_id not in self._user_to_idx:
+            for k in self._user_to_idx.keys():
+                if str(k) == str(user_id):
+                    user_id = k
+                    break
+
         if user_id not in self._user_to_idx or title not in self._title_to_idx:
             return None
         u_idx = self._user_to_idx[user_id]
