@@ -62,11 +62,75 @@ def test_recommendations_websocket_streams_updates(realtime_client):
     assert len(payload["recommendations"]) == 2
     assert all(item["title"] != "Alpha" for item in payload["recommendations"])
 
+def test_recommendations_websocket_accepts_structured_event(realtime_client):
+    with realtime_client.websocket_connect("/ws/recommendations") as websocket:
+        websocket.send_json({
+            "type": "recommendation_request",
+            "payload": {"item_title": "Alpha", "top_n": 2},
+        })
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "recommendations"
+    assert payload["payload"]["query_item"] == "Alpha"
+    assert len(payload["payload"]["recommendations"]) == 2
+
+
+def test_recommendations_websocket_rejects_invalid_payload(realtime_client):
+    with realtime_client.websocket_connect("/ws/recommendations") as websocket:
+        websocket.send_json({
+            "type": "recommendation_request",
+            "payload": {"top_n": 2},
+        })
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "error"
+    assert payload["error"]["code"] == "INVALID_PAYLOAD"
+
+
+def test_recommendations_websocket_rejects_invalid_top_n(realtime_client):
+    with realtime_client.websocket_connect("/ws/recommendations") as websocket:
+        websocket.send_json({
+            "type": "recommendation_request",
+            "payload": {"item_title": "Alpha", "top_n": 500},
+        })
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "error"
+    assert payload["error"]["code"] == "INVALID_PAYLOAD"
+
+
+def test_recommendations_websocket_ping_pong(realtime_client):
+    with realtime_client.websocket_connect("/ws/recommendations") as websocket:
+        websocket.send_json({"type": "ping", "payload": {}})
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "pong"
+    assert payload["payload"]["status"] == "ok"
+
+
+def test_recommendations_websocket_rejects_unsupported_event(realtime_client):
+    with realtime_client.websocket_connect("/ws/recommendations") as websocket:
+        websocket.send_json({"type": "unknown_event", "payload": {}})
+        payload = websocket.receive_json()
+
+    assert payload["type"] == "error"
+    assert payload["error"]["code"] == "UNSUPPORTED_EVENT"
+
+def post_with_csrf(client, url, payload):
+    token = "a" * 64
+    client.cookies.set("csrftoken", token)
+    return client.post(
+        url,
+        json=payload,
+        headers={"X-CSRF-Token": token},
+    )
+
 
 def test_realtime_behavior_endpoint_returns_http_fallback_payload(realtime_client):
-    response = realtime_client.post(
+    response = post_with_csrf(
+        realtime_client,
         "/api/realtime/behavior",
-        json={"item_title": "Alpha", "top_n": 2},
+        {"item_title": "Alpha", "top_n": 2},
     )
 
     assert response.status_code == 200
@@ -79,9 +143,10 @@ def test_realtime_behavior_endpoint_returns_http_fallback_payload(realtime_clien
 def test_realtime_behavior_requires_built_models(realtime_client):
     models["ready"] = False
 
-    response = realtime_client.post(
+    response = post_with_csrf(
+        realtime_client,
         "/api/realtime/behavior",
-        json={"item_title": "Alpha", "top_n": 2},
+        {"item_title": "Alpha", "top_n": 2},
     )
 
     assert response.status_code == 400

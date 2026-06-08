@@ -325,7 +325,7 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
+        except (RedisError, TypeError, json.JSONDecodeError):
             pass
 
     with _cache_lock:
@@ -1150,6 +1150,37 @@ class RealtimeRecommendationRequest(BaseModel):
     top_n: int = 10
     explain: bool = False
     target_catalog: Optional[str] = None
+
+class RealtimeClientEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(..., min_length=1, max_length=80)
+    payload: dict = Field(default_factory=dict)
+
+
+class RealtimeRecommendationPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_title: str = Field(..., min_length=1, max_length=500)
+    top_n: int = Field(10, ge=1, le=50)
+    explain: bool = False
+    user_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-zA-Z0-9_\-\.@]+$",
+    )
+
+
+def websocket_error(code: str, message: str):
+    return {
+        "type": "error",
+        "error": {
+            "code": code,
+            "message": message,
+        },
+        "message": message,
+    }
 
 
 # ── CSRF Token ───────────────────────────────────────────────────────
@@ -2366,35 +2397,102 @@ def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), 
 @app.websocket("/ws/recommendations")
 async def websocket_recommendations(websocket: WebSocket):
     await realtime_hub.connect(websocket)
+
     try:
         while True:
-            data = await websocket.receive_json()
-            item_title = data.get("item_title")
-            top_n = data.get("top_n", 10)
-            explain = data.get("explain", False)
-            user_id = data.get("user_id")
+            try:
+                data = await websocket.receive_json()
+            except Exception:
+                await websocket.send_json(
+                    websocket_error("INVALID_JSON", "Message must be valid JSON.")
+                )
+                continue
 
-            if not models.get("ready") or not models.get("hybrid"):
+            if "type" not in data and "item_title" in data:
+                event_type = "recommendation_request"
+                payload_data = data
+            else:
+                try:
+                    event = RealtimeClientEvent.model_validate(data)
+                    event_type = event.type
+                    payload_data = event.payload
+                except Exception:
+                    await websocket.send_json(
+                        websocket_error("INVALID_EVENT", "Invalid realtime event format.")
+                    )
+                    continue
+
+            if event_type == "ping":
                 await websocket.send_json({
-                    "type": "error",
-                    "message": "Models not built yet."
+                    "type": "pong",
+                    "payload": {
+                        "status": "ok",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
                 })
                 continue
 
-            recs = models["hybrid"].recommend(item_title, user_id=user_id, top_n=top_n, explain=explain)
+            if event_type in {"subscribe", "unsubscribe"}:
+                await websocket.send_json({
+                    "type": "connection_status",
+                    "payload": {
+                        "status": event_type,
+                        "channel": payload_data.get("channel", "recommendations"),
+                    },
+                })
+                continue
+
+            if event_type != "recommendation_request":
+                await websocket.send_json(
+                    websocket_error("UNSUPPORTED_EVENT", f"Unsupported event type: {event_type}")
+                )
+                continue
+
+            try:
+                request_payload = RealtimeRecommendationPayload.model_validate(payload_data)
+            except Exception:
+                await websocket.send_json(
+                    websocket_error("INVALID_PAYLOAD", "Invalid recommendation request payload.")
+                )
+                continue
+
+            if not models.get("ready") or not models.get("hybrid"):
+                await websocket.send_json(
+                    websocket_error("MODEL_NOT_READY", "Models not built yet.")
+                )
+                continue
+
+            recs = models["hybrid"].recommend(
+                request_payload.item_title,
+                user_id=request_payload.user_id,
+                top_n=request_payload.top_n,
+                explain=request_payload.explain,
+            )
+
             await websocket.send_json({
                 "type": "recommendations",
-                "query_item": item_title,
-                "recommendations": recs
+                "query_item": request_payload.item_title,
+                "recommendations": recs,
+                "payload": {
+                    "query_item": request_payload.item_title,
+                    "recommendations": recs,
+                },
             })
+
     except WebSocketDisconnect:
         realtime_hub.disconnect(websocket)
     except Exception as e:
-        logger.error("WebSocket error: %s", e)
+        logger.exception("WebSocket error")
         try:
-            realtime_hub.disconnect(websocket)
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e),
+            })
+            await websocket.close(code=1011)
         except Exception:
             pass
+        finally:
+            realtime_hub.disconnect(websocket)
 
 
 @app.post("/api/realtime/behavior")
