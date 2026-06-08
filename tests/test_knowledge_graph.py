@@ -9,10 +9,10 @@ import pandas as pd
 from fastapi.testclient import TestClient
 from types import SimpleNamespace
 
-from knowledge_graph import KnowledgeGraphRecommender
-from hybrid_model import HybridRecommender
-from content_model import ContentRecommender
-from collaborative_model import CollaborativeRecommender
+from src.model.knowledge_graph import KnowledgeGraphRecommender
+from src.model.hybrid_model import HybridRecommender
+from src.model.content_model import ContentRecommender
+from src.model.collaborative_model import CollaborativeRecommender
 from backend import main
 
 
