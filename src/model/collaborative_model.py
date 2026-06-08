@@ -188,7 +188,7 @@ class CollaborativeRecommender:
             
 
         try:
-            u_idx = self._user_to_idx[user_id]
+            u_idx = self._user_to_idx[mapped_user_id]
             user_vec = self.user_factors[u_idx]
             scores = np.dot(user_vec, self.item_factors)
 
