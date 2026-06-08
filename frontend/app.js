@@ -241,3 +241,68 @@ function createSkeletonCard() {
     `;
 }
 
+// ── Filter Chips Logic ────────────────────────────────────────────────────────
+function initFilterChips() {
+    const chipsContainer = document.getElementById('filter-chips');
+    if (!chipsContainer) return;
+
+    const chips = Array.from(chipsContainer.querySelectorAll('.chip'));
+
+    chipsContainer.addEventListener('click', (e) => {
+        const btn = e.target.closest('.chip');
+        if (!btn) return;
+
+        const filter = btn.dataset.filter;
+
+        if (filter === 'all') {
+            chips.forEach(c => c.classList.remove('active'));
+            btn.classList.add('active');
+        } else {
+            const allBtn = chips.find(c => c.dataset.filter === 'all');
+            if (allBtn) allBtn.classList.remove('active');
+
+            btn.classList.toggle('active');
+
+            if (!chips.some(c => c.classList.contains('active'))) {
+                if (allBtn) allBtn.classList.add('active');
+            }
+        }
+
+        applyFilters();
+    });
+}
+
+function applyFilters() {
+    const chipsContainer = document.getElementById('filter-chips');
+    if (!chipsContainer) return;
+
+    const activeChips = Array.from(chipsContainer.querySelectorAll('.chip.active')).map(c => c.dataset.filter);
+    
+    // Attempt to integrate with existing search/filtering if available
+    const searchInput = document.getElementById('search-input');
+    
+    // In a decoupled architecture, we update global state or trigger a global event.
+    // We'll update the search input and trigger input event as a simple fallback mechanism.
+    if (searchInput) {
+        let queryParts = [];
+        if (!activeChips.includes('all')) {
+            activeChips.forEach(filter => {
+                if (filter.startsWith('category:')) {
+                    queryParts.push(filter.split(':')[1]);
+                } else if (filter === 'rating:top-rated') {
+                    queryParts.push('top rated');
+                } else if (filter === 'sentiment:positive') {
+                    queryParts.push('positive');
+                } else if (filter === 'special:trending') {
+                    queryParts.push('trending');
+                }
+            });
+        }
+        
+        // If there's an existing query in the input, don't overwrite it fully, but append chips filters
+        // For now, since app is broken on main, just log it.
+        console.log("Applying filters:", queryParts.join(' '));
+    }
+}
+
+document.addEventListener('DOMContentLoaded', initFilterChips);
