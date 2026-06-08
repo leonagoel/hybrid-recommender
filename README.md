@@ -55,6 +55,26 @@
 
 ---
 
+## Table of Contents
+
+- [Architecture](#01--architecture)
+- [Features](#02--features)
+- [Tech Stack](#03--tech-stack)
+- [Project Structure](#04--project-structure)
+- [Quick Start](#05--quick-start)
+- [API Reference](#06--api-reference)
+- [Security](#07--security)
+- [FAQ](#08--faq)
+- [Screenshots](#09--screenshots)
+- [Troubleshooting](#10--troubleshooting)
+- [Setup Verification](#11--setup-verification)
+- [Beginner Contributor Tips](#12--beginner-contributor-tips)
+- [Contributors](#contributors)
+- [License](#license)
+- [Knowledge Graph Embeddings](#knowledge-graph-embeddings)
+
+---
+
 ## 01 — Architecture
 
 The core insight: blend three independent signals, each capturing something the others miss.
@@ -404,7 +424,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
-## 08 — Security
+## 07 — Security
 
 ```text
 ✓  No hardcoded credentials — config served via /api/config
@@ -418,7 +438,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
-## 09 — FAQ
+## 08 — FAQ
 
 <details>
 <summary><strong>How do I set up the project locally?</strong></summary>
@@ -762,4 +782,5 @@ Run:
 python scripts/generate_kg_embeddings.py
 
 ---
+
 
