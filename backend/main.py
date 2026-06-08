@@ -694,7 +694,6 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
-    return result
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
@@ -1801,8 +1800,7 @@ def build_models(
         
     kg_model = None
     try:
-        kg_model = KnowledgeGraphRecommender(item_df)
-        kg_model.train(epochs=50)
+        kg_model = KnowledgeGraphRecommender(item_df, epochs=50)
     except Exception as e:
         logger.warning("Knowledge Graph model initialization failed: %s", e)
         

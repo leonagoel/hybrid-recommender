@@ -364,7 +364,7 @@ class HybridRecommender:
         # 2.5 Knowledge Graph scores
         kg_map = {}
         if self.kg_model:
-            kg_recs = self.kg_model.recommend(source_title, top_n=top_n * 3, target_catalog=target_catalog)
+            kg_recs = self.kg_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
             for r in kg_recs:
                 if not isinstance(r, dict):
                     continue
