@@ -17,6 +17,7 @@ import secrets
 import re
 import json
 from redis import Redis
+from tasks import compute_recommendations
 from redis.exceptions import RedisError
 
 logger = logging.getLogger(__name__)
@@ -609,7 +610,6 @@ def generate_model_version():
     return f"1.0.0-{timestamp}"
 
 
-from backend.core.websockets import realtime_hub
 
 
 class WeightsUpdate(BaseModel):
@@ -1162,8 +1162,6 @@ def health_check():
         "model_loaded": models["ready"],
     }
 
-    return result
-
 
 # ── API Metrics ───────────────────────────────────────────────────────
 @app.get("/api/version")
@@ -1531,61 +1529,61 @@ async def recommend_item(
     Supports limit/offset pagination with a pagination metadata block.
     """
     try:
-    all_results: list[dict] = []
+        all_results: list[dict] = []
 
-    # Attempt to use the hybrid model via Celery task
-    try:
-        from src.model.hybrid_model import HybridRecommender
-        from src.model.content_model import ContentRecommender
-        from src.model.collaborative_model import CollaborativeRecommender
+        # Attempt to use the hybrid model via Celery task
+        try:
+            from src.model.hybrid_model import HybridRecommender
+            from src.model.content_model import ContentRecommender
+            from src.model.collaborative_model import CollaborativeRecommender
 
-        dm = getattr(sys.modules.get("__main__"), "_dataset_manager", None)
-        if dm is None:
-            from src.data.dataset_manager import DatasetManager
-            dm = DatasetManager()
-        item_df = getattr(dm, "_item_df", None) or getattr(dm, "item_df", None)
-        interaction_df = getattr(dm, "_interaction_df", None) or getattr(dm, "interaction_df", None)
+            dm = getattr(sys.modules.get("__main__"), "_dataset_manager", None)
+            if dm is None:
+                from src.data.dataset_manager import DatasetManager
+                dm = DatasetManager()
+            item_df = getattr(dm, "_item_df", None) or getattr(dm, "item_df", None)
+            interaction_df = getattr(dm, "_interaction_df", None) or getattr(dm, "interaction_df", None)
 
-        if item_df is not None and not item_df.empty:
-            content_model = ContentRecommender(item_df)
-            collab_model = CollaborativeRecommender(interaction_df) if interaction_df is not None and not interaction_df.empty else None
-            hybrid = HybridRecommender(content_model, collab_model, item_df)
-            all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
-    except Exception:
-        logger.warning("Hybrid model unavailable, using fallback recommendations")
+            if item_df is not None and not item_df.empty:
+                content_model = ContentRecommender(item_df)
+                collab_model = CollaborativeRecommender(interaction_df) if interaction_df is not None and not interaction_df.empty else None
+                hybrid = HybridRecommender(content_model, collab_model, item_df)
+                all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
+        except Exception:
+            logger.warning("Hybrid model unavailable, using fallback recommendations")
 
-        # Fallback: return mock products sorted by title similarity
-        if not all_results:
-            query = title.lower()
-            scored = []
-            for p in MOCK_PRODUCTS:
-                score = sum(1 for w in query.split() if w in p["title"].lower())
-                if score > 0 or query in p["category"].lower():
-                    scored.append({**p, "hybrid_score": score, "content_score": score, "collab_score": 0})
-            scored.sort(key=lambda x: x["hybrid_score"], reverse=True)
-            all_results = scored if scored else [{
-                "title": p["title"],
-                "rating": p["rating"],
-                "hybrid_score": 0.5,
-                "content_score": 0.3,
-                "collab_score": 0.2,
-                "category": p["category"],
-                "review_count": p.get("review_count", 0),
-            } for p in MOCK_PRODUCTS[:3]]
+            # Fallback: return mock products sorted by title similarity
+            if not all_results:
+                query = title.lower()
+                scored = []
+                for p in MOCK_PRODUCTS:
+                    score = sum(1 for w in query.split() if w in p["title"].lower())
+                    if score > 0 or query in p["category"].lower():
+                        scored.append({**p, "hybrid_score": score, "content_score": score, "collab_score": 0})
+                scored.sort(key=lambda x: x["hybrid_score"], reverse=True)
+                all_results = scored if scored else [{
+                    "title": p["title"],
+                    "rating": p["rating"],
+                    "hybrid_score": 0.5,
+                    "content_score": 0.3,
+                    "collab_score": 0.2,
+                    "category": p["category"],
+                    "review_count": p.get("review_count", 0),
+                } for p in MOCK_PRODUCTS[:3]]
 
-        total = len(all_results)
-        paginated = all_results[offset:offset + limit]
+            total = len(all_results)
+            paginated = all_results[offset:offset + limit]
 
-        return {
-            "recommendations": paginated,
-            "pagination": {
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-                "next_offset": offset + limit if offset + limit < total else None,
-                "has_more": (offset + limit) < total,
-            },
-        }
+            return {
+                "recommendations": paginated,
+                "pagination": {
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "next_offset": offset + limit if offset + limit < total else None,
+                    "has_more": (offset + limit) < total,
+                },
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
