@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 from celery.result import AsyncResult
 from celery_app import celery_app
-from tasks import compute_recommendations
+from tasks import get_recommendations
 
 
 # backend/main.py — corrected imports
@@ -215,7 +215,7 @@ def _recommendation_cache_key(
     return _cache_key("recommend", title, top_n, explain, user_id or "", target_catalog or "", model_version or "", strategy or "")
 
 def _get_cached_response(key: str):
-    global _cache_hits, _cache_misses
+    global _cache_misses
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -293,8 +293,6 @@ def get_cache_metrics():
         "current_items": len(_response_cache),
     }
 
-
-from backend.services.ml_service import _build_tfidf_for_items, cold_start_recommendation, _precompute_recommendation_cache
 
 
 def _normalize_search_query(query: str) -> str:
@@ -600,8 +598,6 @@ def generate_model_version():
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"1.0.0-{timestamp}"
 
-
-from backend.core.websockets import realtime_hub
 
 
 class WeightsUpdate(BaseModel):
@@ -999,8 +995,25 @@ def search_items(
     
             except Exception:
                 sentiment_value = "N/A"
-    
-    
+        else:
+            sentiment_value = raw_sentiment
+
+        results.append({
+            "id": p.get("id"),
+            "title": p.get("title", ""),
+            "description": p.get("description", ""),
+            "category": p.get("category", ""),
+            "rating": p.get("rating"),
+            "avg_sentiment": sentiment_value,
+            "review_count": p.get("review_count", 0),
+            "rank": p.get("rank", 0.0),
+        })
+
+    result_payload = {"results": results, "total": len(results), "offset": offset, "limit": limit}
+    _set_cached_response(cache_key, result_payload)
+    _set_cache_headers(response, "MISS")
+    return result_payload
+
 # ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
 @app.get("/api/recommendations/{item_id}/explanation")
 async def get_recommendation_explanation(item_id: str, user_id: str):
@@ -1009,7 +1022,7 @@ async def get_recommendation_explanation(item_id: str, user_id: str):
     Provides complete explanation percentages summing exactly to 100%.
     """
     try:
-        from backend.core.state import models, _model_lock
+        # models and _model_lock are module-level globals in main.py
         
         if not models.get("ready") or not models.get("hybrid"):
             raise HTTPException(status_code=400, detail="Models not built yet.")
