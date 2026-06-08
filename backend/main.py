@@ -811,31 +811,6 @@ def _normalize_search_query(query: str) -> str:
         raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
     return normalized
 
-@app.get("/api/search")
-def search_items(
-    request: Request,
-    response: Response,
-    q: str = "",
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0, le=10000),
-    sort: str = Query(
-        "relevance",
-        pattern="^(relevance|price-low|price-high|rating)$",
-    ),
-):
-    query = _normalize_search_query(q)
-    rate_limited = _apply_rate_limit(
-        request,
-        response,
-        scope="search",
-        limit_env="RATE_LIMIT_SEARCH_PER_MIN",
-        default_limit=60,
-    )
-
-
-_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
-
-
 def _validate_user_id(user_id: str) -> str:
     """Allowlist-validate user_id to block injection via path parameters."""
     if not _USER_ID_RE.match(user_id):
