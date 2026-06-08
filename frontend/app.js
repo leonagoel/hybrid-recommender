@@ -1,4 +1,4 @@
-import { initBenchmarkingDashboard } from './js/benchmarking.js';
+let initBenchmarkingDashboard = () => {};
 
 // ===== THEME TOGGLE =====
 const themeToggle = document.getElementById('theme-toggle');
@@ -118,7 +118,12 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
+    allProducts: [],
+    searchResults: [],
+    activeChips: new Set(['all']),
+    heatmapSelected: [],
     filters: { category: '', rating: '', sentiment: '' },
+    recommendationSocket: null,
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -234,7 +239,7 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = `${CONFIG.TOAST_EXIT_MS}ms ease`;
+        el.style.transition = '${CONFIG.TOAST_EXIT_MS}ms ease';
         setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
     }, CONFIG.TOAST_DURATION_MS);
 }
@@ -605,8 +610,7 @@ function renderSearchDropdown(results, query) {
                     ${r.category ? `· <span class="search-result__category">${r.category}</span>` : ''}
                 </div>
             </div>
-        `;
-        })
+        `)
         .join('');
 
     els.searchDropdown.classList.add('active');
@@ -1266,6 +1270,32 @@ async function loadRecommendationsOverHttp(title) {
     renderRecommendations(data);
 }
 
+// ── Recommendation Skeleton Loading ────────────────────────────────
+function renderRecSkeletons(count = 6) {
+  const strip = els.recsStrip;
+  strip.innerHTML = '';
+  strip.classList.add('skeleton-loading');
+  for (let i = 0; i < count; i++) {
+    const card = document.createElement('div');
+    card.className = 'rec-card skeleton';
+    card.innerHTML = `
+      <div class="skeleton rec-skel-image"></div>
+      <div class="rec-skel-content">
+        <div class="skeleton rec-skel-line rec-skel-title"></div>
+        <div class="skeleton rec-skel-line rec-skel-subtitle"></div>
+        <div class="skeleton rec-skel-line rec-skel-rating"></div>
+      </div>
+    `;
+    strip.appendChild(card);
+  }
+}
+
+function clearRecSkeletons() {
+  const strip = els.recsStrip;
+  strip.classList.remove('skeleton-loading');
+  strip.querySelectorAll('.rec-card.skeleton').forEach(el => el.remove());
+}
+
 async function loadRecommendations(title) {
     if (!state.modelReady) {
         toast('Build models first to get recommendations', 'info');
@@ -1281,37 +1311,19 @@ async function loadRecommendations(title) {
 )
 .hidden=true;
 
-els.recsStrip.innerHTML=`
-<div class="recommendation-loading">
-
-<div class="loading-card"></div>
-
-<div class="loading-card"></div>
-
-<div class="loading-card"></div>
-
-</div>
-`;
-    els.recsStrip.hidden = true;
-    els.recsStrip.innerHTML = '';
+    renderRecSkeletons(8);
+    els.recsStrip.hidden = false;
 
     try {
         const data = await API.get(`/api/recommend?title=${encodeURIComponent(title)}&top_n=12`);
         const recs = data.results || data.recommendations || [];
 
+        clearRecSkeletons();
         els.recsLoader.hidden = true;
-        els.recsStrip.hidden = false;
 
-        if (!recs.length) {
-    els.recsStrip.innerHTML = `
-        <div class="empty-recommendations">
-            <span class="empty-icon" aria-hidden="true">🔍</span>
-            <p>No recommendations found. Try a different product!</p>
-        </div>
-    `;
-    return;
-}
+        renderRecommendations(data);
     } catch {
+        clearRecSkeletons();
         try {
             await loadRecommendationsOverHttp(title);
         } catch {
@@ -1333,7 +1345,9 @@ async function handleUpload(file) {
         // We only inject the CSRF header manually.
         const res = await fetch('/api/upload', {
             method: 'POST',
-            headers: { ..._csrfHeaders() },
+            headers: { ..._csrfHeaders(),
+
+             },
             body: form,
         });
         if (!res.ok) throw new Error('Upload failed');
@@ -1644,6 +1658,29 @@ function setupScrollObserver() {
     state.scrollObserver.observe(els.scrollSentinel);
 }
 
+// ── Search ──────────────────────────────────────────────────────────
+async function handleSearch(query) {
+    if (!query || query.length < 1) {
+        els.typingIndicator.hidden = true;
+        closeSearchDropdown();
+        return;
+    }
+
+    clearTimeout(state.searchTimer);
+    els.typingIndicator.hidden = false;
+    state.searchTimer = setTimeout(async () => {
+        try {
+            const data = await API.get(`/api/search?q=${encodeURIComponent(query)}&limit=8&sort=${getSelectedSort()}`);
+            state.searchResults = data.results || [];
+            state.selectedSearchIdx = -1;
+            renderSearchDropdown(state.searchResults, query);
+            els.typingIndicator.hidden = true;
+        } catch {
+            closeSearchDropdown();
+            els.typingIndicator.hidden = true;
+        }
+    }, 300);
+}
 
 function renderSearchDropdown(results, query) {
     if (!results.length) {
@@ -1931,6 +1968,9 @@ const spinStyle = document.createElement('style');
 spinStyle.textContent = `@keyframes spin { to { transform: rotate(360deg); } } .spin { animation: spin 1s linear infinite; }`;
 document.head.appendChild(spinStyle);
 
+function initDebugMode() { /* no-op stub */ }
+function loadSavedWeights() { /* no-op stub */ }
+
 // ── Init ────────────────────────────────────────────────────────────
 async function init() {
     bindEvents();
@@ -1950,7 +1990,13 @@ async function init() {
     checkStatus().catch((e) => console.warn('Status error:', e));
 
     // Benchmarking dashboard
-    initBenchmarkingDashboard();
+    try {
+        const mod = await import('./js/benchmarking.js');
+        initBenchmarkingDashboard = mod.initBenchmarkingDashboard || initBenchmarkingDashboard;
+        initBenchmarkingDashboard();
+    } catch (e) {
+        console.warn('Benchmarking module load failed:', e.message);
+    }
 }
 
 async function loadCategories() {
