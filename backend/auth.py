@@ -1,6 +1,6 @@
 import os
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, status
 
 
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY")
@@ -13,13 +13,13 @@ def _require_admin_access(x_admin_key: str = Header(default=None)):
 
     if not ADMIN_API_KEY:
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="ADMIN_API_KEY is not configured on the server."
         )
 
     if x_admin_key != ADMIN_API_KEY:
         raise HTTPException(
-            status_code=403,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required."
         )
 
