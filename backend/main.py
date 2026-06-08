@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.join(_project_root, "src", "model"))
 
 from fastapi import ( # type: ignore
     FastAPI,
+    APIRouter,
     Depends,
     Header,
     UploadFile,
@@ -221,8 +222,6 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
-            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -239,6 +238,7 @@ def _get_cached_response(key: str):
             return None
         _cache_hits += 1
         return value
+
 
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
 def _apply_rate_limit(*args, **kwargs):
@@ -270,6 +270,7 @@ def _apply_rate_limit(*args, **kwargs):
         _request_counter += 1
         if random.random() < 0.01 or _request_counter >= CLEANUP_THRESHOLD:
             _request_counter = 0
+            # Evict stale buckets older than 1 hour to prevent memory leaks
             cutoff = current_time - 3600
             to_remove = [k for k, v in _rate_limit_buckets.items() if v["last_updated"] < cutoff]
             for k in to_remove:
