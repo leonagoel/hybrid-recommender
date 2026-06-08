@@ -105,7 +105,9 @@ async function initSupabase() {
 const state = {
     user: null,
     isGuest: true,
-    products: [],    trending: [],    page: 1,
+    products: [],    
+    trending: [],    
+    page: 1,
     perPage: 20,
     totalProducts: 0,
     isLoading: false,
@@ -123,6 +125,15 @@ const state = {
     activeChips: new Set(['all']),
     heatmapSelected: [],
     filters: { category: '', rating: '', sentiment: '' },
+
+    // 🚀 CRITICAL SECURITY BUG FIX: Initialize missing structural state fields
+    activeChips: new Set(),
+    heatmapSelected: [],
+    allProducts: [],
+    searchResults: [],
+    recommendationSocket: null,
+    pendingRecommendationTitle: null,
+    realtimeReady: false
     recommendationSocket: null,
 };
 
@@ -239,7 +250,7 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = '${CONFIG.TOAST_EXIT_MS}ms ease';
+        el.style.transition = `${CONFIG.TOAST_EXIT_MS}ms ease`;
         setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
     }, CONFIG.TOAST_DURATION_MS);
 }
@@ -566,8 +577,8 @@ function initTypeToSearch() {
     });
 }
 
-// ── Search ──────────────────────────────────────────────────────────
-async function handleSearch(query) {
+// ── Search (full-text) ──────────────────────────────────────────────
+async function triggerFullSearch(query) {
     if (!query || query.length < 1) {
         closeSearchDropdown();
         return;
