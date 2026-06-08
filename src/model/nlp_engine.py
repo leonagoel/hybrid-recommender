@@ -5,6 +5,7 @@ Uses NLTK VADER for lightweight sentiment analysis on user review text.
 import nltk
 import numpy as np
 import pandas as pd
+from typing import List, Optional
 
 # Download VADER lexicon (only on first run)
 try:
@@ -18,15 +19,12 @@ _analyzer = SentimentIntensityAnalyzer()
 
 
 def analyze_sentiment(text: str) -> float:
-    """Analyze the sentiment of a single text string using VADER polarity scores.
-
-    Args:
-        text (str): The raw text string or user review to analyze.
-
-    Returns:
-        float: The calculated VADER compound sentiment score bounded between 
-            -1.0 (highly negative) and 1.0 (highly positive). Returns 0.0 
-            if the string is empty or invalid.
+    """
+    Analyze sentiment of a single text string.
+    Returns the VADER compound score in range [-1.0, 1.0].
+      > 0.05  → positive
+      < -0.05 → negative
+      else    → neutral
     """
     if not text or not isinstance(text, str) or text.strip() == '':
         return 0.0
@@ -35,15 +33,7 @@ def analyze_sentiment(text: str) -> float:
 
 
 def sentiment_label(score: float) -> str:
-    """Convert a numerical VADER compound sentiment score to a string category.
-
-    Args:
-        score (float): The compound sentiment score to classify.
-
-    Returns:
-        str: Human-readable category label mapping to 'positive' (score >= 0.05),
-            'negative' (score <= -0.05), or 'neutral' (all other values).
-    """
+    """Convert a compound score to a human-readable label."""
     if score >= 0.05:
         return 'positive'
     elif score <= -0.05:
@@ -53,19 +43,9 @@ def sentiment_label(score: float) -> str:
 
 
 def batch_analyze(df: pd.DataFrame, text_col: str = 'review_text') -> pd.DataFrame:
-    """Process an entire text column in a DataFrame to attach sentiment metrics.
-
-    Applies sentence-level extraction rules sequentially across rows, tracking 
-    both raw scores and categorical string descriptors.
-
-    Args:
-        df (pd.DataFrame): Input DataFrame containing the text reviews.
-        text_col (str, optional): Target column header containing string entries 
-            to analyze. Defaults to 'review_text'.
-
-    Returns:
-        pd.DataFrame: A shallow copy of the modified DataFrame containing two 
-            new fields: 'sentiment_score' and 'sentiment_label'.
+    """
+    Add sentiment_score and sentiment_label columns to the DataFrame.
+    Operates on the specified text column.
     """
     df = df.copy()
     if text_col not in df.columns:
@@ -79,19 +59,9 @@ def batch_analyze(df: pd.DataFrame, text_col: str = 'review_text') -> pd.DataFra
 
 
 def aggregate_sentiment_by_item(df: pd.DataFrame, item_col: str = 'title') -> pd.DataFrame:
-    """Compute structural average sentiment parameters grouped by item tracking identities.
-
-    Triggers batch evaluation metrics if raw calculations are missing, grouping 
-    records to calculate mean intensity metrics alongside frequency properties.
-
-    Args:
-        df (pd.DataFrame): Data matrix tracking interaction history rows.
-        item_col (str, optional): Unique key field grouping baseline products. 
-            Defaults to 'title'.
-
-    Returns:
-        pd.DataFrame: A grouped DataFrame containing columns for the item key, 
-            'avg_sentiment' (float mean score), and 'review_count' (integer total).
+    """
+    Compute average sentiment score per unique item.
+    Returns a DataFrame with columns: [item_col, 'avg_sentiment', 'review_count'].
     """
     if 'sentiment_score' not in df.columns:
         df = batch_analyze(df)
@@ -104,18 +74,14 @@ def aggregate_sentiment_by_item(df: pd.DataFrame, item_col: str = 'title') -> pd
     return agg
 
 
-def compute_product_sentiment(reviews):
-    """Dynamically compute average sentiment for unindexed items during pipeline fallbacks.
+def compute_product_sentiment(reviews: Optional[List[str]]) -> Optional[float]:
+    """
+    Dynamically compute average sentiment for products
+    whose sentiment has not yet been processed by the
+    NLP batch pipeline.
 
-    Cleans empty structures out of runtime text arrays, providing an isolated fallback 
-    calculation metric to protect live endpoints from tracking blank baselines.
-
-    Args:
-        reviews (list): Array tracking string content pieces or comments.
-
-    Returns:
-        float | None: A 4-decimal rounded float mean score value if valid data 
-            is parsed; otherwise None.
+    Used as a fallback for newly added products so the
+    API never returns misleading 0.0 sentiment values.
     """
     if not reviews:
         return None

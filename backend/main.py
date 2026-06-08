@@ -85,6 +85,7 @@ logger = logging.getLogger(__name__)
 
 from celery.result import AsyncResult # type: ignore
 from celery_app import celery_app
+from tasks import get_recommendations
 
 
 # backend/main.py — corrected imports
@@ -209,7 +210,7 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
-    global _cache_misses
+    global _cache_misses, _cache_hits
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -252,7 +253,6 @@ def _apply_rate_limit(*args, **kwargs):
             _rate_limit_buckets[ip_address] = bucket
         else:
             _rate_limit_buckets.move_to_end(ip_address)
-        else:
             elapsed = current_time - bucket["last_updated"]
             bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
             bucket["last_updated"] = current_time
@@ -303,8 +303,6 @@ def get_cache_metrics():
         "current_items": len(_response_cache),
     }
 
-
-from backend.services.ml_service import _build_tfidf_for_items, cold_start_recommendation, _precompute_recommendation_cache
 
 
 def _normalize_search_query(query: str) -> str:
@@ -611,8 +609,6 @@ def generate_model_version():
     return f"1.0.0-{timestamp}"
 
 
-from backend.core.websockets import realtime_hub
-
 
 class WeightsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -666,18 +662,7 @@ class FederatedTrainRequest(BaseModel):
     reg: float = 0.05
 
 
-# ── Health ────────────────────────────────────────────────────────────
-@app.get("/health")
-@app.get("/api/health")
-def health_check():
-    """
-    Low-overhead health check endpoint for component tracking.
-    Checks database (Supabase), model readiness, and cache (Redis).
-    """
-    from src.data.db import get_supabase
-    from redis import Redis
-    from redis.exceptions import RedisError
-    import os
+
 
 def _set_cached_response(key: str, value: Any) -> None:
     if _redis_client is not None:
@@ -699,7 +684,7 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
-    return result
+
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
@@ -824,27 +809,6 @@ def _normalize_search_query(query: str) -> str:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
     return normalized
-
-@app.get("/api/search")
-def search_items(
-    request: Request,
-    response: Response,
-    q: str = "",
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0, le=10000),
-    sort: str = Query(
-        "relevance",
-        pattern="^(relevance|price-low|price-high|rating)$",
-    ),
-):
-    query = _normalize_search_query(q)
-    rate_limited = _apply_rate_limit(
-        request,
-        response,
-        scope="search",
-        limit_env="RATE_LIMIT_SEARCH_PER_MIN",
-        default_limit=60,
-    )
 
 
 _USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
@@ -1495,27 +1459,30 @@ def search_items(
                 sentiment_value = "N/A"
         else:
             sentiment_value = raw_sentiment
-  
         results.append({
-            'id': p.get('id'),
-            'title': p.get('title'),
-            'description': p.get('description'),
-            'category': p.get('category'),
-            'price': _product_price(p),
-            'rating': float(p.get('rating') or 0),
-            'sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0)
+            "id": p.get("id"),
+            "title": p.get("title", ""),
+            "description": p.get("description", ""),
+            "category": p.get("category", ""),
+            "price": _product_price(p),
+            "rating": p.get("rating"),
+            "sentiment": sentiment_value,
+            "avg_sentiment": sentiment_value,
+            "review_count": p.get("review_count", 0),
+            "rank": p.get("rank", 0.0),
         })
-  
-    final_output = {
-        'query': query,
-        'limit': limit,
-        'offset': offset,
-        'total_found': len(results),
-        'results': results
+
+    result_payload = {
+        "results": results, 
+        "total": len(results), 
+        "total_found": len(results),
+        "offset": offset, 
+        "limit": limit,
+        "query": query
     }
-    
-    return final_output
+    _set_cached_response(cache_key, result_payload)
+    _set_cache_headers(response, "MISS")
+    return result_payload
 
 
 # ── Feature: Paginated Recommendations ───────────────────────────────
@@ -1530,7 +1497,6 @@ async def recommend_item(
     Returns paginated hybrid recommendations for the given item title.
     Supports limit/offset pagination with a pagination metadata block.
     """
-    try:
     all_results: list[dict] = []
 
     # Attempt to use the hybrid model via Celery task
@@ -1588,7 +1554,6 @@ async def recommend_item(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
 @app.get("/api/recommendations/{item_id}/explanation")
