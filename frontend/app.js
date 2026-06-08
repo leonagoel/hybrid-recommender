@@ -1,4 +1,4 @@
-import { initBenchmarkingDashboard } from './js/benchmarking.js';
+let initBenchmarkingDashboard = () => {};
 
 // ===== THEME TOGGLE =====
 const themeToggle = document.getElementById('theme-toggle');
@@ -120,6 +120,10 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
+    allProducts: [],
+    searchResults: [],
+    activeChips: new Set(['all']),
+    heatmapSelected: [],
     filters: { category: '', rating: '', sentiment: '' },
 
     // 🚀 CRITICAL SECURITY BUG FIX: Initialize missing structural state fields
@@ -130,6 +134,7 @@ const state = {
     recommendationSocket: null,
     pendingRecommendationTitle: null,
     realtimeReady: false
+    recommendationSocket: null,
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -245,7 +250,7 @@ function toast(message, type = 'info') {
     setTimeout(() => {
         el.style.opacity = '0';
         el.style.transform = 'translateX(100%)';
-        el.style.transition = `${CONFIG.TOAST_EXIT_MS}ms ease`;
+        el.style.transition = '${CONFIG.TOAST_EXIT_MS}ms ease';
         setTimeout(() => el.remove(), CONFIG.TOAST_EXIT_MS);
     }, CONFIG.TOAST_DURATION_MS);
 }

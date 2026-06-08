@@ -95,6 +95,21 @@ cd ../backend && uvicorn main:app --reload
 cd ../frontend && npm run dev
 ```
 
+### Pre-commit Hooks
+
+After cloning, install the pre-commit hooks to automatically lint and format your code before each commit:
+
+```bash
+pip install pre-commit   # or: pip install -r requirements.txt
+pre-commit install
+```
+
+The hooks will run Ruff linting/formatting, check for trailing whitespace, fix end-of-files, validate YAML/JSON, and more. You can also run them manually at any time:
+
+```bash
+pre-commit run --all-files
+```
+
 ---
 
 ## Finding Something to Work On

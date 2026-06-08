@@ -88,18 +88,18 @@ def test_federated_server_aggregation():
     
     # Updated global item factors
     # For Item A (idx 0), average update = mean([0.1,0.2,0.3] and [0.3,0.4,0.5]) = [0.2, 0.3, 0.4]
-    # New Item A factor = initial_A + lr * average_update
+    # New Item A factor = initial_A + lr * (average_update - reg * initial_A)
     expected_A_update = np.array([0.2, 0.3, 0.4])
     assert np.allclose(
         server.global_item_factors[:, 0],
-        initial_factors[:, 0] + 0.1 * expected_A_update
+        initial_factors[:, 0] + 0.1 * (expected_A_update - 0.05 * initial_factors[:, 0])
     )
     
     # For Item B (idx 1), average update = [0.2, 0.4, 0.6]
     expected_B_update = np.array([0.2, 0.4, 0.6])
     assert np.allclose(
         server.global_item_factors[:, 1],
-        initial_factors[:, 1] + 0.1 * expected_B_update
+        initial_factors[:, 1] + 0.1 * (expected_B_update - 0.05 * initial_factors[:, 1])
     )
 
 
