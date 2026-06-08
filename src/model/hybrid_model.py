@@ -417,18 +417,18 @@ class HybridRecommender:
                 b * collab_scores[i] +
                 g * sentiment_scores[i]
             )
-
-            # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
+# Light popularity boost treated as a transparent fourth signal 
             popularity = self._popularity_map.get(item['title'], 0.5)
             popularity_bonus = 0.05 * popularity
-            
-            # Enforce strict upper bound limit check
-            hybrid = min(1.0, hybrid_base + popularity_bonus)
 
-            # Lookup info from content model's df
+            # Enforce dynamic boundary check and explicitly clamp to prevent 1.0 leakage
+            hybrid = min(1.0, float(hybrid_base + popularity_bonus))
+
+            # Lookup info from content model's df securely
             row_data = self.content_model.df[
                 self.content_model.df['title'] == item['title']
             ]
+
             avg_rating = self._rating_map.get(item['title'], 0.0)
             category = self._category_map.get(item['title'], '')
             description = ''
@@ -437,7 +437,6 @@ class HybridRecommender:
                 description = str(row_data.iloc[0].get('description', ''))[:200]
                 tp = row_data.iloc[0].get('top_reviews', [])
                 top_reviews = tp if isinstance(tp, list) else []
-
             result = {
                 'title': item['title'],
                 'content_score': round(content_scores[i], 4),
@@ -586,6 +585,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
+               'raw_content': round(raw_item['raw_content'], 4),
                 'raw_content': round(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
