@@ -810,7 +810,6 @@ def _normalize_search_query(query: str) -> str:
         raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
     return normalized
 
-@app.get("/api/search")
 def search_items(
     request: Request,
     response: Response,
