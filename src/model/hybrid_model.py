@@ -486,11 +486,11 @@ class HybridRecommender:
             else:
                 a, b, g = self.alpha, self.beta, self.gamma
         else:
-            candidate_titles = [it['title'] for it in items]
             arm_id = self.select_bandit_arm()
-            
+            a, b, g = getattr(self, 'bandit_arms', [(self.alpha, self.beta, self.gamma)])[arm_id]
+
             a, b, g, d = self._get_active_weights(
-                self.alpha, self.beta, self.gamma, self.delta,
+                a, b, g, getattr(self, 'delta', 0),
                 user_id=user_id,
                 candidate_titles=list(candidates.keys()),
             )

@@ -95,7 +95,8 @@ class NeuralCollaborativeRecommender:
         if n_users == 0 or n_items == 0:
             self.model = None
         else:
-            self.model = NCFNetwork(num_users=n_users, num_items=n_items, embedding_dim=embedding_dim).to(self.device)
+            self.model = NCFNetwork(
+                num_users=n_users, num_items=n_items, embedding_dim=embedding_dim).to(self.device)
             self._train_model(user_indices, item_indices, ratings, epochs, batch_size)
 
         # Build catalog map if catalog column is present
@@ -260,7 +261,8 @@ class NeuralCollaborativeRecommender:
                     mapped_user_id = key
                     break
 
-        if mapped_user_id not in self._user_to_idx or title not in self._title_to_idx or self.model is None:
+        if mapped_user_id not in self._user_to_idx or \
+           title not in self._title_to_idx or self.model is None:
             return None
             
         u_idx = self._user_to_idx[mapped_user_id]
@@ -287,7 +289,8 @@ class NeuralCollaborativeRecommender:
         return [
             {
                 'title': row['title'],
-                'collab_score' if use_collab_score else 'predicted_score': round(float(row.get('mean', 0.0)), 4),
+                'collab_score' if use_collab_score else 'predicted_score': round(
+                    float(row.get('mean', 0.0)), 4),
                 'fallback': True
             }
             for _, row in top_items.iterrows()

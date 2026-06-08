@@ -222,6 +222,8 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
+        except Exception:
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -2439,19 +2441,18 @@ def get_categories():
         return {"categories": []}
     
     @app.post("/api/interactions")
-def log_interaction(data: InteractionCreate):
+    def log_interaction(data: InteractionCreate):
+        USER_INTERACTIONS.append({
+            "user_id": data.user_id,
+            "item_id": data.item_id,
+            "interaction_type": data.interaction_type,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
 
-    USER_INTERACTIONS.append({
-        "user_id": data.user_id,
-        "item_id": data.item_id,
-        "interaction_type": data.interaction_type,
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    })
-
-    return {
-        "message": "Interaction logged successfully",
-        "interaction": USER_INTERACTIONS[-1]
-    }
+        return {
+            "message": "Interaction logged successfully",
+            "interaction": USER_INTERACTIONS[-1]
+        }
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
