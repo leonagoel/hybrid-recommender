@@ -198,23 +198,23 @@ class HybridRecommender:
 
     def get_weights(self):
         return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
+
     def select_bandit_arm(self):
-    import random
+        import random
 
-    if random.random() < self.epsilon:
-        return random.randint(0, len(self.bandit_arms) - 1)
+        if random.random() < self.epsilon:
+            return random.randint(0, len(self.bandit_arms) - 1)
 
-    best_arm = max(
-        self.arm_rewards,
-        key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
-    )
+        best_arm = max(
+            self.arm_rewards,
+            key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
+        )
 
-    return best_arm
+        return best_arm
 
     def update_bandit_reward(self, arm_id, reward):
-    self.arm_counts[arm_id] += 1
-    self.arm_rewards[arm_id] += reward
-        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
+        self.arm_counts[arm_id] += 1
+        self.arm_rewards[arm_id] += reward
 
     def set_fairness(self, enabled=None, key=None, max_share=None):
         if enabled is not None:
@@ -489,7 +489,7 @@ class HybridRecommender:
         else:
             candidate_titles = [it['title'] for it in items]
             arm_id = self.select_bandit_arm()
-a, b, g = self.bandit_arms[arm_id]
+            a, b, g = self.bandit_arms[arm_id]
             a, b, g, d = self._get_active_weights(
                 self.alpha, self.beta, self.gamma, self.delta,
                 user_id=user_id,
