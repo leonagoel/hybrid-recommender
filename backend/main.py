@@ -252,7 +252,6 @@ def _apply_rate_limit(*args, **kwargs):
             _rate_limit_buckets[ip_address] = bucket
         else:
             _rate_limit_buckets.move_to_end(ip_address)
-        else:
             elapsed = current_time - bucket["last_updated"]
             bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
             bucket["last_updated"] = current_time
