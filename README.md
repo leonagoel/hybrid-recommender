@@ -7,7 +7,20 @@
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+## 📌 Table of Contents
+- [🚀 Features](#-features)
+- [⚙️ Installation](#️-installation)
+- [💻 Usage](#-usage)
+- [📂 Project Structure](#-project-structure)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
+
+---
+
+
 ![Coverage](https://img.shields.io/badge/coverage-50%25-brightgreen)
+[![Live Demo](https://shields.io)](https://vercel.app)
+
 
 <div align="center">
 
