@@ -279,3 +279,4 @@ def compute_recommendations(item_title: str, top_n: int = 10, explain: bool = Fa
             "Worker: compute_recommendations failed for item %s: %s", item_title, exc
         )
         raise
+
