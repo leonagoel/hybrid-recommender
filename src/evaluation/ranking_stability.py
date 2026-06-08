@@ -30,7 +30,7 @@ FIXED_QUERIES = [
 def calculate_top_k_overlap(list1: list, list2: list, k: int) -> float:
     """Fraction of top-K elements shared between list1 and list2."""
     if k <= 0:
-        return 0.0
+        raise ValueError("k must be a positive integer")
     sub1 = list1[:k]
     sub2 = list2[:k]
     if not sub1 or not sub2:
