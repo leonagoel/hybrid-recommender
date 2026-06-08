@@ -42,6 +42,27 @@
 
 ---
 
+## Table of Contents
+
+- [Overview](#01--architecture)
+- [Features](#02--features)
+- [Tech Stack](#03--tech-stack)
+- [Project Structure](#04--project-structure)
+- [Quick Start](#05--quick-start)
+- [API Reference](#06--api-reference)
+- [Evaluation](#07--evaluation)
+- [Security](#08--security)
+- [FAQ](#09--faq)
+- [Screenshots](#10--screenshots)
+- [Troubleshooting](#11--troubleshooting)
+- [Setup Verification](#12--setup-verification)
+- [Beginner Contributor Tips](#13--beginner-contributor-tips)
+- [Contributors](#contributors)
+- [License](#license)
+- [Knowledge Graph Embeddings](#knowledge-graph-embeddings)
+
+---
+
 ## 01 — Architecture
 
 The core insight: blend three independent signals, each capturing something the others miss.
@@ -458,7 +479,7 @@ Yes, you can use your own dataset as long as it follows the expected format used
 
 ---
 
-## 09 — Screenshots
+## 10 — Screenshots
 
 ### Home Page
 ![Home Page](assets/homepage.png)
@@ -471,7 +492,7 @@ Yes, you can use your own dataset as long as it follows the expected format used
 
 ---
 
-## 10 — Troubleshooting
+## 11 — Troubleshooting
 
 ### ModuleNotFoundError
 
@@ -504,7 +525,7 @@ SUPABASE_SERVICE_KEY=your_service_key
 
 ---
 
-## 11 — Setup Verification
+## 12 — Setup Verification
 
 ```bash
 # Backend
@@ -556,7 +577,7 @@ Or:
 ```
 ---
 
-## 12 — Beginner Contributor Tips
+## 13 — Beginner Contributor Tips
 
 ### Sync Your Fork Before Starting
 
