@@ -88,6 +88,12 @@ class FederatedServer:
         learning_rate: Global learning rate for updating item factors.
         reg: Regularization strength.
         """
+        if not item_list:
+            raise ValueError("item_list cannot be empty")
+        if n_factors <= 0:
+            raise ValueError("n_factors must be a positive integer")
+        if learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
         self.item_list = item_list
         self.n_factors = n_factors
         self.lr = learning_rate

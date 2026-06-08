@@ -14,6 +14,12 @@ class ModelHyperparametersSchema(BaseModel):
     n_factors: int = Field(default=50, ge=1, description="Number of latent factors for SVD matrix factorization.")
     use_implicit: bool = Field(default=True, description="Whether to treat interactions implicitly.")
 
+    @model_validator(mode="after")
+    def validate_n_factors_positive(self) -> "ModelHyperparametersSchema":
+        if self.n_factors <= 0:
+            raise ValueError("n_factors must be a positive integer")
+        return self
+
     class Config:
         frozen = True
         extra = "forbid"
@@ -38,4 +44,4 @@ class HybridWeightsSchema(BaseModel):
 
     class Config:
         frozen = True
-        extra = "forbid"
+        extra = "forbid"
