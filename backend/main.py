@@ -608,9 +608,6 @@ def generate_model_version():
     return f"1.0.0-{timestamp}"
 
 
-from backend.core.websockets import realtime_hub
-
-
 class WeightsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
