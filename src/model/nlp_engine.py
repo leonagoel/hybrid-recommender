@@ -30,8 +30,9 @@ def analyze_sentiment(text: str) -> float:
             if the string is empty or invalid.
     """
     def analyze_sentiment(text: str) -> float:
-    if text is None:
-        return 0.0
+        if text is None:
+            return 0.0
+        
 
     if not isinstance(text, str):
         return 0.0
@@ -138,12 +139,8 @@ def compute_product_sentiment(reviews: List[str]) -> Optional[float]:
     if not valid_reviews:
         return None
 
-    scores = [analyze_sentiment(review) for review in valid_reviews]
-
-    if not scores:
-        return None
-
     scores = np.array(
     [analyze_sentiment(review) for review in valid_reviews]
 )
-return round(scores.mean(), 4)
+    
+    return round(scores.mean(), 4)
