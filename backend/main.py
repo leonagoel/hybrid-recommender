@@ -214,7 +214,7 @@ def _get_slow_response_threshold_ms() -> float:
 
 
 def _get_cached_response(key: str):
-    global _cache_misses
+    global _cache_hits, _cache_misses
     if _redis_client is not None:
         try:
             cached = _redis_client.get(key)
@@ -256,7 +256,6 @@ def _apply_rate_limit(*args, **kwargs):
             _rate_limit_buckets[ip_address] = bucket
         else:
             _rate_limit_buckets.move_to_end(ip_address)
-        else:
             elapsed = current_time - bucket["last_updated"]
             bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
             bucket["last_updated"] = current_time
@@ -278,121 +277,6 @@ def _apply_rate_limit(*args, **kwargs):
                 
     return allowed
 
-# ---------------------------------------------------------------------------
-# Pydantic Schemas for Validation
-# ---------------------------------------------------------------------------
-
-class SearchRequest(BaseModel):
-    query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
-    limit: Optional[int] = 5
-
-class RecommendationRequest(BaseModel):
-    item_title: str
-    top_n: Optional[int] = 10
-    explain: Optional[bool] = False
-    strategy: Optional[str] = "hybrid"
-
-class TuningWeights(BaseModel):
-    alpha: float = Field(..., ge=0.0, le=1.0)
-    beta: float = Field(..., ge=0.0, le=1.0)
-    gamma: float = Field(..., ge=0.0, le=1.0)
-
-# ---------------------------------------------------------------------------
-# API Endpoints & Core Logic
-# ---------------------------------------------------------------------------
-
-@app.get("/api/csrf-token", response_model=CSRFTokenResponse)
-def get_csrf_token_endpoint(request: Request, response: Response):
-    """Generates a secure CSRF token and sets it in the user's browser cookies."""
-    token = generate_csrf_token()
-    set_csrf_cookie(response, token)
-    return {"csrfToken": token}
-
-# ── FIX #914 & #888: RESILIENT NON-BLOCKING TELEMETRY ENGINE ROUTES ────
-@app.get("/api/v1/recommend")
-async def get_hybrid_recommendations(
-    title: str = Query(...),
-    top_n: int = 10,
-    user_id: Optional[str] = Query(None)
-):
-    """
-    Fetch hybrid recommendations securely without blocking the FastAPI event loop.
-    Enforces pure keyword lookup fallbacks if ML weights are corrupted or offline.
-    """
-    global _model_degraded, _model_degraded_reason
-  def _cache_key(*parts: Any) -> str:
-    """Generate a consistent, lowercased cache string key from input segments.
-
-    Args:
-        *parts (Any): Variable length argument list of components to join.
-
-    Returns:
-        str: A colon-separated, lowercase cache key string with trimmed whitespace.
-    """
-    return ":".join(str(part).strip().lower() for part in parts)
-
-def _recommendation_cache_key(
-    title: str,
-    top_n: int = 10,
-    explain: bool = False,
-    user_id: str = "",
-    target_catalog: str = "",
-    model_version: str = "",
-    strategy: str = "",
-) -> str:
-    return _cache_key("recommend", title, top_n, explain, user_id or "", target_catalog or "", model_version or "", strategy or "")
-
-def _get_cached_response(key: str):
-    global _cache_hits, _cache_misses
-    if _redis_client is not None:
-        try:
-            cached = _redis_client.get(key)
-            if cached is not None:
-                return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
-            pass
-    with _cache_lock:
-        cached = _response_cache.get(key)
-        if not cached:
-            _cache_misses += 1
-            return None
-        expires_at, value = cached
-        return value
-
-# ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
-def _apply_rate_limit(ip_address: str) -> bool:
-    """
-    Applies token-bucket rate limiting dynamically.
-    Optimized to handle Algorithmic Complexity DoS scenarios.
-    """
-    current_time = time.time()
-    allowed = False
-    
-    with _rate_limit_lock:
-        bucket = _rate_limit_buckets.get(ip_address)
-        if bucket is None:
-            bucket = {"tokens": 10.0, "last_updated": current_time}
-        else:
-            elapsed = current_time - bucket["last_updated"]
-            bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
-            bucket["last_updated"] = current_time
-            
-        if bucket["tokens"] >= 1.0:
-            bucket["tokens"] -= 1.0
-            _rate_limit_buckets[ip_address] = bucket
-            allowed = True
-            
-        # Optimization: Move cleanup out of the request loop path securely
-        global _request_counter
-        _request_counter += 1
-        if random.random() < 0.01 or _request_counter >= CLEANUP_THRESHOLD:
-            _request_counter = 0
-            cutoff = current_time - 3600
-            to_remove = [k for k, v in _rate_limit_buckets.items() if v["last_updated"] < cutoff]
-            for k in to_remove:
-                del _rate_limit_buckets[k]
-                
-    return allowed
 
 # ---------------------------------------------------------------------------
 # Pydantic Schemas for Validation
@@ -402,43 +286,5 @@ class SearchRequest(BaseModel):
     query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: Optional[int] = 5
 
-class RecommendationRequest(BaseModel):
-    item_title: str
-    top_n: Optional[int] = 10
-    explain: Optional[bool] = False
-    strategy: Optional[str] = "hybrid"
-
-class TuningWeights(BaseModel):
-    alpha: float = Field(..., ge=0.0, le=1.0)
-    beta: float = Field(..., ge=0.0, le=1.0)
-    gamma: float = Field(..., ge=0.0, le=1.0)
-
-# ---------------------------------------------------------------------------
-# API Endpoints & Core Logic
-# ---------------------------------------------------------------------------
-
-@app.get("/api/csrf-token", response_model=CSRFTokenResponse)
-def get_csrf_token_endpoint(request: Request, response: Response):
-    """Generates a secure CSRF token and sets it in the user's browser cookies."""
-    token = generate_csrf_token()
-    set_csrf_cookie(response, token)
-    return {"csrfToken": token}
-
-# ── FIX #914 & #888: RESILIENT NON-BLOCKING TELEMETRY ENGINE ROUTES ────
-@app.get("/api/v1/recommend")
-async def get_hybrid_recommendations(
-    title: str = Query(...),
-    top_n: int = 10,
-    user_id: Optional[str] = Query(None)
-):
-    """
-    Fetch hybrid recommendations securely without blocking the FastAPI event loop.
-    Enforces pure keyword lookup fallbacks if ML weights are corrupted or offline.
-    """
-
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
 
 
