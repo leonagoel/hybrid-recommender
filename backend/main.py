@@ -1162,6 +1162,8 @@ def health_check():
         "model_loaded": models["ready"],
     }
 
+    return result
+
 
 # ── API Metrics ───────────────────────────────────────────────────────
 @app.get("/api/version")
