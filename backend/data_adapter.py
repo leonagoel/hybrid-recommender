@@ -26,8 +26,18 @@ def load_recommendation_dataset(file_path: str) -> pd.DataFrame:
     Raises:
         FileNotFoundError: If the specified file path does not exist.
     """
-    # Original function logic goes here
-    pass
+    import os
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".csv":
+        return pd.read_csv(file_path, on_bad_lines="skip", low_memory=False)
+    elif ext == ".json":
+        return pd.read_json(file_path)
+    else:
+        # Default to CSV for unknown extensions
+        return pd.read_csv(file_path, on_bad_lines="skip", low_memory=False)
 
 def normalize_ratings(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -37,7 +47,12 @@ def normalize_ratings(df: pd.DataFrame) -> pd.DataFrame:
         df (pd.DataFrame): The DataFrame containing raw user interactions and scores.
 
     Returns:
-        pd.DataFrame: A modified DataFrame featuring a new 'normalized_rating' column.
+        pd.DataFrame: A modified DataFrame featuring a new 'rating_normalized' column.
     """
-    # Original function logic goes here
-    pass
+    from sklearn.preprocessing import MinMaxScaler
+    df = df.copy()
+    if "rating" not in df.columns:
+        return df
+    scaler = MinMaxScaler()
+    df["rating_normalized"] = scaler.fit_transform(df[["rating"]])
+    return df
