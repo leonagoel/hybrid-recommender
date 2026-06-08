@@ -249,3 +249,33 @@ def get_recommendations(user_id: str, top_n: int = 10) -> list[dict]:
     except Exception as exc:
         logger.error("Worker: recommendation generation failed for user %s: %s", user_id, exc)
         raise
+
+
+@celery_app.task(name="tasks.compute_recommendations")
+@serialize_user_requests
+def compute_recommendations(item_title: str, top_n: int = 10, explain: bool = False) -> dict:
+    """
+    Generate recommendations for items similar to the given item title.
+    Returns dict with query_item, recommendations, and weights.
+    Raises ValueError if the item is not found.
+    """
+    try:
+        models = _get_worker_models()
+        hybrid_model = models["hybrid"]
+        recs = hybrid_model.recommend(item_title, top_n=top_n, explain=explain)
+
+        if not recs:
+            raise ValueError(f"Item not found: {item_title}")
+
+        return {
+            "query_item": item_title,
+            "recommendations": recs,
+            "weights": hybrid_model.get_weights(),
+        }
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Worker: compute_recommendations failed for item %s: %s", item_title, exc
+        )
+        raise
