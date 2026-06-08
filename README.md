@@ -20,7 +20,7 @@
 
 ![Coverage](https://img.shields.io/badge/coverage-50%25-brightgreen)
 [![Live Demo](https://shields.io)](https://vercel.app)
-
+[![GitHub Discussions](https://shields.io)](https://github.com)
 
 <div align="center">
 
