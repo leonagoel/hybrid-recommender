@@ -94,6 +94,7 @@ from src.data.data_adapter import adapt_data, read_file
 from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
+from src.model.neural_collaborative_model import NeuralCollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
 from src.model.trending_model import TrendingRecommender
 from src.model.issue_triage import triage_issue
@@ -1531,7 +1532,19 @@ async def recommend_item(
 
             if item_df is not None and not item_df.empty:
                 content_model = ContentRecommender(item_df)
-                collab_model = CollaborativeRecommender(interaction_df) if interaction_df is not None and not interaction_df.empty else None
+                
+                import os
+                from src.model.neural_collaborative_model import NeuralCollaborativeRecommender
+                use_ncf = os.getenv("USE_NCF", "true").lower() == "true"
+                
+                if interaction_df is not None and not interaction_df.empty:
+                    if use_ncf:
+                        collab_model = NeuralCollaborativeRecommender(interaction_df)
+                    else:
+                        collab_model = CollaborativeRecommender(interaction_df)
+                else:
+                    collab_model = None
+                
                 hybrid = HybridRecommender(content_model, collab_model, item_df)
                 all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
         except Exception:
