@@ -17,7 +17,6 @@ import secrets
 import re
 import json
 from redis import Redis
-from tasks import compute_recommendations
 from redis.exceptions import RedisError
 
 logger = logging.getLogger(__name__)
@@ -254,6 +253,7 @@ def _apply_rate_limit(*args, **kwargs):
         else:
             _rate_limit_buckets.move_to_end(ip_address)
             elapsed = current_time - bucket["last_updated"]
+            elapsed = current_time - bucket["last_updated"]
             bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
             bucket["last_updated"] = current_time
             
@@ -304,6 +304,7 @@ def get_cache_metrics():
     }
 
 
+from backend.services.ml_service import _build_tfidf_for_items, cold_start_recommendation, _precompute_recommendation_cache
 
 
 def _normalize_search_query(query: str) -> str:
@@ -610,6 +611,7 @@ def generate_model_version():
     return f"1.0.0-{timestamp}"
 
 
+from backend.core.websockets import realtime_hub
 
 
 class WeightsUpdate(BaseModel):
