@@ -722,6 +722,8 @@ def health_check():
         result["components"]["cache"] = {"status": "error", "details": str(e)}
         result["status"] = "degraded"
 
+    return result
+
 
 # ── API Metrics ───────────────────────────────────────────────────────
 @app.get("/api/version")
