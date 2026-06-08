@@ -74,7 +74,17 @@ class HybridRecommender:
         self.kg_model = None
         self.delta = 0.0
         self.multi_objective_ranker = MultiObjectiveRanker()
-        
+        # Multi-Armed Bandit
+        self.bandit_arms = [
+            (0.6, 0.3, 0.1),
+            (0.5, 0.4, 0.1),
+            (0.4, 0.4, 0.2),
+            (0.3, 0.5, 0.2),
+        ]
+
+        self.arm_rewards = {i: 0.0 for i in range(len(self.bandit_arms))}
+        self.arm_counts = {i: 0 for i in range(len(self.bandit_arms))}
+        self.epsilon = 0.1
         self.kg_model = kg_model
         self.delta = delta
 
@@ -188,6 +198,23 @@ class HybridRecommender:
         self.delta = delta / total
 
     def get_weights(self):
+        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
+    def select_bandit_arm(self):
+    import random
+
+    if random.random() < self.epsilon:
+        return random.randint(0, len(self.bandit_arms) - 1)
+
+    best_arm = max(
+        self.arm_rewards,
+        key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
+    )
+
+    return best_arm
+
+    def update_bandit_reward(self, arm_id, reward):
+    self.arm_counts[arm_id] += 1
+    self.arm_rewards[arm_id] += reward
         return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
 
     def set_fairness(self, enabled=None, key=None, max_share=None):
@@ -450,6 +477,20 @@ class HybridRecommender:
             if tot > 0:
                 a, b, g, d = a / tot, b / tot, g / tot, d / tot
         else:
+            kg_scores = [0.0] * len(items)
+
+        # 5. Resolve active weights
+        if weights:
+            a, b, g = float(weights.get('alpha', self.alpha)), float(weights.get('beta', self.beta)), float(weights.get('gamma', self.gamma))
+            total = a + b + g
+            if total > 0:
+                a, b, g = a / total, b / total, g / total
+            else:
+                a, b, g = self.alpha, self.beta, self.gamma
+        else:
+            candidate_titles = [it['title'] for it in items]
+            arm_id = self.select_bandit_arm()
+a, b, g = self.bandit_arms[arm_id]
             a, b, g, d = self._get_active_weights(
                 self.alpha, self.beta, self.gamma, self.delta,
                 user_id=user_id,
@@ -521,7 +562,7 @@ class HybridRecommender:
         if not results:
             return self.get_popular_fallback_items(...)
         if not results:
-            return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
+            return self.get_popular_fallback_items(...)
 
         # 7. Optional causal debiasing — applied after sorting so the debiaser
         #    sees the full candidate set for proper batch-level IPS normalization,
@@ -746,6 +787,11 @@ class HybridRecommender:
             exclude_title=title,
         )
 
+    def register_feedback(self, arm_id, clicked=True):
+        reward = 1.0 if clicked else 0.0
+        self.update_bandit_reward(arm_id, reward)
+        
+
     def get_popular_fallback_items(self, top_n=5, source_df=None, exclude_title=None):
         """
         Return globally popular items when personalization produces no candidates.
@@ -760,7 +806,8 @@ class HybridRecommender:
         df = df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-
+            
+        global_avg = 3.0
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
             df['_bayesian'] = df.apply(
@@ -821,6 +868,8 @@ class HybridRecommender:
             })
         return results
     def _diversity_rerank(self, results, top_n, diversity=0.0, serendipity=0.0):
+            
+
             """
             Re-ranks results to reduce filter bubbles.
 

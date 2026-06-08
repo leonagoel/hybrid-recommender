@@ -1,4 +1,5 @@
 import os
+import pathlib
 import re
 
 PATTERNS = {
@@ -33,4 +34,5 @@ def scan_dir(d):
                 pass
 
 if __name__ == '__main__':
-    scan_dir('C:\\Users\\user\\.gemini\\antigravity\\scratch\\hybrid-recommender')
+    repo_root = pathlib.Path(__file__).parent
+    scan_dir(str(repo_root))

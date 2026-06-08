@@ -14,7 +14,7 @@ import time
 import logging
 import math
 import secrets
-import re
+
 import json
 from redis import Redis
 from redis.exceptions import RedisError
@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.join(_project_root, "src", "model"))
 
 from fastapi import ( # type: ignore
     FastAPI,
+    APIRouter,
     Depends,
     Header,
     UploadFile,
@@ -113,19 +114,24 @@ from issue_triage import triage_issue
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
+# 🚀 DEGRADED MODE TELEMETRY TRACKER GLOBALS
+_model_degraded = False
+_model_degraded_reason: Optional[str] = None
+
 @app.on_event("startup")
 def download_nltk_assets():
     """
-    Ensures NLTK VADER assets are downloaded safely at startup
-    to prevent multi-worker download race conditions.
+    Ensures NLTK VADER assets are downloaded safely at startup.
+    Gracefully intercepts infrastructure failures to activate degraded fallback loops.
     """
+    global _model_degraded, _model_degraded_reason
     try:
         SentimentIntensityAnalyzer()
         logger.info("NLTK VADER lexicon verified successfully.")
-    except LookupError:
-        logger.info("VADER lexicon missing. Downloading safely at startup...")
-        nltk.download('vader_lexicon', quiet=True)
-        logger.info("NLTK VADER lexicon downloaded successfully.")
+    except Exception as e:
+        logger.error(f"VADER framework load crash encountered. Triggering clean degraded fallback mode: {e}")
+        _model_degraded = True
+        _model_degraded_reason = f"NLTK VADER initialization failed: {str(e)}"
 
 
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
@@ -198,13 +204,13 @@ MOCK_PRODUCTS = [
 
 
 def _get_slow_response_threshold_ms() -> float:
+
     try:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
 
-def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
@@ -216,8 +222,6 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
-        except (RedisError, json.JSONDecodeError):
-            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -235,15 +239,15 @@ def _get_cached_response(key: str):
         _cache_hits += 1
         return value
 
+
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
 def _apply_rate_limit(*args, **kwargs):
     """
     Applies token-bucket rate limiting dynamically.
     Optimized to handle Algorithmic Complexity DoS scenarios.
     """
-    import time
-    import random
     current_time = time.time()
+    allowed = False
     
     with _rate_limit_lock:
         bucket = _rate_limit_buckets.get(ip_address)
@@ -260,20 +264,16 @@ def _apply_rate_limit(*args, **kwargs):
             bucket["tokens"] -= 1.0
             _rate_limit_buckets[ip_address] = bucket
             allowed = True
-        else:
-            allowed = False
             
-        # Optimization: O(1) Eviction to prevent memory leak and Algorithmic Complexity DoS
-        if len(_rate_limit_buckets) > MAX_RATE_LIMIT_IPS:
-            _rate_limit_buckets.popitem(last=False)
-        # Optimization: Move cleanup out of the request loop path
+
         global _request_counter
         _request_counter += 1
-        if random.random() < 0.001 or _request_counter >= CLEANUP_THRESHOLD:
+        if random.random() < 0.01 or _request_counter >= CLEANUP_THRESHOLD:
             _request_counter = 0
-            # Evict empty keys inside amortized window block
-            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v or v.get("tokens", 0.0) <= 0.1]
-            for k in empty_keys:
+            # Evict stale buckets older than 1 hour to prevent memory leaks
+            cutoff = current_time - 3600
+            to_remove = [k for k, v in _rate_limit_buckets.items() if v["last_updated"] < cutoff]
+            for k in to_remove:
                 del _rate_limit_buckets[k]
                 
     return allowed
@@ -629,6 +629,484 @@ class FeedbackCreate(BaseModel):
     item: str = Field(..., min_length=1, max_length=500)
     feedback: str = Field(..., min_length=1, max_length=2000)
     thumbs: str = Field(..., pattern=r"^(up|down)$")
+
+class RealtimeRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_title: str
+    top_n: int = 10
+    explain: bool = False
+    target_catalog: Optional[str] = None
+
+
+# ── CSRF Token ───────────────────────────────────────────────────────
+@app.get(
+    "/api/csrf-token",
+    response_model=CSRFTokenResponse,
+    summary="Issue a CSRF token",
+    tags=["Security"],
+)
+def get_csrf_token(response: Response):
+    token = generate_csrf_token()
+    set_csrf_cookie(response, token)
+    return CSRFTokenResponse(csrfToken=token)
+
+
+class FederatedTrainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    n_factors: int = 20
+    epochs: int = 5
+    lr: float = 0.05
+    reg: float = 0.05
+
+
+# ── Health ────────────────────────────────────────────────────────────
+@app.get("/health")
+@app.get("/api/health")
+def health_check():
+    """
+    Low-overhead health check endpoint for component tracking.
+    Checks database (Supabase), model readiness, and cache (Redis).
+    """
+    from src.data.db import get_supabase
+    from redis import Redis
+    from redis.exceptions import RedisError
+    import os
+
+def _set_cached_response(key: str, value: Any) -> None:
+    if _redis_client is not None:
+        try:
+            _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
+        except (RedisError, TypeError):
+            pass
+
+    with _cache_lock:
+        _response_cache[key] = (
+            time.time() + CACHE_TTL_SECONDS,
+            value,
+        )
+
+def _clear_response_cache() -> None:
+    with _cache_lock:
+        _response_cache.clear()
+        global _cache_hits, _cache_misses
+        _cache_hits = 0
+        _cache_misses = 0
+
+    return result
+
+@app.get("/api/cache_metrics")
+def get_cache_metrics():
+    """Expose simple cache hit/miss metrics and configured TTL."""
+    return {
+        "cache_ttl_seconds": CACHE_TTL_SECONDS,
+        "hits": int(_cache_hits),
+        "misses": int(_cache_misses),
+        "current_items": len(_response_cache),
+    }
+
+
+def _build_tfidf_for_items(item_df):
+    """Build and return a TF-IDF matrix and vectorizer for the given item_df."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    texts = (item_df.get('combined') or item_df.get('title')).fillna('').astype(str).tolist()
+    vec = TfidfVectorizer(max_features=16384, stop_words='english')
+    matrix = vec.fit_transform(texts)
+    return vec, matrix
+
+
+def cold_start_recommendation(combined_text: str, top_n: int = 10, weights: tuple[float, float, float] = (0.6, 0.3, 0.1), target_catalog: Optional[str] = None):
+    """Cold-start blending of content similarity (TF-IDF) and simple popularity/rating signals.
+
+    Returns list of dicts with blended score and components.
+    """
+    import numpy as np
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    item_df = models.get('item_df')
+    if item_df is None or item_df.empty:
+        return []
+
+    vec, matrix = _build_tfidf_for_items(item_df)
+    try:
+        qv = vec.transform([combined_text])
+    except Exception:
+        return []
+
+    scores = cosine_similarity(qv, matrix).flatten()
+
+    # Popularity normalization (review_count) and rating normalization
+    review_counts = item_df.get('review_count', None)
+    if review_counts is None or len(review_counts) == 0:
+        pop_norm = np.zeros_like(scores)
+    else:
+        max_rc = float(max(1, int(review_counts.max())))
+        pop_norm = (np.array(item_df.get('review_count').fillna(0).astype(float)) / max_rc)
+
+    ratings = item_df.get('rating')
+    if ratings is None or len(ratings) == 0:
+        rating_norm = np.zeros_like(scores)
+    else:
+        rating_norm = (np.array(item_df.get('rating').fillna(0).astype(float)) / 5.0)
+
+    alpha, beta, gamma = weights
+
+    blended = alpha * scores + beta * pop_norm + gamma * rating_norm
+
+    idxs = blended.argsort()[::-1]
+    results = []
+    seen = set()
+    for idx in idxs:
+        title = str(item_df.iloc[idx].get('title', ''))
+        if not title or title in seen:
+            continue
+        if target_catalog and 'category' in item_df.columns:
+            cat = str(item_df.iloc[idx].get('category', ''))
+            if cat and cat.casefold() != target_catalog.casefold():
+                continue
+        seen.add(title)
+        results.append({
+            'title': title,
+            'blended_score': float(blended[idx]),
+            'content_score': float(scores[idx]),
+            'popularity_score': float(pop_norm[idx]),
+            'rating_norm': float(rating_norm[idx]),
+        })
+        if len(results) >= top_n:
+            break
+
+    return results
+
+def _precompute_recommendation_cache(
+    top_n: int = 10,
+    explain: bool = False,
+) -> int:
+    if not models.get("ready") or models.get("item_df") is None:
+        return 0
+
+    count = 0
+    item_df = models["item_df"]
+
+    for title in item_df["title"].dropna().astype(str).unique():
+        cache_key = _cache_key("recommend", title, top_n, explain, "")
+
+        recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
+
+        if not recs:
+            continue
+
+        payload = {
+            "query_item": title,
+            "recommendations": recs,
+            "weights": models["hybrid"].get_weights(),
+            "explain": explain,
+            "target_catalog": None,
+            "model_version": ACTIVE_MODEL_VERSION,
+            "has_history": False,
+            "cache_precomputed": True,
+        }
+
+        _set_cached_response(cache_key, payload)
+        count += 1
+
+    return count
+
+# ── Search ────────────────────────────────────────────────────────────
+def _normalize_search_query(query: str) -> str:
+    normalized = " ".join((query or "").split())
+    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
+    return normalized
+
+_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
+
+
+def _validate_user_id(user_id: str) -> str:
+    """Allowlist-validate user_id to block injection via path parameters."""
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id format.")
+    return user_id
+
+
+def _set_cache_headers(response: Response, status: str) -> None:
+    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
+    response.headers["X-Cache"] = status
+
+
+def _get_rate_limit(limit_env: str, default_limit: int) -> int:
+    try:
+        limit = int(os.environ.get(limit_env, str(default_limit)))
+    except ValueError:
+        return default_limit
+    return max(1, limit)
+
+
+def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "Rate limit exceeded",
+            "message": "Too many requests. Please try again later.",
+        },
+        headers={
+            "x-ratelimit-limit": str(rate_limit),
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": str(reset_time),
+        },
+    )
+
+
+def _apply_rate_limit(
+    request: Request,
+    response: Response,
+    scope: str,
+    limit_env: str,
+    default_limit: int,
+) -> JSONResponse | None:
+    rate_limit = _get_rate_limit(limit_env, default_limit)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    bucket_key = (scope, client_ip)
+    now = time.time()
+
+    with _rate_limit_lock:
+        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
+        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+
+        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = max(0, reset_time)
+
+        if len(timestamps) >= rate_limit:
+            return _rate_limit_exceeded_response(rate_limit, reset_time)
+
+        timestamps.append(now)
+        remaining = rate_limit - len(timestamps)
+        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = max(0, reset_time)
+
+    response.headers["x-ratelimit-limit"] = str(rate_limit)
+    response.headers["x-ratelimit-remaining"] = str(remaining)
+    response.headers["x-ratelimit-reset"] = str(reset_time)
+    return None
+
+
+
+def _extract_bearer_token(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def _require_admin_access(request: Request) -> None:
+    expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
+    _placeholders = {"change-me-to-a-random-secret", "changeme_admin_token", "your-secret-admin-token-here"}
+    if not expected_token or expected_token in _placeholders:
+        # No real admin token configured — allow access (local dev mode)
+        return
+
+    provided_token = (
+        request.headers.get("x-admin-token", "").strip()
+        or _extract_bearer_token(request.headers.get("authorization"))
+    )
+    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
+        raise HTTPException(status_code=401, detail="Admin token required.")
+
+
+def _admin_access_dep(request: Request) -> None:
+    _require_admin_access(request)
+
+
+def _get_feedback_storage_client():
+    client = get_supabase_admin()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Feedback storage is unavailable.")
+    return client
+
+
+# CORS
+allowed_origins_env = os.environ.get("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
+allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*", "X-CSRF-Token"],
+)
+
+app.add_middleware(CSRFMiddleware)
+
+# ── Response Time Monitoring ─────────────────────────────────────────
+SLOW_RESPONSE_THRESHOLD_MS = 500.0
+METRICS_SAMPLE_SIZE = 1000
+response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
+METRICS_WINDOW_SECONDS = 600
+response_metrics = {
+    "total_requests": 0,
+    "error_requests": 0,
+}
+response_metrics_lock = Lock()
+
+
+def _percentile(values, percentile):
+    if not values:
+        return 0.0
+    sorted_values = sorted(values)
+    index = math.ceil((percentile / 100) * len(sorted_values)) - 1
+    index = max(0, min(index, len(sorted_values) - 1))
+    return sorted_values[index]
+
+
+def record_response_metric(endpoint, method, status_code, response_time_ms):
+    with response_metrics_lock:
+        response_metrics["total_requests"] += 1
+        if status_code >= 400:
+            response_metrics["error_requests"] += 1
+        response_time_samples.append(
+          (time.time(), response_time_ms)
+        )
+
+        current_time = time.time()
+
+        while (
+          response_time_samples
+          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
+        ):
+          response_time_samples.popleft()
+    log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
+    if log_level == logging.WARNING:
+        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
+                       endpoint, method, status_code, response_time_ms, response_time_ms, endpoint)
+    else:
+        logger.info("API request endpoint=%s method=%s status=%s time=%.2fms",
+                    endpoint, method, status_code, response_time_ms)
+
+
+def reset_response_metrics():
+    with response_metrics_lock:
+        response_metrics["total_requests"] = 0
+        response_metrics["error_requests"] = 0
+        response_time_samples.clear()
+
+
+def get_response_metrics_snapshot():
+    with response_metrics_lock:
+        samples = [value for _, value in response_time_samples]
+        total_requests = response_metrics["total_requests"]
+        error_requests = response_metrics["error_requests"]
+    avg_response_time = sum(samples) / len(samples) if samples else 0.0
+    error_rate = (error_requests / total_requests) * 100 if total_requests else 0.0
+    return {
+        "avg_response_time": round(avg_response_time, 2),
+        "p95_response_time": round(_percentile(samples, 95), 2),
+        "total_requests": total_requests,
+        "error_rate": round(error_rate, 2),
+    }
+
+
+@app.middleware("http")
+async def response_time_middleware(request, call_next):
+    start_time = time.perf_counter()
+    response = None
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        response_time_ms = (time.perf_counter() - start_time) * 1000
+        if response is not None:
+            response.headers["X-Response-Time"] = f"{response_time_ms:.2f}ms"
+        record_response_metric(request.url.path, request.method, status_code, response_time_ms)
+
+
+# ── State ─────────────────────────────────────────────────────────────
+models = {
+    "content": None,
+    "collab": None,
+    "hybrid": None,
+    "ready": False,
+    "item_df": None,
+    "build_time": None,
+    "last_trained_at": None,
+}
+
+MODEL_REGISTRY = {}
+ACTIVE_MODEL_VERSION = None
+SHADOW_MODEL_VERSION = None
+STAGING_MODEL_VERSION = None
+
+SHADOW_LOGS = []
+
+def generate_model_version():
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"1.0.0-{timestamp}"
+
+
+class RealtimeConnectionHub:
+    def __init__(self):
+        self.active_connections = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        disconnected = []
+
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.append(connection)
+
+        for connection in disconnected:
+            self.disconnect(connection)
+
+realtime_hub = RealtimeConnectionHub()
+
+USER_INTERACTIONS = []
+
+
+class WeightsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alpha: float = 0.5
+    beta: float = 0.3
+    gamma: float = 0.2
+
+
+class PurchaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    product_id: int = Field(..., gt=0)
+    rating: float = Field(0.0, ge=0.0, le=5.0)
+    review_text: str = Field("", max_length=1000)
+
+
+class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    item: str = Field(..., min_length=1, max_length=500)
+    feedback: str = Field(..., min_length=1, max_length=2000)
+    thumbs: str = Field(..., pattern=r"^(up|down)$")
+
+class InteractionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(..., min_length=1, max_length=128)
+    item_id: int = Field(..., gt=0)
+    interaction_type: str = Field(
+        ...,
+        pattern=r"^(view|click|search)$"
+    )
 
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1467,6 +1945,7 @@ def get_recommendations(
     if rate_limited is not None:
         return rate_limited
 
+    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog, model_version, user_id)
 # ----- EDGE CASES SAFE CHECK -----
     # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
@@ -1504,20 +1983,24 @@ def get_recommendations(
         _set_cache_headers(response, "HIT")
         return cached
 
-    recs = selected_models["hybrid"].recommend(
-        query_title, top_n=top_n, explain=explain, target_catalog=target_catalog
-    )
+    if not models["ready"]:
+        raise HTTPException(400, "Models not built. Build first via /api/build.")
 
-    # Popularity fallback (existing behaviour)
-    if not recs and strategy == "popularity" and models["collab"]:
-        recs = models["collab"]._popularity_fallback(top_n)
+    active_hybrid = models["hybrid"]
+    if model_version and model_version in MODEL_REGISTRY:
+        active_hybrid = MODEL_REGISTRY[model_version]["hybrid"]
 
-    # Cold-start fallback: blend content similarity with popularity/rating
-    if not recs and (strategy == "cold"):
-        combined_text = query_title
-        cold_recs = cold_start_recommendation(combined_text, top_n=top_n, target_catalog=target_catalog)
-        if cold_recs:
-            recs = cold_recs
+    import inspect
+    recommend_func = active_hybrid.recommend
+    sig = inspect.signature(recommend_func)
+    recommend_kwargs = {"top_n": top_n}
+    if "explain" in sig.parameters:
+        recommend_kwargs["explain"] = explain
+    if "target_catalog" in sig.parameters:
+        recommend_kwargs["target_catalog"] = target_catalog
+    if "user_id" in sig.parameters:
+        recommend_kwargs["user_id"] = user_id
+    recs = recommend_func(query_title, **recommend_kwargs)
 
     if not recs:
         raise HTTPException(404, "Item not found or no recommendations.")
@@ -1532,7 +2015,7 @@ def get_recommendations(
         "count": len(recs),
         "results": recs,
         "recommendations": recs,
-        "weights": models["hybrid"].get_weights(),
+        "weights": active_hybrid.get_weights(),
         "explain": explain,
         "target_catalog": target_catalog,
         "model_version": model_version or ACTIVE_MODEL_VERSION,
@@ -1549,12 +2032,16 @@ def get_recommendations(
         shadow_start = time.time()
 
         try:
-            shadow_recs = shadow_model["hybrid"].recommend(
-                query_title,
-                top_n=top_n,
-                explain=explain,
-                target_catalog=target_catalog,
-            )
+            shadow_recommend_func = shadow_model["hybrid"].recommend
+            shadow_sig = inspect.signature(shadow_recommend_func)
+            shadow_kwargs = {"top_n": top_n}
+            if "explain" in shadow_sig.parameters:
+                shadow_kwargs["explain"] = explain
+            if "target_catalog" in shadow_sig.parameters:
+                shadow_kwargs["target_catalog"] = target_catalog
+            if "user_id" in shadow_sig.parameters:
+                shadow_kwargs["user_id"] = user_id
+            shadow_recs = shadow_recommend_func(query_title, **shadow_kwargs)
 
             shadow_latency = round(
                 (time.time() - shadow_start) * 1000,
@@ -1947,6 +2434,21 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
+    
+    @app.post("/api/interactions")
+def log_interaction(data: InteractionCreate):
+
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
@@ -2142,20 +2644,28 @@ def submit_feedback(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    try:
-        result = feedback_client.table("feedback_submissions").insert(feedback_record).execute()
-    except Exception as exc:
-        logger.error("Failed to persist feedback submission: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to store feedback.")
+@app.get("/api/user-preferences/{user_id}")
+def get_user_preferences(user_id: str):
 
-    stored_feedback = feedback_record
-    if getattr(result, "data", None):
-        stored_feedback = result.data[0] if isinstance(result.data, list) else result.data
+    user_logs = [
+        x for x in USER_INTERACTIONS
+        if x["user_id"] == user_id
+    ]
+
+    interaction_count = {}
+
+    for item in user_logs:
+        key = item["interaction_type"]
+
+        interaction_count[key] = (
+            interaction_count.get(key, 0) + 1
+        )
 
     return {
-        "message": "Feedback submitted successfully",
-        "feedback": stored_feedback,
+        "user_id": user_id,
+        "preferences": interaction_count
     }
+
 
 # ── Export Dataset ────────────────────────────────────────────────────
 @app.get("/api/export/dataset")
@@ -2265,17 +2775,13 @@ async def github_webhook(request: Request, response: Response):
         
     return {"status": "skipped", "reason": f"No triage actions required for event '{event}' action '{action}'."}
 
+# ---------------------------------------------------------------------------
+# Pydantic Schemas for Validation
+# ---------------------------------------------------------------------------
 
-# ── Frontend Serving ──────────────────────────────────────────────────
-frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend')
+class SearchRequest(BaseModel):
+    query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
+    limit: Optional[int] = 5
 
-if os.path.isdir(frontend_dir):
-    app.mount("/static", StaticFiles(directory=frontend_dir), name="frontend")
 
-    @app.get("/")
-    def serve_frontend():
-        return FileResponse(os.path.join(frontend_dir, "index.html"))
 
-    @app.get("/dashboard.html")
-    def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
