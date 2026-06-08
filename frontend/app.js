@@ -1,5 +1,4 @@
-import { state } from './js/state.js';
-import { initBenchmarkingDashboard } from './js/benchmarking.js';
+
 
 // ===== THEME TOGGLE =====
 const themeToggle = document.getElementById('theme-toggle');
@@ -103,8 +102,6 @@ async function initSupabase() {
 
 
 // ── State ───────────────────────────────────────────────────────────
-// Refactored Technical Debt: State object definition removed from here
-// and successfully decoupled into external module: './js/state.js'
 
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -244,4 +241,3 @@ function createSkeletonCard() {
     `;
 }
 
-function showSkeletons(co) {}
