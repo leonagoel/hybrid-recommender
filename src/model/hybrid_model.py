@@ -66,6 +66,17 @@ class HybridRecommender:
         self.kg_model = None
         self.delta = 0.0
         self.multi_objective_ranker = MultiObjectiveRanker()
+        # Multi-Armed Bandit
+        self.bandit_arms = [
+            (0.6, 0.3, 0.1),
+            (0.5, 0.4, 0.1),
+            (0.4, 0.4, 0.2),
+            (0.3, 0.5, 0.2),
+        ]
+
+        self.arm_rewards = {i: 0.0 for i in range(len(self.bandit_arms))}
+        self.arm_counts = {i: 0 for i in range(len(self.bandit_arms))}
+        self.epsilon = 0.1
         self.kg_model = kg_model
         self.delta = delta
 
@@ -177,6 +188,22 @@ class HybridRecommender:
 
     def get_weights(self):
         return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
+    def select_bandit_arm(self):
+    import random
+
+    if random.random() < self.epsilon:
+        return random.randint(0, len(self.bandit_arms) - 1)
+
+    best_arm = max(
+        self.arm_rewards,
+        key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
+    )
+
+    return best_arm
+
+    def update_bandit_reward(self, arm_id, reward):
+    self.arm_counts[arm_id] += 1
+    self.arm_rewards[arm_id] += reward
 
     def set_fairness(self, enabled=None, key=None, max_share=None):
         if enabled is not None:
@@ -415,7 +442,8 @@ class HybridRecommender:
                 a, b, g = self.alpha, self.beta, self.gamma
         else:
             candidate_titles = [it['title'] for it in items]
-            a, b, g = self._get_active_weights(self.alpha, self.beta, self.gamma, user_id=user_id, candidate_titles=candidate_titles)
+            arm_id = self.select_bandit_arm()
+a, b, g = self.bandit_arms[arm_id]
 
         # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
         results = []
@@ -669,6 +697,11 @@ class HybridRecommender:
             exclude_title=title,
         )
 
+    def register_feedback(self, arm_id, clicked=True):
+        reward = 1.0 if clicked else 0.0
+        self.update_bandit_reward(arm_id, reward)
+        
+
     def get_popular_fallback_items(self, top_n=5, source_df=None, exclude_title=None):
         """
         Return globally popular items when personalization produces no candidates.
@@ -745,6 +778,8 @@ class HybridRecommender:
             })
         return results
     def _diversity_rerank(self, results, top_n, diversity=0.0, serendipity=0.0):
+            
+
             """
             Re-ranks results to reduce filter bubbles.
 
