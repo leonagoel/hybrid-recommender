@@ -44,19 +44,18 @@
 
 ## Table of Contents
 
-- [Overview](#01--architecture)
+- [Architecture](#01--architecture)
 - [Features](#02--features)
 - [Tech Stack](#03--tech-stack)
 - [Project Structure](#04--project-structure)
 - [Quick Start](#05--quick-start)
 - [API Reference](#06--api-reference)
-- [Evaluation](#07--evaluation)
-- [Security](#08--security)
-- [FAQ](#09--faq)
-- [Screenshots](#10--screenshots)
-- [Troubleshooting](#11--troubleshooting)
-- [Setup Verification](#12--setup-verification)
-- [Beginner Contributor Tips](#13--beginner-contributor-tips)
+- [Security](#07--security)
+- [FAQ](#08--faq)
+- [Screenshots](#09--screenshots)
+- [Troubleshooting](#10--troubleshooting)
+- [Setup Verification](#11--setup-verification)
+- [Beginner Contributor Tips](#12--beginner-contributor-tips)
 - [Contributors](#contributors)
 - [License](#license)
 - [Knowledge Graph Embeddings](#knowledge-graph-embeddings)
@@ -412,7 +411,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
-## 08 — Security
+## 07 — Security
 
 ```text
 ✓  No hardcoded credentials — config served via /api/config
@@ -426,7 +425,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
-## 09 — FAQ
+## 08 — FAQ
 
 <details>
 <summary><strong>How do I set up the project locally?</strong></summary>
@@ -479,7 +478,7 @@ Yes, you can use your own dataset as long as it follows the expected format used
 
 ---
 
-## 10 — Screenshots
+## 09 — Screenshots
 
 ### Home Page
 ![Home Page](assets/homepage.png)
@@ -492,7 +491,7 @@ Yes, you can use your own dataset as long as it follows the expected format used
 
 ---
 
-## 11 — Troubleshooting
+## 10 — Troubleshooting
 
 ### ModuleNotFoundError
 
@@ -525,7 +524,7 @@ SUPABASE_SERVICE_KEY=your_service_key
 
 ---
 
-## 12 — Setup Verification
+## 11 — Setup Verification
 
 ```bash
 # Backend
@@ -577,7 +576,7 @@ Or:
 ```
 ---
 
-## 13 — Beginner Contributor Tips
+## 12 — Beginner Contributor Tips
 
 ### Sync Your Fork Before Starting
 
