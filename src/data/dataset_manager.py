@@ -14,7 +14,7 @@ Fixes vs. original:
 import os
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
-from src.data.data_adapter import adapt_data
+from src.data.data_adapter import adapt_data, read_file
 from src.data.data_preprocessing import preprocess
 
 
@@ -45,12 +45,11 @@ class DatasetManager:
         if catalog is None:
             catalog = os.path.splitext(name)[0]
 
+        raw_df = read_file(file_path_or_buffer)
         raw_df = preprocess(raw_df)
         adapted_df, meta = adapt_data(raw_df)
         adapted_df['catalog'] = catalog
         
-        ds_id = str(uuid.uuid4())[:8]
-
         ds_id = str(uuid.uuid4())[:8]
         self._datasets[ds_id] = {
             'name': name,
