@@ -632,7 +632,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'raw_content': roaund(raw_item['raw_content'], 4),
+                'raw_content': round(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
             },
