@@ -1,8 +1,8 @@
-# TODO - Recommendation Explanation Feature (#1121)
+# TODO - Recommendation Explanation Feature (#1121 / #1352)
 
-- [x] Add backend support to return human-readable `explanation` for each recommended item when `explain=true` (HybridRecommender).
-- [x] Update frontend recommendation cards (realtime + HTTP) to display `Reason:` under each item.
-- [ ] Fix any remaining frontend JS syntax issues introduced during wiring.
-- [ ] Smoke test endpoint: `/api/recommend/{title}?top_n=12&explain=true` and verify UI renders reason text.
-- [ ] Run backend/frontend automated tests (pytest / npm) if available in environment.
+- [ ] Repair/replace `src/model/hybrid_model.py` (current merge-conflict artifacts) with a compilable implementation.
+- [ ] Ensure `HybridRecommender.recommend(..., explain=True)` adds `explanation` field (short human-readable string) for each recommendation.
+- [ ] Ensure explanation strongest-component logic aligns with hybrid scoring weights.
+- [ ] Verify backend `/api/recommend` passes `explain` through and frontend `frontend/app.js` renders `r.explanation`.
+- [ ] Run test suite (`pytest`) and fix any failures.
 

@@ -1,8 +1,8 @@
 """
 FastAPI Backend for Hybrid Recommender.
 
-NOTE: This file was rewritten to remove leftover merge-conflict markers
-and restore a clean, syntactically-correct implementation.
+Provides an HTTP API endpoint to get hybrid recommendations.
+Includes graceful popularity fallback when the primary pipeline fails.
 """
 
 import os
@@ -58,6 +58,47 @@ _collab_model: Optional[CollaborativeRecommender] = None
 _item_df = None
 
 
+def _make_trending_fallback(req: RecommendationRequest) -> dict:
+    fallback_titles = []
+
+    # Use active item dataframe if available
+    if _item_df is not None and len(_item_df) > 0 and "title" in _item_df.columns:
+        # Prefer deterministic order
+        fallback_titles = _item_df.head(max(0, req.top_n))[["title"]].copy()
+        fallback_titles = fallback_titles["title"].astype(str).tolist()
+
+    # Absolute zero-dependency static default array
+    if not fallback_titles:
+        fallback_titles = [
+            "Top Trending Item A",
+            "Top Trending Item B",
+            "Top Trending Item C",
+        ][: max(1, req.top_n)]
+
+    # Format payload items to mimic real recommendation results
+    fallback_recs = [
+        {
+            "title": item,
+            "hybrid_score": 1.0,
+            "content_score": "—",
+            "collab_score": "—",
+            "sentiment_score": "—",
+            "rating": "5.0",
+            "category": "Trending",
+        }
+        for item in fallback_titles[: max(0, req.top_n)]
+    ]
+
+    return {
+        "recommendations": fallback_recs,
+        "model_name": "hybrid",
+        "message": "Models not loaded. Serving trending fallback layout.",
+        "causal_debiasing_applied": False,
+        "fallback": True,
+        "note": "Models not loaded. Serving trending fallback layout.",
+    }
+
+
 @app.on_event("startup")
 def startup_event():
     global _content_model, _collab_model, _item_df
@@ -91,34 +132,75 @@ def startup_event():
 
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
+    # If models haven't loaded (startup missed datasets), serve fallback instead
     if _content_model is None:
-        raise HTTPException(status_code=503, detail="Models not loaded")
+        try:
+            return _make_trending_fallback(req)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Models not loaded")
 
-    causal_cfg = (
-        CausalConfig(
-            enabled=True,
-            blend_lambda=req.causal_lambda,
-            clip_max=req.causal_clip,
+    try:
+        causal_cfg = (
+            CausalConfig(
+                enabled=True,
+                blend_lambda=req.causal_lambda,
+                clip_max=req.causal_clip,
+            )
+            if req.use_causal
+            else CausalConfig.disabled()
         )
-        if req.use_causal
-        else CausalConfig.disabled()
-    )
 
-    model = HybridRecommender(
-        _content_model,
-        _collab_model,
-        _item_df,
-        causal_config=causal_cfg,
-    )
+        model = HybridRecommender(
+            _content_model,
+            _collab_model,
+            _item_df,
+            causal_config=causal_cfg,
+        )
 
-    recs = model.recommend(
-        title=req.query,
-        user_id=req.user_id,
-        top_n=req.top_n,
-    )
+        recs = model.recommend(
+            title=req.query,
+            user_id=req.user_id,
+            top_n=req.top_n,
+            fairness=req.fairness,
+            fairness_key=req.fairness_key,
+            fairness_max_share=req.fairness_max_share,
+        )
 
-    return {
-        "recommendations": recs,
-        "causal_debiasing_applied": req.use_causal,
-    }
+        return {
+            "recommendations": recs,
+            "model_name": "hybrid",
+            "message": "Recommendations retrieved successfully",
+            "causal_debiasing_applied": req.use_causal,
+            "fallback": False,
+        }
+
+    except Exception as exc:
+        # Graceful Popularity Fallback Recovery Layer
+        import logging
+
+        logger = logging.getLogger("uvicorn.error")
+        logger.error(
+            "Primary recommendation engine failed: %s. Triggering popularity fallback.",
+            str(exc),
+        )
+
+        try:
+            payload = _make_trending_fallback(req)
+            payload["message"] = (
+                "Primary pipeline encountered an error. Serving trending fallback layout."
+            )
+            payload["note"] = (
+                "Primary pipeline encountered an error. Serving trending fallback layout."
+            )
+            payload["causal_debiasing_applied"] = False
+            return payload
+        except Exception as fallback_exc:
+            logger.critical(
+                "Critical System Outage: Fallback engine failed: %s",
+                str(fallback_exc),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Recommendation engine completely offline.",
+            )
 
