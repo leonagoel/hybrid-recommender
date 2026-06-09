@@ -1,8 +1,5 @@
 """
-FastAPI Backend for Hybrid Recommender.
-
-Provides an HTTP API endpoint to get hybrid recommendations.
-Includes graceful popularity fallback when the primary pipeline fails.
+FastAPI Backend for Hybrid Recommender
 """
 
 import os
@@ -16,7 +13,7 @@ from pydantic import BaseModel
 
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = CURRENT_DIR.parent.parent
+PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
 
 ENV_PATH = PROJECT_ROOT / ".env"
 if ENV_PATH.exists():
@@ -43,7 +40,6 @@ class RecommendationRequest(BaseModel):
 
     # Apply IPS causal debiasing on the hybrid score.
     use_causal: bool = False
-
     causal_lambda: float = 0.5
     causal_clip: float = 5.0
 
@@ -59,15 +55,12 @@ _item_df = None
 
 
 def _make_trending_fallback(req: RecommendationRequest) -> dict:
+    # Best-effort safe pull from the global item dataframe.
     fallback_titles = []
-
-    # Use active item dataframe if available
-    if _item_df is not None and len(_item_df) > 0 and "title" in _item_df.columns:
-        # Prefer deterministic order
+    if _item_df is not None and not _item_df.empty and "title" in _item_df.columns:
         fallback_titles = _item_df.head(max(0, req.top_n))[["title"]].copy()
         fallback_titles = fallback_titles["title"].astype(str).tolist()
 
-    # Absolute zero-dependency static default array
     if not fallback_titles:
         fallback_titles = [
             "Top Trending Item A",
@@ -75,7 +68,6 @@ def _make_trending_fallback(req: RecommendationRequest) -> dict:
             "Top Trending Item C",
         ][: max(1, req.top_n)]
 
-    # Format payload items to mimic real recommendation results
     fallback_recs = [
         {
             "title": item,
@@ -119,7 +111,7 @@ def startup_event():
             break
 
     if not loaded:
-        print("Warning: No datasets found for API startup.")
+        # Keep app running; /recommend will serve fallback.
         return
 
     interaction_df, item_df = dm.merge_all()
@@ -132,13 +124,11 @@ def startup_event():
 
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
-    # If models haven't loaded (startup missed datasets), serve fallback instead
+    # If models haven't loaded (startup missed datasets), serve fallback instead.
     if _content_model is None:
-        try:
-            return _make_trending_fallback(req)
-        except Exception:
-            raise HTTPException(status_code=503, detail="Models not loaded")
+        return _make_trending_fallback(req)
 
+    # Try the Primary Hybrid Pipeline
     try:
         causal_cfg = (
             CausalConfig(
@@ -161,9 +151,6 @@ def get_recommendations(req: RecommendationRequest):
             title=req.query,
             user_id=req.user_id,
             top_n=req.top_n,
-            fairness=req.fairness,
-            fairness_key=req.fairness_key,
-            fairness_max_share=req.fairness_max_share,
         )
 
         return {
@@ -174,31 +161,17 @@ def get_recommendations(req: RecommendationRequest):
             "fallback": False,
         }
 
+    # Graceful Popularity Fallback Recovery Layer (#678)
     except Exception as exc:
-        # Graceful Popularity Fallback Recovery Layer
-        import logging
-
-        logger = logging.getLogger("uvicorn.error")
-        logger.error(
-            "Primary recommendation engine failed: %s. Triggering popularity fallback.",
-            str(exc),
-        )
-
+        # Absolute last-resort: never leak exception details to the client.
         try:
             payload = _make_trending_fallback(req)
-            payload["message"] = (
-                "Primary pipeline encountered an error. Serving trending fallback layout."
-            )
-            payload["note"] = (
-                "Primary pipeline encountered an error. Serving trending fallback layout."
-            )
+            payload["message"] = "Primary pipeline encountered an error. Serving trending fallback layout."
+            payload["note"] = "Primary pipeline encountered an error. Serving trending fallback layout."
             payload["causal_debiasing_applied"] = False
+            payload["fallback"] = True
             return payload
-        except Exception as fallback_exc:
-            logger.critical(
-                "Critical System Outage: Fallback engine failed: %s",
-                str(fallback_exc),
-            )
+        except Exception:
             raise HTTPException(
                 status_code=500,
                 detail="Recommendation engine completely offline.",

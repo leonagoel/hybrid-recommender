@@ -7,6 +7,11 @@ const root = document.documentElement;
 function initThemeToggle() {
   if (!themeToggle) return;
 
+  // Ensure theme toggle button is focusable as a keyboard-accessible control.
+  themeToggle.setAttribute('role', 'button');
+  themeToggle.setAttribute('tabindex', '0');
+
+
   const savedTheme = localStorage.getItem('theme') || 'dark';
 
   root.setAttribute('data-theme', savedTheme);
@@ -1232,31 +1237,24 @@ function renderRecommendations(data) {
 
     document.getElementById("empty-state").hidden = true;
 
-    els.recsStrip.innerHTML = recs
-        .map((r) => {
-            const title = r.title || 'Untitled';
-            const safeTitle = escapeHtml(title);
-            return `
-                <div class="rec-card" data-title="${safeTitle}">
-                    <div class="rec-card__title">${safeTitle}</div>
-                    <div class="rec-card__rating">
-                        <div class="star-rating">${renderStars(r.rating || 0)}</div>
-                        <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
-                    </div>
-
-                    <div class="rec-card__score">
-                        Score: ${(r.hybrid_score || 0).toFixed(3)}
-                        · Content: ${(r.content_score || 0).toFixed(2)}
-                        · Collab: ${(r.collab_score || 0).toFixed(2)}
-                    </div>
-
-                    <div class="rec-card__explanation">
-                        Reason: ${(r.explanation || r.llm_explanation || 'Based on hybrid signals.')}
-                    </div>
-                </div>
-            `;
-        })
-        .join('');
+    els.recsStrip.innerHTML = recs.map((r) => {
+        const title = r.title || 'Untitled';
+        const safeTitle = escapeHtml(title);
+        return `
+        <div class="rec-card" data-title="${safeTitle}">
+            <div class="rec-card__title">${safeTitle}</div>
+            <div class="rec-card__rating">
+                <div class="star-rating">${renderStars(r.rating || 0)}</div>
+                <span class="rating-value">${(r.rating || 0).toFixed(1)}</span>
+            </div>
+            <div class="rec-card__score">
+                Score: ${(r.hybrid_score || 0).toFixed(3)}
+                · Content: ${(r.content_score || 0).toFixed(2)}
+                · Collab: ${(r.collab_score || 0).toFixed(2)}
+            </div>
+        </div>
+    `;
+    }).join('');
 
     els.recsStrip.querySelectorAll('.rec-card').forEach((card) => {
         card.addEventListener('click', () => {
@@ -1266,7 +1264,6 @@ function renderRecommendations(data) {
 
     els.recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-
 
 async function loadRecommendationsOverHttp(title) {
     const data = await API.get(`/api/recommend/${encodeURIComponent(title)}?top_n=12`);
@@ -1913,9 +1910,6 @@ async function loadRecommendations(title) {
                     · Content: ${(r.content_score || 0).toFixed(2)}
                     · Collab: ${(r.collab_score || 0).toFixed(2)}
                 </div>
-                <div class="rec-card__explanation">
-                    Reason: ${(r.explanation || r.llm_explanation || 'Based on hybrid signals.')}
-                </div>
             </div>
         `;
         }).join('');
@@ -2044,8 +2038,51 @@ document.querySelectorAll(".product-card").forEach(card => {
 
 document.addEventListener('DOMContentLoaded', init);
 
+// ── FIX: state filters + chips compatibility ────────────────
+// Some UI paths reference state.activeChips but the base state was missing it.
+// Ensure it exists and is initialized.
+if (!state.activeChips) {
+    state.activeChips = new Set(['all']);
+}
+if (!state.filters) {
+    state.filters = { category: '', rating: '', sentiment: '' };
+}
+
+// Utility: reset search box + filters and reload results.
+function resetAllFiltersAndSearch() {
+    if (els.searchInput) els.searchInput.value = '';
+    state.filters.category = '';
+    state.filters.rating = '';
+    state.filters.sentiment = '';
+
+    if (els.categoryFilter) els.categoryFilter.value = '';
+    if (els.ratingFilter) els.ratingFilter.value = '';
+    if (els.sentimentFilter) els.sentimentFilter.value = '';
+
+    if (state.activeChips) {
+        state.activeChips = new Set(['all']);
+        const chipsContainer = document.getElementById('filter-chips');
+        if (chipsContainer) {
+            chipsContainer.querySelectorAll('.chip').forEach((c) => {
+                if (c.dataset.filter === 'all') c.classList.add('active');
+                else c.classList.remove('active');
+            });
+        }
+    }
+
+    if (els.productGrid) {
+        // Reload the non-search product feed.
+        els.productsTitle.textContent = 'All Products';
+    }
+
+    // Prefer backend status-driven load if available.
+    checkStatus().catch(() => loadProducts(false));
+    closeSearchDropdown();
+}
+
 // ── Language Toggle ─────────────────────────────────────────────────
 let currentLang = 'EN';
+
 
 function toggleLanguage() {
     currentLang = currentLang === 'EN' ? 'HI' : 'EN';
