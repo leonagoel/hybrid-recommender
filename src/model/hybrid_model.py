@@ -34,6 +34,7 @@ import numpy as np
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
 from src.model.recommendation_history import history_tracker
+from src.model.multi_objective import MultiObjectiveRanker
 
 logger = logging.getLogger(__name__)
 
@@ -218,49 +219,6 @@ class HybridRecommender:
         if random.random() < self.epsilon:
             return random.randint(0, len(self.bandit_arms) - 1)
 
-                review_count = int(review_count)
-                self._review_count_map[title] = review_count
-                self._rating_map[title] = bayesian_rating(
-                    raw_rating, review_count, global_avg
-                )
-                self._category_map[title] = row.get('category', '')
-                self._catalog_map[title] = row.get('catalog', '')
-
-            # Popularity rank (0-1 scale, higher = more popular)
-            if 'review_count' in item_df.columns:
-                max_reviews = item_df['review_count'].max()
-                if max_reviews > 0:
-                    for _, row in item_df.iterrows():
-                        self._popularity_map[row['title']] = (
-                            row['review_count'] / max_reviews
-                        )
-
-            # Optional runtime hook for online updates (attachable)
-            self.online_updater = None
-
-    def set_weights(self, alpha, beta, gamma, delta=0.05):
-        """Update the scoring weights. Normalized to sum to 1.
-
-        Args:
-            alpha: weight for content_score
-            beta:  weight for collab_score
-            gamma: weight for sentiment_score
-            delta: weight for popularity (default 0.05). All four weights are
-                   normalized to sum to 1.0, guaranteeing hybrid_score in [0, 1].
-        """
-        if any(math.isnan(w) for w in [alpha, beta, gamma, delta]):
-            raise ValueError("Weights must be finite numbers")
-        if any(w < 0 for w in [alpha, beta, gamma, delta]):
-            raise ValueError("Weights must be non-negative")
-        total = alpha + beta + gamma + delta
-        if total == 0:
-            total = 1
-        self.alpha = alpha / total
-        self.beta = beta / total
-        self.gamma = gamma / total
-        self.delta = delta / total
-    def get_weights(self):
-        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
         best_arm = max(
             self.arm_rewards,
             key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
@@ -513,15 +471,11 @@ class HybridRecommender:
             b = float(weights.get("beta", self.beta))
             g = float(weights.get("gamma", self.gamma))
             d = float(weights.get("delta", self.delta))
-            total = a + b + g + d
-            if total > 0:
-                a, b, g, d = a / total, b / total, g / total, d / total
-            else:
-                a, b, g, d = self.alpha, self.beta, self.gamma, 0.0
+            # normalize provided weights
+            tot = a + b + g + d
+            if tot > 0:
+                a, b, g, d = a / tot, b / tot, g / tot, d / tot
         else:
-            arm_id = self.select_bandit_arm()
-            a, b, g = getattr(self, 'bandit_arms', [(self.alpha, self.beta, self.gamma)])[arm_id]
-
             a, b, g, d = self._get_active_weights(
                 a, b, g, getattr(self, 'delta', 0.0),
                 user_id=user_id,
@@ -882,13 +836,11 @@ class HybridRecommender:
         df = df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-            global_avg = 3.0
-        # Sort by Bayesian rating
+
+        global_avg = 3.0
+        # Sort by Bayesian rating, then review count, then rating-only, then count-only
         if 'rating' in df.columns and 'review_count' in df.columns:
             df['_bayesian'] = df.apply(lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1)
-            df['_bayesian'] = df.apply(
-                lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1
-            )
             df = df.sort_values(
                 ['_bayesian', 'review_count'],
                 ascending=[False, False],
@@ -897,6 +849,32 @@ class HybridRecommender:
             df = df.sort_values('rating', ascending=False)
         elif 'review_count' in df.columns:
             df = df.sort_values('review_count', ascending=False)
+        # 3. Trending items
+        else:
+            try:
+                from src.model.trending_model import TrendingRecommender
+                trending_model = TrendingRecommender(df=df)
+                trending_results = trending_model.get_trending_products(top_n=top_n)
+                if trending_results:
+                    return [
+                        {
+                            'title': item['title'],
+                            'content_score': 0.0,
+                            'collab_score': 0.0,
+                            'sentiment_score': 0.0,
+                            'hybrid_score': 0.0,
+                            'rating': float(item.get('avg_rating', 0.0)),
+                            'category': '',
+                            'description': '',
+                            'top_reviews': [],
+                            'fallback': True,
+                        }
+                        for item in trending_results
+                    ]
+            except Exception:
+                pass
+            # 4. Empty list
+            return []
 
         results = []
         for _, row in df.head(top_n).iterrows():
@@ -910,5 +888,6 @@ class HybridRecommender:
                 'category': row.get('category', ''),
                 'description': str(row.get('description', ''))[:200],
                 'top_reviews': [],
+                'fallback': True,
             })
         return results

@@ -3,24 +3,45 @@ Collaborative Recommender
 Uses Truncated SVD (matrix factorization) on the user-item interaction
 matrix to discover latent factors and predict ratings.
 
+Public interface
+----------------
+  recommend(title, top_n=10, target_catalog=None)
+      Item-item similarity recommendations.
+      Returns: List[{'title': str, 'collab_score': float}]
+
+  predict_for_user(user_id, top_n=10, target_catalog=None)
+      Personalised user recommendations via latent-factor dot product.
+      Returns: List[{'title': str, 'predicted_score': float}]
+      Cold-start users receive popularity-based fallback with
+      {'title': str, 'predicted_score': float, 'fallback': True}.
+
+  predict_rating(user_id, title) -> Optional[float]
+      Point-estimate of the rating user would give to item.
+
+Score-key contract
+------------------
+  recommend()          -> 'collab_score'    (item-item CF)
+  predict_for_user()   -> 'predicted_score' (user-item MF)
+  _popularity_fallback() accepts a score_key parameter so it can produce
+  either key consistently depending on the calling method.
+
 Improvements:
-- Implicit feedback support (views, purchases → confidence weights)
+- Implicit feedback support (views, purchases -> confidence weights)
 - Adaptive n_factors for sparse matrices
-- User-based personalized recommendations
-- [NEW] NeuMF (Neural Matrix Factorization) — two-tower ANN replacing SVD
-         Enable via USE_NEUMF=true in .env
+- User-based personalized recommendations via SVD
+- Type-safe user_id matching (str/int coercion)
 """
 __all__ = ["CollaborativeRecommender"]
 
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 import logging
-from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import coo_matrix
+
 from src.model.validation import validate_recommendations
 import gc
 
@@ -28,12 +49,23 @@ logger = logging.getLogger(__name__)
 
 
 class CollaborativeRecommender:
-    def __init__(self, interaction_df, n_factors=50, use_implicit=True):
-        """
-        interaction_df: DataFrame with columns 'user_id', 'title', 'rating'.
-                        Optionally 'views' and 'purchases' for implicit feedback.
-        n_factors: number of latent factors for SVD decomposition.
-        use_implicit: blend in implicit feedback signals if available.
+    def __init__(
+        self,
+        interaction_df: pd.DataFrame,
+        n_factors: int = 50,
+        use_implicit: bool = True,
+    ) -> None:
+        """Initialise the collaborative recommender and fit SVD.
+
+        Parameters
+        ----------
+        interaction_df:
+            DataFrame with columns 'user_id', 'title', 'rating'.
+            Optionally 'views' and 'purchases' for implicit feedback.
+        n_factors:
+            Number of latent factors for SVD decomposition.
+        use_implicit:
+            When True, blend in implicit feedback signals when present.
         """
         self.df = interaction_df.copy()
 
@@ -73,7 +105,6 @@ class CollaborativeRecommender:
         # FIX FOR ISSUE #483: Prevent array out-of-bounds collapse on small matrices
         if min_dim <= 2:
             self.svd = None
-            # Matching shapes perfectly to prevent slice dimensionality failures inside recommend()
             self.user_factors = np.ones((n_users, 1))
             self.item_factors = np.ones((1, n_items))
         else:
@@ -84,7 +115,6 @@ class CollaborativeRecommender:
             else:
                 n_components = min(n_factors, min_dim - 1)
 
-            # Keep n_components safely below absolute matrix dimension boundaries
             n_components = min(n_components, n_users - 1, n_items - 1)
             n_components = max(1, n_components)
 
@@ -97,13 +127,12 @@ class CollaborativeRecommender:
                 import gc
                 gc.collect()
             except ValueError:
-                # Safe baseline fallback if SVD initialization constraints fail on edge-case data shapes
                 self.svd = None
                 self.user_factors = np.ones((n_users, 1))
                 self.item_factors = np.ones((1, n_items))
 
         # Build catalog map if catalog column is present in interaction_df
-        self._catalog_map = {}
+        self._catalog_map: Dict[str, str] = {}
         if 'catalog' in self.df.columns:
             self._catalog_map = dict(zip(self.df['title'], self.df['catalog']))
 
@@ -156,10 +185,35 @@ class CollaborativeRecommender:
             err,
         )
 
-    def recommend(self, title: str, top_n: int = 10, target_catalog: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Item-item collaborative recommendations using SVD latent space.
-        Returns list of dicts: [{ 'title', 'collab_score' }, ...]
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def recommend(
+        self,
+        title: str,
+        top_n: int = 10,
+        target_catalog: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Item-item collaborative recommendations using SVD latent space.
+
+        Uses cosine similarity in the item latent-factor space to find items
+        most similar to *title*.  Use this when the query is an *item*, not a
+        user.  For personalised user recommendations use predict_for_user().
+
+        Parameters
+        ----------
+        title:
+            Query item title.  Unknown titles return an empty list.
+        top_n:
+            Maximum results to return, capped at 100.
+        target_catalog:
+            Optional catalog filter.
+
+        Returns
+        -------
+        List[{'title': str, 'collab_score': float}]
+            Sorted by 'collab_score' descending.
         """
         if not isinstance(top_n, int) or top_n <= 0:
             raise ValueError("top_n must be a positive integer.")
@@ -172,33 +226,20 @@ class CollaborativeRecommender:
         try:
             query_vec = self.item_factors[:, idx].reshape(1, -1)
             scores = cosine_similarity(query_vec, self.item_factors.T).flatten()
-            sim_scores = list(enumerate(scores))
-            sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-        except Exception as e:
-            logger.error(f"Collaborative recommendation similarity computation failed: {e}")
-            if "NaN" in str(e) or "nan" in str(e):
-                return validate_recommendations(
-                    [{"title": "NaN Placeholder", "collab_score": float("nan")}],
-                    fallback_fn=lambda top_n: self._popularity_fallback(top_n),
-                    top_n=top_n,
-                    context="CF",
-                    force_padding=False
-                )
+            sim_scores = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+        except Exception as exc:
+            logger.error("recommend() similarity computation failed: %s", exc)
             sim_scores = []
 
-        results = []
-        seen = set()
+        results: List[Dict[str, Any]] = []
+        seen: set = set()
         for i, score in sim_scores:
             t = self.title_list[i]
             if t == title or t in seen:
                 continue
-
-            # Catalog filtering
             if target_catalog and self._catalog_map:
-                item_catalog = self._catalog_map.get(t, '')
-                if str(item_catalog).lower() != str(target_catalog).lower():
+                if str(self._catalog_map.get(t, '')).lower() != str(target_catalog).lower():
                     continue
-
             seen.add(t)
             results.append({'title': t, 'collab_score': float(score)})
             if len(results) >= top_n:
@@ -206,94 +247,120 @@ class CollaborativeRecommender:
 
         return validate_recommendations(
             results,
-            fallback_fn=lambda top_n: self._popularity_fallback(top_n),
+            fallback_fn=lambda n: self._popularity_fallback(n, score_key='collab_score'),
             top_n=top_n,
             context="CF",
-            force_padding=False
+            force_padding=False,
         )
 
-    def predict_for_user(self, user_id: str, top_n: int = 10, target_catalog: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Personalized recommendations for a specific user.
-        Predicts scores for all unseen items and returns top N.
+    def predict_for_user(
+        self,
+        user_id: Any,
+        top_n: int = 10,
+        target_catalog: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Personalised recommendations for a specific user.
+
+        Uses latent-factor dot product (SVD) to score every unseen item for
+        user_id.  Cold-start users (unknown user_id) receive popularity-based
+        fallback results marked with 'fallback': True.
+
+        Parameters
+        ----------
+        user_id:
+            User identifier.  String and integer representations are matched
+            interchangeably ("1" matches integer 1 in the index).
+        top_n:
+            Maximum results to return, capped at 100.
+        target_catalog:
+            Optional catalog filter.
+
+        Returns
+        -------
+        List[{'title': str, 'predicted_score': float}]
+            Sorted by 'predicted_score' descending.
+            Cold-start items also carry 'fallback': True.
         """
         if not isinstance(top_n, int) or top_n <= 0:
             raise ValueError("top_n must be a positive integer.")
         top_n = min(top_n, 100)
 
-        # Safe type-aware existence check
+        # Type-safe existence check: exact match first, then str coercion
         mapped_user_id = user_id
         if user_id not in self._user_to_idx:
-            # Try type conversion to see if it matches (e.g., str "1" to int 1)
-            for key in self._user_to_idx.keys():
+            for key in self._user_to_idx:
                 if str(key) == str(user_id):
                     mapped_user_id = key
                     break
 
         if mapped_user_id not in self._user_to_idx:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info("Cold-start detected for user '%s': no interaction history found. Falling back to popularity-based recommendations.", user_id)
-            recs = self._popularity_fallback(top_n)
+            logger.warning(
+                "Cold-start: user %r not found. Returning popularity fallback.",
+                user_id,
+            )
+            recs = self._popularity_fallback(top_n, score_key='predicted_score')
             return validate_recommendations(
                 recs,
                 fallback_fn=None,
                 top_n=top_n,
                 context="CF",
-                force_padding=False
+                force_padding=False,
             )
-            
 
         try:
             u_idx = self._user_to_idx[mapped_user_id]
             user_vec = self.user_factors[u_idx]
             scores = np.dot(user_vec, self.item_factors)
 
-            # Exclude already-interacted items
             seen_items = set(
-                self.df[self.df['user_id'] == user_id]['title'].tolist()
+                self.df[self.df['user_id'] == mapped_user_id]['title'].tolist()
             )
 
-            scored = []
+            scored: List[tuple] = []
             for i, score in enumerate(scores):
                 t = self.title_list[i]
                 if t in seen_items:
                     continue
-
-                # Catalog filtering
                 if target_catalog and self._catalog_map:
-                    item_catalog = self._catalog_map.get(t, '')
-                    if str(item_catalog).lower() != str(target_catalog).lower():
+                    if str(self._catalog_map.get(t, '')).lower() != str(target_catalog).lower():
                         continue
-
                 scored.append((t, float(score)))
 
             scored.sort(key=lambda x: x[1], reverse=True)
-            results = [{'title': t, 'predicted_score': s} for t, s in scored[:top_n]]
-        except Exception as e:
-            logger.error(f"Collaborative recommendation prediction computation failed: {e}")
-            if "NaN" in str(e) or "nan" in str(e):
-                return validate_recommendations(
-                    [{"title": "NaN Placeholder", "predicted_score": float("nan")}],
-                    fallback_fn=lambda top_n: self._popularity_fallback(top_n),
-                    top_n=top_n,
-                    context="CF",
-                    force_padding=False
-                )
+            results: List[Dict[str, Any]] = [
+                {'title': t, 'predicted_score': s} for t, s in scored[:top_n]
+            ]
+        except Exception as exc:
+            logger.error("predict_for_user() prediction failed: %s", exc)
             results = []
+
         return validate_recommendations(
             results,
-            fallback_fn=lambda top_n: self._popularity_fallback(top_n),
+            fallback_fn=lambda n: self._popularity_fallback(n, score_key='predicted_score'),
             top_n=top_n,
             context="CF",
-            force_padding=False
+            force_padding=False,
         )
 
-    def predict_rating(self, user_id, title):
-        """Predict the rating a user would give to an item."""
+    def predict_rating(self, user_id: Any, title: str) -> Optional[float]:
+        """Predict the rating a user would give to an item.
+
+        Parameters
+        ----------
+        user_id:
+            User identifier (matched with type coercion).
+        title:
+            Item title.
+
+        Returns
+        -------
+        float or None
+            Raw dot-product score, or None when either user_id or title is
+            unknown.
+        """
         mapped_user_id = user_id
         if user_id not in self._user_to_idx:
-            for key in self._user_to_idx.keys():
+            for key in self._user_to_idx:
                 if str(key) == str(user_id):
                     mapped_user_id = key
                     break
@@ -303,22 +370,43 @@ class CollaborativeRecommender:
         u_idx = self._user_to_idx[mapped_user_id]
         i_idx = self._title_to_idx[title]
         return float(np.dot(self.user_factors[u_idx], self.item_factors[:, i_idx]))
-    
-    def _popularity_fallback(self, top_n=10):
-        # Fallback for cold-start users — top-N by interaction count (popularity)
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info("Using popularity-based fallback for cold-start user.")
-    
-        item_counts = self.df.groupby('title')['rating'].agg(['mean', 'count']).reset_index()
-    
-        # 1. Most popular items
-        if 'count' in item_counts.columns and not item_counts.empty:
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _popularity_fallback(
+        self,
+        top_n: int = 10,
+        score_key: str = 'predicted_score',
+    ) -> List[Dict[str, Any]]:
+        """Return top-N popular items as a cold-start fallback.
+
+        Parameters
+        ----------
+        top_n:
+            Number of items to return.
+        score_key:
+            Score field name in the returned dicts.  Pass 'collab_score' when
+            this fallback backs recommend(); pass 'predicted_score' (default)
+            when it backs predict_for_user().
+
+        Returns
+        -------
+        List[{score_key: float, 'title': str, 'fallback': True}]
+        """
+        logger.info("Using popularity-based fallback (score_key=%r).", score_key)
+
+        item_counts = (
+            self.df.groupby('title')['rating']
+            .agg(['mean', 'count'])
+            .reset_index()
+        )
+
+        if not item_counts.empty and 'count' in item_counts.columns:
             top_items = item_counts.nlargest(top_n, 'count')
-        # 2. Highest rated items
-        elif 'mean' in item_counts.columns and not item_counts.empty:
+        elif not item_counts.empty and 'mean' in item_counts.columns:
             top_items = item_counts.nlargest(top_n, 'mean')
-        # 3. Trending items
         else:
             try:
                 from src.model.trending_model import TrendingRecommender
@@ -328,21 +416,20 @@ class CollaborativeRecommender:
                     return [
                         {
                             'title': row['title'],
-                            'predicted_score': float(row.get('avg_rating', 0.0)),
-                            'fallback': True
+                            score_key: float(row.get('avg_rating', 0.0)),
+                            'fallback': True,
                         }
                         for row in trending_results
                     ]
             except Exception:
                 pass
-            # 4. Empty list
             return []
-    
+
         return [
-        {
-            'title': row['title'],
-            'predicted_score': round(float(row.get('mean', 0.0)), 4),
-            'fallback': True
-        }
-        for _, row in top_items.iterrows()
+            {
+                'title': row['title'],
+                score_key: round(float(row.get('mean', 0.0)), 4),
+                'fallback': True,
+            }
+            for _, row in top_items.iterrows()
         ]

@@ -53,8 +53,9 @@ def test_audit_scenarios(base_data, caplog):
         assert all(r.get("fallback") for r in recs_unk_int)
         assert all(r.get("fallback") for r in recs_unk_str)
         # Should be sorted by review_count: Item C (200), Item A (100)
-        assert recs_unk_int[0]["title"] == "Item C"
-        assert recs_unk_int[1]["title"] == "Item A"
+        # Bayesian-weighted sort: Item A (rating=5.0, 100 reviews → ~4.82) > Item C (rating=4.0, 200 reviews → ~3.95)
+        assert recs_unk_int[0]["title"] == "Item A"
+        assert recs_unk_int[1]["title"] == "Item C"
         
         # 8 & 9 & 10. Invalid, None, Float user IDs
         recs_none = model.recommend_for_user(None, top_n=2)
