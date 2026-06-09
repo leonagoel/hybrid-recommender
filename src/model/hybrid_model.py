@@ -568,12 +568,12 @@ class HybridRecommender:
             results = self._debiaser.debias_batch(results, score_key=score_key)
             results.sort(key=lambda x: x[score_key], reverse=True)
 
-            for item in results:
-                history_tracker.add_recommendation(
-                    user_id,
-                    item["title"]
-                    )
-                return results
+        for item in results:
+            history_tracker.add_recommendation(
+                user_id,
+                item["title"]
+            )
+        return results
 
     def _build_explanation(
         self,
