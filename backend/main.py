@@ -222,6 +222,8 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
+        except Exception:
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -238,45 +240,7 @@ def _get_cached_response(key: str):
             return None
         _cache_hits += 1
         return value
-
-
-# ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
-def _apply_rate_limit(*args, **kwargs):
-    """
-    Applies token-bucket rate limiting dynamically.
-    Optimized to handle Algorithmic Complexity DoS scenarios.
-    """
-    current_time = time.time()
-    allowed = False
-    
-    with _rate_limit_lock:
-        bucket = _rate_limit_buckets.get(ip_address)
-        if bucket is None:
-            bucket = {"tokens": 10.0, "last_updated": current_time}
-            _rate_limit_buckets[ip_address] = bucket
-        else:
-            _rate_limit_buckets.move_to_end(ip_address)
-            elapsed = current_time - bucket["last_updated"]
-            bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
-            bucket["last_updated"] = current_time
-            
-        if bucket["tokens"] >= 1.0:
-            bucket["tokens"] -= 1.0
-            _rate_limit_buckets[ip_address] = bucket
-            allowed = True
-            
-
-        global _request_counter
-        _request_counter += 1
-        if random.random() < 0.01 or _request_counter >= CLEANUP_THRESHOLD:
-            _request_counter = 0
-            # Evict stale buckets older than 1 hour to prevent memory leaks
-            cutoff = current_time - 3600
-            to_remove = [k for k, v in _rate_limit_buckets.items() if v["last_updated"] < cutoff]
-            for k in to_remove:
-                del _rate_limit_buckets[k]
-                
-    return allowed
+# ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ──
 def _set_cached_response(key: str, value: Any) -> None:
     try:
         with _cache_lock:
@@ -2436,20 +2400,19 @@ def get_categories():
         return {"categories": []}
     
     @app.post("/api/interactions")
-def log_interaction(data: InteractionCreate):
+    def log_interaction(data: InteractionCreate):
 
-    USER_INTERACTIONS.append({
+        USER_INTERACTIONS.append({
         "user_id": data.user_id,
         "item_id": data.item_id,
         "interaction_type": data.interaction_type,
         "timestamp": datetime.now(timezone.utc).isoformat()
-    })
+        })
 
     return {
         "message": "Interaction logged successfully",
         "interaction": USER_INTERACTIONS[-1]
     }
-
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
