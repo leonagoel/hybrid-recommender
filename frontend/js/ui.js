@@ -356,6 +356,7 @@ export function hideLoadingBar() {
       if (bar) bar.style.display = 'none';
     }, 200);
   }, 200);
+}
 // ── Skeleton Loading Cards ────────────────────────────────────────────────────
 
 export function showSkeletonCards(count = 8) {

@@ -151,6 +151,8 @@ from collections import OrderedDict
 _rate_limit_buckets = OrderedDict()
 _rate_limit_lock = Lock()
 MAX_RATE_LIMIT_IPS = 10000
+CLEANUP_THRESHOLD = 10000   # run stale-bucket cleanup every N requests
+_request_counter = 0
 
 _cache_lock = Lock()
 

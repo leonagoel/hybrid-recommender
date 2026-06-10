@@ -1710,7 +1710,9 @@ function closeSearchDropdown() {
 }
 
 function handleSearchKeydown(e) {
-    const results = state.searchResults;
+    // Use autocompleteResults (single source of truth for dropdown)
+    const results = state.autocompleteResults || [];
+
     if (!results.length || !els.searchDropdown.classList.contains('active')) return;
 
     if (e.key === 'ArrowDown') {
@@ -1719,11 +1721,11 @@ function handleSearchKeydown(e) {
         renderSearchDropdown(results, els.searchInput.value);
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, -1);
+        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, 0);
         renderSearchDropdown(results, els.searchInput.value);
     } else if (e.key === 'Enter' && state.selectedSearchIdx >= 0) {
         e.preventDefault();
-        selectSearchResult(results[state.selectedSearchIdx].title);
+        selectSearchResult(results[state.selectedSearchIdx]);
     } else if (e.key === 'Escape') {
         closeSearchDropdown();
     }
