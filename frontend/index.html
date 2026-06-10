@@ -21,7 +21,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="styles.css">
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
@@ -204,6 +204,15 @@
 
             <div class="recs-strip" id="recs-strip"></div>
 
+            <!-- Load More Button -->
+
+            <button id="load-more-btn" class="load-more-btn" hidden>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="6 9 12 15 18 9"/>
+                </svg>
+                Load More Recommendations
+            </button>
+
             <!-- Empty Recommendation State -->
 
             <div id="empty-state" class="empty-state" hidden>
@@ -319,35 +328,24 @@
     </div>
 
     <!-- Toast Container -->
-    <div class="toast-container" id="toast-container"></div>
-
     <footer class="footer">
-        <p>&copy; 2026 HybridRec — Powered by TF-IDF, SVD, VADER &amp; PostgreSQL FTS</p>
-        <p><a href="/dashboard.html" class="footer__link">Admin Dashboard</a></p>
-    </footer>
-    <footer style="text-align:center; margin-top:40px;">
-        <a href="/dashboard.html">Admin Dashboard</a>
-    </footer>
-    <div id="saveToast" class="save-toast">
-        Preferences saved
-    </div>
-
-    <div class="footer-left">
+      <div class="footer-container">
+        <div class="footer-left">
         <h3>Hybrid Recommender System</h3>
         <p>Smart product recommendations powered by AI</p>
-    </div>
-
+      </div>
     <div class="footer-right">
-        <a href="https://github.com/your-username/hybrid-recommender" target="_blank">
-            GitHub Repository
-        </a>
-        <img src="https://gssoc.girlscript.tech/badges/postman.png" alt="GSSoC Badge" class="gssoc-badge" loading="lazy" />
+      <a href="https://github.com/leonagoel/hybrid-recommender" target="_blank" rel="noopener noreferrer">
+        GitHub Repository
+      </a>
+      <img src="https://gssoc.girlscript.tech/badges/postman.png" alt="GSSoC Badge" class="gssoc-badge" />
     </div>
-
-    <button id="backToTop" class="back-to-top" style="display: none;">↑ Top</button>
+  </div>
+  <div class="footer-bottom">
+    <p>© 2026 HybridRec — Powered by TF-IDF, SVD, VADER &amp; PostgreSQL FTS</p>
+    <p><a href="/dashboard.html" class="footer__link">Admin Dashboard</a></p>
   </div>
 </footer>
-</div>
 <!-- Product Details Modal -->
 <div class="modal-overlay" id="product-modal" hidden>
     <div class="product-modal">

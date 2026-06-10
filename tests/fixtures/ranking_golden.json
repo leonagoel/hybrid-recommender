@@ -1,0 +1,126 @@
+{
+  "dataset": "datasets/sample_products.csv",
+  "k": 10,
+  "recommendations": {
+    "Premium Journal Lite": [
+      "Advanced Wiper Lite",
+      "Portable Cookbook Lite",
+      "Deluxe Guide Lite",
+      "Compact Atlas Lite",
+      "Ergonomic Sunscreen SE",
+      "Pro Novel Lite",
+      "Classic Dash Cam Lite",
+      "Ultra Lamp Lite",
+      "Wireless Pulse Oximeter Lite",
+      "Ultra Guide SE"
+    ],
+    "Wireless Pulse Oximeter Lite": [
+      "Smart Monitor Lite",
+      "Organic Monitor Pro",
+      "Ultra Pulse Oximeter SE",
+      "Eco Pulse Oximeter Plus",
+      "Wireless Textbook One",
+      "Premium Headphones V2",
+      "Wireless Bird Feeder Lite",
+      "Portable Cookbook Lite",
+      "Eco Sunscreen 360",
+      "Wireless Pruner Lite"
+    ],
+    "Advanced Headphones One": [
+      "Advanced Fence Pro",
+      "Digital Headphones Pro",
+      "Premium Headphones Plus",
+      "Advanced Headphones Lite",
+      "Eco Monitor Max",
+      "Compact Resistance Band Plus",
+      "Essential Jump Rope Plus",
+      "Smart Guide X",
+      "Advanced Guide Plus",
+      "Smart Moisturizer Plus"
+    ],
+    "Smart Sprinkler 360": [
+      "Digital Play Dough 360",
+      "Eco Air Freshener 360",
+      "Organic Shovel X",
+      "Ultra Sprinkler V2",
+      "Wireless Bird Feeder Lite",
+      "Digital Mask 360",
+      "Wireless Pruner 360",
+      "Advanced Hoodie 360",
+      "Premium Heating Pad 360",
+      "Premium Hose Lite"
+    ],
+    "Premium Plush Toy 360": [
+      "Ultra Hoodie 360",
+      "Classic Train Set Max",
+      "Premium Heating Pad 360",
+      "Digital Doll Lite",
+      "Classic Plush Toy Max",
+      "Premium Headphones Plus",
+      "Digital Play Dough 360",
+      "Classic Building Blocks Plus",
+      "Organic Plush Toy X",
+      "Pro Hub V2"
+    ],
+    "Ultra Shorts Pro": [
+      "Ultra Gloves 360",
+      "Deluxe Sneakers Pro",
+      "Essential Jump Rope Plus",
+      "Deluxe Helmet Lite",
+      "Portable Cookbook Lite",
+      "Essential Dress Pro",
+      "Ultra Hoodie 360",
+      "Ultra Jeans Lite",
+      "Deluxe Jump Starter SE",
+      "Classic Car Mount SE"
+    ],
+    "Wireless Rug Plus": [
+      "Essential Rug Pro",
+      "Wireless Textbook One",
+      "Compact Resistance Band Plus",
+      "Eco Blender Plus",
+      "Wireless Jacket V2",
+      "Smart Moisturizer Plus",
+      "Wireless Jump Rope Pro",
+      "Classic Building Blocks Plus",
+      "Compact Dumbbell X",
+      "Compact Planter Plus"
+    ],
+    "Pro Dumbbell V2": [
+      "Compact Resistance Band Plus",
+      "Wireless Jump Rope Pro",
+      "Portable Headphones Pro",
+      "Essential Gloves Pro",
+      "Premium Dumbbell V2",
+      "Compact Dumbbell X",
+      "Solar Kite One",
+      "Essential Racket Max",
+      "Classic Cable V2",
+      "Ergonomic Racket 360"
+    ],
+    "Essential Jump Rope V2": [
+      "Classic Cable V2",
+      "Ultra Gloves 360",
+      "Advanced Mouse 360",
+      "Portable Goggles V2",
+      "Essential Jump Rope Plus",
+      "Wireless Pulse Oximeter Lite",
+      "Eco Sunscreen 360",
+      "Eco Tire Inflator Lite",
+      "Wireless Jump Rope Pro",
+      "Premium Pillow Pro"
+    ],
+    "Classic Tool Kit Lite": [
+      "Deluxe Guide Lite",
+      "Pro Nail Polish Lite",
+      "Pro Novel Lite",
+      "Ultra Lamp Lite",
+      "Ergonomic Hand Sanitizer Lite",
+      "Eco Anthology X",
+      "Classic Dash Cam Lite",
+      "Essential Gloves Pro",
+      "Advanced Wiper Lite",
+      "Portable Cookbook Lite"
+    ]
+  }
+}
