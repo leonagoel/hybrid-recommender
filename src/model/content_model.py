@@ -143,7 +143,7 @@ class ContentRecommender:
         Returns list of matching item titles with scores.
         """
         try:
-            query_vec = self.model.encode([query])
+            query_vec = self.vectorizer.transform([query])
 
             # Candidate retrieval: prefer ANN candidates when available, otherwise brute-force
             n = int(self.matrix.shape[0]) if getattr(self, 'matrix', None) is not None else 0
