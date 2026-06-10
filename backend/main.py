@@ -1579,57 +1579,58 @@ async def recommend_item(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
 @app.get("/api/recommendations/{item_id}/explanation")
 async def get_recommendation_explanation(item_id: str, user_id: str):
     """
-    Task 3: Executes a typo-tolerant string similarity lookup 
-    using the PostgreSQL pg_trgm extension via Supabase RPC.
+    Return a score-level explanation for why item_id is recommended.
+
+    Delegates to HybridRecommender.recommend(..., explain=True) and returns
+    the explanation block attached to the first result whose title matches
+    item_id.  If the models have not been built yet, or item_id is not found
+    in the recommendation results, an appropriate HTTP error is raised.
     """
-    query = _normalize_search_query(q)
-    if not query:
-        return {"results": [], "count": 0, "query": query}
+    if not models.get("ready") or not models.get("hybrid"):
+        raise HTTPException(status_code=400, detail="Models not built. Call /api/build first.")
+
+    item_id = item_id.strip()
+    if not item_id:
+        raise HTTPException(status_code=422, detail="item_id must not be empty.")
 
     try:
-        # Configuration tuning hyper-parameters
-        alpha, beta, gamma = 0.5, 0.3, 0.2
-        
-        # Base engine performance profiles (TF-IDF, SVD, VADER)
-        content_score = 0.72
-        collaborative_score = 0.60
-        sentiment_score = 0.50
-        
-        weighted_content = alpha * content_score
-        weighted_collab = beta * collaborative_score
-        weighted_sentiment = gamma * sentiment_score
-        
-        products = result.data or []
-        
-        results = []
-        for p in products:
-            metadata = p.get('metadata') or {}
-            price = float(p.get('price') if p.get('price') is not None else metadata.get('price', 0.0))
-            results.append({
-                'id': p.get('id'), 
-                'title': p.get('title', ''),
-                'description': str(p.get('description', ''))[:200],
-                'category': p.get('category', ''), 
-                'rating': p.get('rating', 0.0),
-                'price': price,
-                'avg_sentiment': p.get('avg_sentiment', 0.0),
-                'review_count': p.get('review_count', 0), 
-                'rank': p.get('rank', 0.0),
-            })
-            
-        return {
-            "results": results,
-            "count": len(results),
-            "query": query,
-            "threshold": threshold
-        }
+        recs = models["hybrid"].recommend(
+            title=item_id,
+            user_id=user_id or None,
+            top_n=10,
+            explain=True,
+        )
     except Exception as e:
-        logger.error("Fuzzy search pipeline exception: %s", e)
-        raise HTTPException(status_code=500, detail="Fuzzy search failed")
+        logger.error("Explanation generation failed for item '%s': %s", item_id, e)
+        raise HTTPException(status_code=500, detail="Failed to generate explanation.")
+
+    if not recs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No recommendations found for item '{item_id}'.",
+        )
+
+    explanation_entry = next(
+        (r for r in recs if r.get("explanation") is not None),
+        None,
+    )
+    if explanation_entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Explanation not available for item '{item_id}'.",
+        )
+
+    return {
+        "item_id": item_id,
+        "user_id": user_id or None,
+        "explanation": explanation_entry["explanation"],
+        "representative_recommendation": {
+            k: v for k, v in explanation_entry.items() if k != "explanation"
+        },
+    }
 
 
 def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
@@ -2595,28 +2596,20 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
-    
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
+
+
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
-
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
