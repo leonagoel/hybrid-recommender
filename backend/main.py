@@ -637,6 +637,18 @@ class FeedbackCreate(BaseModel):
     feedback: str = Field(..., min_length=1, max_length=2000)
     thumbs: str = Field(..., pattern=r"^(up|down)$")
 
+
+class InteractionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(..., min_length=1, max_length=128)
+    item_id: int = Field(..., gt=0)
+    interaction_type: str = Field(
+        ...,
+        pattern=r"^(view|click|search)$"
+    )
+
+
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     item_title: str
@@ -1065,79 +1077,6 @@ class RealtimeConnectionHub:
 realtime_hub = RealtimeConnectionHub()
 
 USER_INTERACTIONS = []
-
-
-class WeightsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    alpha: float = 0.5
-    beta: float = 0.3
-    gamma: float = 0.2
-
-
-class PurchaseCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    product_id: int = Field(..., gt=0)
-    rating: float = Field(0.0, ge=0.0, le=5.0)
-    review_text: str = Field("", max_length=1000)
-
-
-class FeedbackCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    item: str = Field(..., min_length=1, max_length=500)
-    feedback: str = Field(..., min_length=1, max_length=2000)
-    thumbs: str = Field(..., pattern=r"^(up|down)$")
-
-class InteractionCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    user_id: str = Field(..., min_length=1, max_length=128)
-    item_id: int = Field(..., gt=0)
-    interaction_type: str = Field(
-        ...,
-        pattern=r"^(view|click|search)$"
-    )
-
-class RealtimeRecommendationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    item_title: str
-    top_n: int = 10
-    explain: bool = False
-    target_catalog: Optional[str] = None
-
-
-# ── CSRF Token ───────────────────────────────────────────────────────
-@app.get(
-    "/api/csrf-token",
-    response_model=CSRFTokenResponse,
-    summary="Issue a CSRF token",
-    tags=["Security"],
-)
-def get_csrf_token(response: Response):
-    token = generate_csrf_token()
-    set_csrf_cookie(response, token)
-    return CSRFTokenResponse(csrfToken=token)
-
-
-class FederatedTrainRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    n_factors: int = 20
-    epochs: int = 5
-    lr: float = 0.05
-    reg: float = 0.05
-
-
-# ── Health ────────────────────────────────────────────────────────────
-@app.get("/health")
-@app.get("/api/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "model_loaded": models["ready"],
-    }
 
 
 # ── API Metrics ───────────────────────────────────────────────────────
@@ -2595,28 +2534,20 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
-    
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
+
+
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
-
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
