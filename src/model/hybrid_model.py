@@ -405,8 +405,11 @@ class HybridRecommender:
             else:
                 a, b, g, d = self.alpha, self.beta, self.gamma, 0.0
         else:
-            a, b, g = self._get_active_weights(
-                candidate_titles=[it["title"] for it in items],
+            arm_id = self.select_bandit_arm()
+            a, b, g = getattr(self, 'bandit_arms', [(self.alpha, self.beta, self.gamma)])[arm_id]
+
+            a, b, g, d = self._get_active_weights(
+                a, b, g, getattr(self, 'delta', 0),
                 user_id=user_id,
             )
             d = self.delta if self.kg_model else 0.0
@@ -564,6 +567,11 @@ class HybridRecommender:
             results = self._debiaser.debias_batch(results, score_key=score_key)
             results.sort(key=lambda x: x[score_key], reverse=True)
 
+        for item in results:
+            history_tracker.add_recommendation(
+                user_id,
+                item["title"]
+            )
         return results
 
     def _build_explanation(
