@@ -93,9 +93,9 @@ class CollaborativeRecommender:
         # Build catalog map if catalog column is present in interaction_df
         self._catalog_map = {}
         if 'catalog' in self.df.columns:
-            self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+            self._catalog_map = dict(zip(self.df['title'], self.df['catalog']))
 
-    def recommend(self, title, top_n=10, target_catalog=None):
+    def recommend(self, title: str, top_n: int = 10, target_catalog: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Item-item collaborative recommendations using SVD latent space.
         Returns list of dicts: [{ 'title', 'collab_score' }, ...]
@@ -151,7 +151,7 @@ class CollaborativeRecommender:
             force_padding=False
         )
 
-    def predict_for_user(self, user_id, top_n=10, target_catalog=None):
+    def predict_for_user(self, user_id: str, top_n: int = 10, target_catalog: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Personalized recommendations for a specific user.
         Predicts scores for all unseen items and returns top N.

@@ -100,7 +100,7 @@ class ContentRecommender:
             t = self.df.iloc[i]['title']
             if t.lower() == title.lower() or t in seen:
                 continue
-            seen.add(key)
+            seen.add(t)
             
             results.append({
                 "title": t,
