@@ -682,14 +682,11 @@ class FederatedTrainRequest(BaseModel):
 @app.get("/health")
 @app.get("/api/health")
 def health_check():
-    """
-    Low-overhead health check endpoint for component tracking.
-    Checks database (Supabase), model readiness, and cache (Redis).
-    """
-    from src.data.db import get_supabase
-    from redis import Redis
-    from redis.exceptions import RedisError
-    import os
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_loaded": models["ready"],
+    }
 
 def _set_cached_response(key: str, value: Any) -> None:
     if _redis_client is not None:
@@ -710,8 +707,6 @@ def _clear_response_cache() -> None:
         global _cache_hits, _cache_misses
         _cache_hits = 0
         _cache_misses = 0
-
-    return result
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
@@ -1996,15 +1991,12 @@ def get_recommendations(
     if rate_limited is not None:
         return rate_limited
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog, model_version, user_id)
-# ----- EDGE CASES SAFE CHECK -----
-    # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
         raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
-    # ---------------------------------
     query_title = title or item_title
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
+    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog, model_version, user_id)
     selected_models = models
 
     if model_version == "staging":
