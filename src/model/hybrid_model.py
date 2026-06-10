@@ -399,23 +399,16 @@ class HybridRecommender:
         collab_map = {}
 
         if self.collab_model:
-            collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-            for r in collab_recs:
-                collab_map[r['title']] = r.get('collab_score', 0.0)
-                all_titles.add(r['title'])
+            # try user-based if available (NeuMF)
+            if hasattr(self.collab_model, "predict_for_user"):
+                # fallback: use pseudo user from title interactions
+                # (for hybrid item-to-item compatibility)
+                collab_recs = self.collab_model.recommend(title, top_n=top_n * 3)
+            else:
+                collab_recs = self.collab_model.recommend(title, top_n=top_n * 3)
 
-        # 2.5 Knowledge Graph scores
-        kg_map = {}
-        if self.kg_model:
-            kg_recs = self.kg_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-            for r in kg_recs:
-                if not isinstance(r, dict):
-                    continue
-                candidate_title = r.get("title")
-                if not candidate_title:
-                    continue
-                kg_map[candidate_title] = r.get("kg_score", 0.0)
-                all_titles.add(candidate_title)
+            for r in collab_recs:
+                collab_map[r["title"]] = r["collab_score"]
 
         # 3. Build unified candidates
         candidates = {}

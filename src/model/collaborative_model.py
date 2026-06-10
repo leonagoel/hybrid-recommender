@@ -106,27 +106,11 @@ class CollaborativeRecommender:
 
         if title not in self._title_to_idx:
             return []
-
-        idx = self._title_to_idx[title]
-        try:
-            query_vec = self.item_factors[:, idx].reshape(1, -1)
-            scores = cosine_similarity(query_vec, self.item_factors.T).flatten()
-            sim_scores = list(enumerate(scores))
-            sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-        except Exception as e:
-            logger.error(f"Collaborative recommendation similarity computation failed: {e}")
-            if "NaN" in str(e) or "nan" in str(e):
-                return validate_recommendations(
-                    [{"title": "NaN Placeholder", "collab_score": float("nan")}],
-                    fallback_fn=lambda top_n: self._popularity_fallback(top_n),
-                    top_n=top_n,
-                    context="CF",
-                    force_padding=False
-                )
-            sim_scores = []
-
-        results = []
-        seen = set()
+        idx       = self._title_to_idx[title]
+        query_vec = self.item_factors[:, idx].reshape(1, -1)
+        scores    = cosine_similarity(query_vec, self.item_factors.T).flatten()
+        sim_scores = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+        results, seen = [], set()
         for i, score in sim_scores:
             t = self.title_list[i]
             if t == title or t in seen:
@@ -142,14 +126,7 @@ class CollaborativeRecommender:
             results.append({'title': t, 'collab_score': float(score)})
             if len(results) >= top_n:
                 break
-
-        return validate_recommendations(
-            results,
-            fallback_fn=lambda top_n: self._popularity_fallback(top_n),
-            top_n=top_n,
-            context="CF",
-            force_padding=False
-        )
+        return results
 
     def predict_for_user(self, user_id, top_n=10, target_catalog=None):
         """
@@ -229,15 +206,7 @@ class CollaborativeRecommender:
         )
 
     def predict_rating(self, user_id, title):
-        """Predict the rating a user would give to an item."""
-        mapped_user_id = user_id
-        if user_id not in self._user_to_idx:
-            for key in self._user_to_idx.keys():
-                if str(key) == str(user_id):
-                    mapped_user_id = key
-                    break
-
-        if mapped_user_id not in self._user_to_idx or title not in self._title_to_idx:
+        if user_id not in self._user_to_idx or title not in self._title_to_idx:
             return None
         u_idx = self._user_to_idx[mapped_user_id]
         i_idx = self._title_to_idx[title]
