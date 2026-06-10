@@ -124,6 +124,12 @@ class HybridRecommender:
 
         self.online_updater = None
 
+        # Bandit exploration
+        self.epsilon = 0.1
+        self.bandit_arms = [(self.alpha, self.beta, self.gamma)]
+        self.arm_rewards = {0: 0.0}
+        self.arm_counts = {0: 0}
+
         if item_df is not None:
             global_avg = float(item_df["rating"].mean()) if "rating" in item_df.columns else 3.0
 
