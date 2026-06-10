@@ -2057,12 +2057,9 @@ def get_recommendations(
     if rate_limited is not None:
         return rate_limited
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog, model_version, user_id)
-# ----- EDGE CASES SAFE CHECK -----
-    # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
         raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
-    # ---------------------------------
+
     query_title = title or item_title
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
@@ -2595,28 +2592,20 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
-    
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
+
+
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
-
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
