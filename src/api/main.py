@@ -12,6 +12,9 @@ from src.api.response_utils import success_response, error_response
 from pydantic import BaseModel
 from typing import Optional
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
@@ -85,7 +88,7 @@ def startup_event():
             break
 
     if not loaded:
-        print("Warning: No datasets found for API startup.")
+        logger.warning("Warning: No datasets found for API startup.")
         return
 
     interaction_df, item_df = dm.merge_all()
@@ -97,19 +100,25 @@ def startup_event():
 
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
+    from src.model.validation import validate_recommendations
+
     if _content_model is None:
-        return JSONResponse(
-            status_code=503,
-            content=error_response(
-                message="Models not loaded",
-                model_name="hybrid",
-                detail="Models not loaded"
-            )
+        fallback_recs = validate_recommendations(
+            None,
+            top_n=req.top_n,
+            default_fallback_items=_item_df["title"].tolist() if _item_df is not None and not _item_df.empty else None,
+            context="hybrid"
+        )
+        return success_response(
+            recommendations=fallback_recs,
+            model_name="hybrid",
+            message="Models not loaded. Serving trending fallback layout.",
+            causal_debiasing_applied=req.use_causal,
+            fallback=True,
+            note="Models not loaded. Serving trending fallback layout."
         )
 
-    # ===================================================================
     # Try the Primary Hybrid Pipeline
-    # ===================================================================
     try:
         causal_cfg = (
             CausalConfig(
@@ -128,6 +137,9 @@ def get_recommendations(req: RecommendationRequest):
             causal_config=causal_cfg,
         )
 
+
+
+
         recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
         return success_response(
             recommendations=recs,
@@ -137,9 +149,7 @@ def get_recommendations(req: RecommendationRequest):
             fallback=False
         )
 
-    # ===================================================================
     # Graceful Popularity Fallback Recovery Layer (#678)
-    # ===================================================================
     except Exception as exc:
         import logging
         logger = logging.getLogger("uvicorn.error")
@@ -179,6 +189,7 @@ def get_recommendations(req: RecommendationRequest):
             
         except Exception as fallback_exc:
             logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
+
             return JSONResponse(
                 status_code=500,
                 content=error_response(
@@ -187,4 +198,6 @@ def get_recommendations(req: RecommendationRequest):
                     detail="Recommendation engine completely offline."
                 )
             )
+
+
 

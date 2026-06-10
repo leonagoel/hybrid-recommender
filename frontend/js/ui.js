@@ -323,6 +323,10 @@ export function escapeHtml(str) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// Module-private alias used throughout this file for brevity.
+// Defined AFTER the exported escapeHtml so the reference is always valid.
+const _esc = escapeHtml;
+
 // ── Global loading bar (issue #236) ────────────────────────────────────
 let loadingBarTimeout = null;
 
@@ -356,6 +360,7 @@ export function hideLoadingBar() {
       if (bar) bar.style.display = 'none';
     }, 200);
   }, 200);
+}
 // ── Skeleton Loading Cards ────────────────────────────────────────────────────
 
 export function showSkeletonCards(count = 8) {
