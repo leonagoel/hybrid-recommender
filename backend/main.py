@@ -114,9 +114,45 @@ from issue_triage import triage_issue
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
-# 🚀 DEGRADED MODE TELEMETRY TRACKER GLOBALS
-_model_degraded = False
-_model_degraded_reason: Optional[str] = None
+# Register routers
+app.include_router(recommend.router, prefix="/api")
+
+# ── OpenAPI CSRF header dependency ────────────────────────────────────
+# WHY a Depends() instead of just relying on the middleware?
+#
+# The CSRFMiddleware enforces the token at the ASGI level — it never
+# touches the OpenAPI schema that FastAPI builds from route signatures.
+# Swagger UI only renders parameters that appear in the schema, so the
+# X-CSRF-Token field is invisible to users testing the API interactively.
+#
+# This dependency solves that purely at the documentation layer:
+#   - It declares X-CSRF-Token as a required header parameter on every
+#     route that includes Depends(csrf_header_dep).
+#   - FastAPI adds it to the OpenAPI spec → Swagger UI renders the field.
+#   - The function body does nothing (returns None) because the middleware
+#     has already validated the token before the route handler runs.
+#   - No double-validation, no logic duplication.
+#
+# The `alias="X-CSRF-Token"` preserves the canonical mixed-case header
+# name in the OpenAPI spec so Swagger UI labels it correctly, even though
+# Starlette lowercases all incoming headers internally.
+async def csrf_header_dep(
+    x_csrf_token: str = Header(
+        ...,
+        alias="X-CSRF-Token",
+        description=(
+            "CSRF token obtained from **GET /api/csrf-token**. "
+            "Required on all state-mutating requests (POST / PUT / PATCH / DELETE). "
+            "Must match the value stored in the `csrftoken` cookie."
+        ),
+    ),
+) -> None:
+    """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
+    # The middleware has already validated the token before this runs.
+    # This function exists solely to make the header visible in Swagger UI.
+
+# ── App ──────────────────────────────────────────────────────────────
+app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
 @app.on_event("startup")
 def download_nltk_assets():
@@ -151,6 +187,8 @@ from collections import OrderedDict
 _rate_limit_buckets = OrderedDict()
 _rate_limit_lock = Lock()
 MAX_RATE_LIMIT_IPS = 10000
+CLEANUP_THRESHOLD = 10000   # run stale-bucket cleanup every N requests
+_request_counter = 0
 
 _cache_lock = Lock()
 
@@ -361,7 +399,6 @@ def _apply_rate_limit(
     response.headers["x-ratelimit-remaining"] = str(remaining)
     response.headers["x-ratelimit-reset"] = str(reset_time)
     return None
-
 
 
 def _extract_bearer_token(value: str | None) -> str:
@@ -853,7 +890,6 @@ def _apply_rate_limit(
     return None
 
 
-
 def _extract_bearer_token(value: str | None) -> str:
     if not value:
         return ""
@@ -1292,9 +1328,10 @@ def search_items(
                 )
     
                 # Fallback: LIKE search
+                escaped_query = _escape_like_pattern(query.strip())
                 result = sb.table('products') \
                     .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
-                    .ilike('title', f'%{query.strip()}%') \
+                    .ilike('title', f'%{escaped_query}%') \
                     .order('rating', desc=True) \
                     .limit(limit) \
                     .execute()
@@ -1302,7 +1339,7 @@ def search_items(
                 products = result.data or []
     
             # 2. Fuzzy fallback
-            if len(products) < 3:
+            if not products:
                 is_fuzzy_fallback = True
     
                 fuzzy_res = sb.rpc('fuzzy_search_products', {
@@ -1330,8 +1367,8 @@ def search_items(
         logger.warning("Search fallback to mock products: %s", e)
         products = MOCK_PRODUCTS
 
-        if query:
-            query_lower = query.lower()
+    if query:
+        query_lower = query.lower()
 
             products = [
                 p for p in products
@@ -1341,7 +1378,8 @@ def search_items(
             ]
 
         for p in products:
-            p['rank'] = 0.0
+            if 'rank' not in p or p['rank'] is None:
+                p['rank'] = 0.0
 
 
     # Format response
@@ -1495,7 +1533,19 @@ async def recommend_item(
 
             if item_df is not None and not item_df.empty:
                 content_model = ContentRecommender(item_df)
-                collab_model = CollaborativeRecommender(interaction_df) if interaction_df is not None and not interaction_df.empty else None
+                
+                import os
+                from src.model.neural_collaborative_model import NeuralCollaborativeRecommender
+                use_ncf = os.getenv("USE_NCF", "true").lower() == "true"
+                
+                if interaction_df is not None and not interaction_df.empty:
+                    if use_ncf:
+                        collab_model = NeuralCollaborativeRecommender(interaction_df)
+                    else:
+                        collab_model = CollaborativeRecommender(interaction_df)
+                else:
+                    collab_model = None
+                
                 hybrid = HybridRecommender(content_model, collab_model, item_df)
                 all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
         except Exception:
@@ -2358,6 +2408,7 @@ def update_weights(
 @app.get("/api/items")
 def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
     sb = get_supabase()
+    limit = per_page
     offset = (page - 1) * limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -2401,18 +2452,17 @@ def get_categories():
     
     @app.post("/api/interactions")
     def log_interaction(data: InteractionCreate):
-
         USER_INTERACTIONS.append({
-        "user_id": data.user_id,
-        "item_id": data.item_id,
-        "interaction_type": data.interaction_type,
-        "timestamp": datetime.now(timezone.utc).isoformat()
+            "user_id": data.user_id,
+            "item_id": data.item_id,
+            "interaction_type": data.interaction_type,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
-    return {
-        "message": "Interaction logged successfully",
-        "interaction": USER_INTERACTIONS[-1]
-    }
+        return {
+            "message": "Interaction logged successfully",
+            "interaction": USER_INTERACTIONS[-1]
+        }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
