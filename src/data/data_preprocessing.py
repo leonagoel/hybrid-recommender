@@ -1,6 +1,7 @@
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-
+import logging
+logger = logging.getLogger(__name__)
 
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     """Fill missing values. Text columns get 'Unknown', numeric get median."""
@@ -63,14 +64,14 @@ def preprocess_books_data(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         Cleaned pandas DataFrame
     """
-    print(f'Original shape: {df.shape}')
+    logger.info(f'Original shape: {df.shape}')
     df = remove_duplicates(df)
-    print(f'After removing duplicates: {df.shape}')
+    logger.info(f'After removing duplicates: {df.shape}')
     df = handle_missing_values(df)
     df = encode_categorical(df, ['authors', 'publisher'])
     if 'rating' in df.columns:
         df = normalize_ratings(df, 'rating')
-    print(f'Final shape: {df.shape}')
+    logger.info(f'Final shape: {df.shape}')
     return df
 
 
@@ -86,16 +87,16 @@ def preprocess_ratings_data(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         Cleaned pandas DataFrame
     """
-    print(f'Original shape: {df.shape}')
+    logger.info(f'Original shape: {df.shape}')
     if 'user_id' in df.columns and 'book_id' in df.columns:
         df = df.drop_duplicates(subset=['user_id', 'book_id'])
     else:
         df = df.drop_duplicates()
-    print(f'After removing duplicates: {df.shape}')
+    logger.info(f'After removing duplicates: {df.shape}')
     df = handle_missing_values(df)
     if 'rating' in df.columns:
         df = normalize_ratings(df, 'rating')
-    print(f'Final shape: {df.shape}')
+    logger.info(f'Final shape: {df.shape}')
     return df
 
 
@@ -112,9 +113,9 @@ def preprocess_sentiment_data(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         Cleaned pandas DataFrame
     """
-    print(f'Original shape: {df.shape}')
+    logger.info(f'Original shape: {df.shape}')
     df = remove_duplicates(df)
-    print(f'After removing duplicates: {df.shape}')
+    logger.info(f'After removing duplicates: {df.shape}')
     df = handle_missing_values(df)
     df = encode_categorical(df, [
         'gender', 'age_group', 'region',
@@ -123,7 +124,7 @@ def preprocess_sentiment_data(df: pd.DataFrame) -> pd.DataFrame:
     ])
     if 'customer_rating' in df.columns:
         df = normalize_ratings(df, 'customer_rating')
-    print(f'Final shape: {df.shape}')
+    logger.info(f'Final shape: {df.shape}')
     return df
 
 
@@ -144,19 +145,19 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == '__main__':
-    print('=== Preprocessing Books Data ===')
+    logger.info('=== Preprocessing Books Data ===')
     books_df = pd.read_csv('datasets/booksdata.csv')
     books_df = preprocess_books_data(books_df)
 
-    print('\n=== Preprocessing Ratings Data ===')
+    logger.info('\n=== Preprocessing Ratings Data ===')
     ratings_df = pd.read_csv('datasets/ratings.csv')
     ratings_df = preprocess_ratings_data(ratings_df)
 
-    print('\n=== Preprocessing Sentiment Data ===')
+    logger.info('\n=== Preprocessing Sentiment Data ===')
     sentiment_df = pd.read_csv('datasets/customer_sentiment.csv')
     sentiment_df = preprocess_sentiment_data(sentiment_df)
 
-    print('\nAll datasets preprocessed successfully!')
-    print(f'Books Dataset Shape: {books_df.shape}')
-    print(f'Ratings Dataset Shape: {ratings_df.shape}')
-    print(f'Sentiment Dataset Shape: {sentiment_df.shape}')
+    logger.info('\nAll datasets preprocessed successfully!')
+    logger.info(f'Books Dataset Shape: {books_df.shape}')
+    logger.info(f'Ratings Dataset Shape: {ratings_df.shape}')
+    logger.info(f'Sentiment Dataset Shape: {sentiment_df.shape}')

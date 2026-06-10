@@ -1,6 +1,39 @@
 version: "3.9"
 
 services:
+  # ── Redis (message broker + result backend + response cache) ──────────────
+  redis:
+    image: redis:7-alpine
+    container_name: hybridrec-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hybridrec
+
+  # ── Celery worker (async model rebuild + recommendation tasks) ────────────
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hybridrec-celery
+    command: celery -A celery_app worker --loglevel=info --concurrency=2
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - hybridrec
+
   # ── Backend ──────────────────────────────────────────────────────────────
   backend:
     build:
@@ -11,8 +44,13 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./datasets:/app/datasets:ro   # mount datasets/ read-only
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c",
