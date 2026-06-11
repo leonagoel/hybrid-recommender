@@ -7,7 +7,8 @@ class EmptyContentModel:
     def __init__(self, df):
         self.df = df
 
-    def recommend(self, title, top_n=10):
+    def recommend(self, title, top_n=10, target_catalog=None, **kwargs):
+        # Accept extra kwargs like `target_catalog` to match real ContentRecommender API
         return []
 
 
@@ -38,3 +39,18 @@ def test_popularity_fallback_excludes_source_title():
     titles = [rec["title"] for rec in recs]
     assert "Product C" not in titles
     assert titles[0] == "Product A"
+
+
+def test_empty_rerank_uses_popularity_fallback():
+    # Ensure recommend() gracefully falls back when no content candidates exist
+    hm = make_recommender()
+
+    # Content model returns no candidates (EmptyContentModel), so recommend should
+    # use the popularity fallback and not raise due to any placeholder arguments.
+    recs = hm.recommend("Totally Unknown Product 99999", top_n=2)
+
+    assert isinstance(recs, list)
+    assert len(recs) == 2
+    titles = [r["title"] for r in recs]
+    # The fallback should not include the unknown queried title
+    assert "Totally Unknown Product 99999" not in titles
