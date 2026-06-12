@@ -13,6 +13,7 @@ Improvements:
 __all__ = ["CollaborativeRecommender"]
 
 import logging
+from typing import Optional, List, Dict, Any
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import TruncatedSVD

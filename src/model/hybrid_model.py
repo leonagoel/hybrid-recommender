@@ -28,6 +28,7 @@ import logging
 import math
 from collections import Counter
 from typing import Any, Optional
+from src.model.recommendation_history import history_tracker
 
 import numpy as np
 
@@ -437,7 +438,7 @@ class HybridRecommender:
             else:
                 a, b, g, d = self.alpha, self.beta, self.gamma, 0.0
         else:
-            arm_id = self.select_bandit_arm()
+            _ = self.select_bandit_arm()
             # The original implementation always used _get_active_weights
             a, b, g = self._get_active_weights(
                 candidate_titles=[it["title"] for it in items],
