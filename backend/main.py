@@ -21,15 +21,7 @@ from redis.exceptions import RedisError
 
 logger = logging.getLogger(__name__)
 
-try:
-    import bleach
-except ModuleNotFoundError:
-    class bleach:
-        @staticmethod
-        def clean(value, strip=True):
-            if not strip:
-                return str(value)
-            return re.sub(r"<[^>]*>", "", str(value))
+import bleach
 
 from collections import deque, Counter
 from threading import Lock
