@@ -658,18 +658,7 @@ class FederatedTrainRequest(BaseModel):
     reg: float = 0.05
 
 
-# ── Health ────────────────────────────────────────────────────────────
-@app.get("/health")
-@app.get("/api/health")
-def health_check():
-    """
-    Low-overhead health check endpoint for component tracking.
-    Checks database (Supabase), model readiness, and cache (Redis).
-    """
-    from src.data.db import get_supabase
-    from redis import Redis
-    from redis.exceptions import RedisError
-    import os
+
 
 def _set_cached_response(key: str, value: Any) -> None:
     if _redis_client is not None:
@@ -2049,15 +2038,16 @@ def get_recommendations(
     if rate_limited is not None:
         return rate_limited
 
+    query_title = title or item_title
+    if not query_title:
+        raise HTTPException(422, "Query parameter 'title' is required.")
+
     cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog, model_version, user_id)
 # ----- EDGE CASES SAFE CHECK -----
     # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
         raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
     # ---------------------------------
-    query_title = title or item_title
-    if not query_title:
-        raise HTTPException(422, "Query parameter 'title' is required.")
     selected_models = models
 
     if model_version == "staging":
@@ -2588,27 +2578,19 @@ def get_categories():
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
     
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
 
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")

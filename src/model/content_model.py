@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
 from src.model.validation import validate_recommendations
 
 # Optional HNSW support (enabled only if hnswlib is importable)

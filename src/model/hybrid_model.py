@@ -89,6 +89,15 @@ class HybridRecommender:
         self.delta = float(delta)
 
         self.model_kwargs = model_kwargs or {}
+        self.epsilon = self.model_kwargs.get("epsilon", 0.0)
+        self.bandit_arms = self.model_kwargs.get("bandit_arms", [
+            (self.alpha, self.beta, self.gamma),
+            (0.8, 0.1, 0.1),
+            (0.1, 0.8, 0.1),
+            (0.4, 0.4, 0.2)
+        ])
+        self.arm_counts = {i: 0 for i in range(len(self.bandit_arms))}
+        self.arm_rewards = {i: 0.0 for i in range(len(self.bandit_arms))}
 
         # Fairness controls
         self.fairness_enabled = False
@@ -429,13 +438,12 @@ class HybridRecommender:
                 a, b, g, d = self.alpha, self.beta, self.gamma, 0.0
         else:
             arm_id = self.select_bandit_arm()
-            a, b, g = getattr(self, 'bandit_arms', [(self.alpha, self.beta, self.gamma)])[arm_id]
-
-            a, b, g, d = self._get_active_weights(
-                a, b, g, getattr(self, 'delta', 0),
+            # The original implementation always used _get_active_weights
+            a, b, g = self._get_active_weights(
+                candidate_titles=[it["title"] for it in items],
                 user_id=user_id,
             )
-            d = self.delta if self.kg_model else 0.0
+            d = getattr(self, 'delta', 0.0) if self.kg_model else 0.0
 
         # 4) compute hybrid scores
         results: list[dict[str, Any]] = []
