@@ -396,10 +396,14 @@ def _apply_rate_limit(
         reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
         reset_time = max(0, reset_time)
 
-        # Garbage Collection: Remove empty buckets to prevent memory leak
-        empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
-        for k in empty_keys:
-            del _rate_limit_buckets[k]
+        global _request_counter
+        _request_counter += 1
+        if _request_counter >= CLEANUP_THRESHOLD:
+            _request_counter = 0
+            # Garbage Collection: Remove empty buckets to prevent memory leak
+            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
+            for k in empty_keys:
+                del _rate_limit_buckets[k]
 
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
