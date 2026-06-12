@@ -1498,12 +1498,49 @@ function bindEvents() {
         }
     });
 
-    els.authForm.addEventListener('submit', handleAuth);
-    els.authToggleBtn.addEventListener('click', toggleAuthMode);
-    els.modalClose.addEventListener('click', () => { els.authModal.hidden = true; });
-    els.authModal.addEventListener('click', (e) => {
-        if (e.target === els.authModal) els.authModal.hidden = true;
-    });
+    async function handleAuth(e) {
+    e.preventDefault();
+    const email = els.authEmail.value;
+    const password = els.authPassword.value;
+    
+    // 1. Get the guest token from the browser storage
+    const guestToken = localStorage.getItem('guest_session_token') || null;
+
+    if (state.isAuthSignUp) {
+        // --- SIGN UP LOGIC ---
+        try {
+            const response = await fetch('/api/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ..._csrfHeaders()
+                },
+                body: JSON.stringify({
+                    email: email,
+                    password: password,
+                    guest_token: guestToken // <-- Pass token to backend
+                })
+            });
+
+            if (response.ok) {
+                // Remove the local token since it is now synced to your profile
+                localStorage.removeItem('guest_session_token');
+                toast('Signup successful! Your guest history has been synced.', 'success');
+                els.authModal.hidden = true;
+                location.reload(); 
+            } else {
+                const errData = await response.json();
+                if (els.authError) els.authError.textContent = errData.detail || 'Signup failed';
+            }
+        } catch (err) {
+            console.error('Signup error:', err);
+        }
+    } else {
+        // --- LOGIN LOGIC ---
+        // (Your existing login code goes here unchanged)
+    }
+}
+
 
     // Upload
     els.uploadBtn.addEventListener('click', () => els.fileInput.click());
