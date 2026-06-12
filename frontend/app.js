@@ -509,24 +509,44 @@ async function handleAuth(e) {
     const email = els.authEmail.value.trim();
     const password = els.authPassword.value;
 
+    // 1. Fetch the tracking token from browser storage
+    const guestToken = localStorage.getItem('guest_session_token') || null;
+
     try {
-        let result;
         if (state.isAuthSignUp) {
-            result = await sbClient.auth.signUp({
-                email,
-                password,
-                options: { data: { display_name: email.split('@')[0] } },
-            });
+            // --- SIGN UP LOGIC (Supabase Auth Client-side Signup) ---
+            if (!sbClient) throw new Error("Authentication infrastructure unavailable.");
+            
+            const { data, error } = await sbClient.auth.signUp({ email, password });
+            if (error) throw error;
+
+            const newUserId = data?.user?.id;
+
+            // 2. Map guest interactions directly to the new permanent profile ID
+            if (guestToken && newUserId) {
+                await sbClient
+                    .from('interactions')
+                    .update({ user_id: newUserId })
+                    .eq('guest_token', guestToken);
+                
+                // 3. Clear tracking states once migrated
+                localStorage.removeItem('guest_session_token');
+            }
+
+            toast('Signup successful! Your browsing history has been saved.', 'success');
         } else {
-            result = await sbClient.auth.signInWithPassword({ email, password });
+            // --- LOGIN LOGIC ---
+            if (!sbClient) throw new Error("Authentication infrastructure unavailable.");
+            const { error } = await sbClient.auth.signInWithPassword({ email, password });
+            if (error) throw error;
+            toast('Welcome back!', 'success');
         }
 
-        if (result.error) throw result.error;
-
-        setUser(result.data.user);
         els.authModal.hidden = true;
-        toast(state.isAuthSignUp ? 'Account created!' : 'Signed in!', 'success');
+        location.reload();
+
     } catch (err) {
+        console.error('Authentication process failed:', err.message);
         els.authError.textContent = err.message;
         els.authError.hidden = false;
     } finally {
@@ -534,6 +554,7 @@ async function handleAuth(e) {
         els.authSubmit.textContent = state.isAuthSignUp ? 'Sign Up' : 'Sign In';
     }
 }
+
 
 function toggleAuthMode() {
     state.isAuthSignUp = !state.isAuthSignUp;
