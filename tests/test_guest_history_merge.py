@@ -38,9 +38,13 @@ def test_register_and_merge_history_success(monkeypatch):
         "timestamp": "2026-06-13T12:00:00Z"
     })
 
+    # Prepare CSRF cookies and headers for the request
+    token = "a" * 64
+    client.cookies.set("csrftoken", token)
     response = client.post(
         "/api/register",
-        json={"guest_id": "guest_token_abc", "user_id": "registered_user_123"}
+        json={"guest_id": "guest_token_abc", "user_id": "registered_user_123"},
+        headers={"X-CSRF-Token": token}
     )
     assert response.status_code == 200
     
