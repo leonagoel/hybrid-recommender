@@ -1100,6 +1100,12 @@ class InteractionCreate(BaseModel):
         pattern=r"^(view|click|search)$"
     )
 
+class MergeHistoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    guest_id: str = Field(..., min_length=1, max_length=128)
+    user_id: str = Field(..., min_length=1, max_length=128)
+
+
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     item_title: str
@@ -2595,28 +2601,41 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
-    
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
 
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
+@app.post("/api/register")
+def register_and_merge_history(
+    data: MergeHistoryRequest,
+    _csrf: None = Depends(csrf_header_dep),
+):
+    sb = get_supabase()
+    try:
+        # Update purchases in database
+        result = sb.table('purchases').update({'user_id': data.user_id}).eq('user_id', data.guest_id).execute()
+        
+        # Also update in-memory USER_INTERACTIONS list
+        for interaction in USER_INTERACTIONS:
+            if interaction.get("user_id") == data.guest_id:
+                interaction["user_id"] = data.user_id
+                
+        _clear_response_cache()
+        return {"status": "success", "message": "Guest history merged successfully", "updated_count": len(result.data or [])}
+    except Exception as e:
+        logger.error("Failed to merge guest history: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
