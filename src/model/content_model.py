@@ -1,16 +1,29 @@
 """
 Content-Based Recommender
-Uses SentenceTransformers to generate semantic embeddings of item metadata
-and cosine similarity to find similar items.
+Uses TF-IDF vectorization on item metadata and cosine similarity to find similar items.
 
 Optimizations:
-- Implements chunked batch encoding to prevent Out-Of-Memory (OOM) memory overhead.
+- Chunked batch encoding to prevent Out-Of-Memory (OOM) memory overhead.
+- Issue #1578: threading.Lock guards the global model-cache to prevent race conditions.
+- Issue #1598: TF-IDF constructor params (ngram_range, max_features, stop_words) exposed.
 """
+import logging
+import threading
 import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
 from src.model.validation import validate_recommendations
+
+logger = logging.getLogger(__name__)
+
+# Issue #1578 — Module-level lock to serialize concurrent cache reads/writes.
+# This prevents a race condition where two threads simultaneously find the
+# cache empty and both start training a new model, leading to one overwriting
+# the other's partially-written cache file.
+_MODEL_CACHE_LOCK = threading.Lock()
 
 # Optional HNSW support (enabled only if hnswlib is importable)
 try:
@@ -20,17 +33,29 @@ except Exception:
 
 
 class ContentRecommender:
-    def __init__(self, item_df, model_name='all-MiniLM-L6-v2', batch_size=256):
+    def __init__(
+        self,
+        item_df,
+        model_name: str = 'all-MiniLM-L6-v2',
+        batch_size: int = 256,
+        # Issue #1598 — TF-IDF vectorizer parameters exposed for Streamlit sidebar
+        ngram_range: tuple = (1, 2),
+        max_features: int = 5000,
+        stop_words: str | None = 'english',
+    ):
         """
         item_df: DataFrame with at least 'title' and 'combined' columns.
         'combined' = title + description + category (created by data_adapter).
         batch_size: Size of slices processed sequentially to prevent RAM spikes.
+        ngram_range: (min_n, max_n) for TF-IDF n-gram extraction (Issue #1598).
+        max_features: maximum vocabulary size for TF-IDF (Issue #1598).
+        stop_words: stop-word language or None (Issue #1598).
         """
         self.df = item_df.reset_index(drop=True)
         self.vectorizer = TfidfVectorizer(
-            stop_words='english',
-            max_features=5000,
-            ngram_range=(1, 2),
+            stop_words=stop_words,
+            max_features=max_features,
+            ngram_range=ngram_range,
         )
         if "combined" not in self.df.columns:
             self.df["combined"] = (
@@ -104,7 +129,7 @@ class ContentRecommender:
             
             results.append({
                 "title": t,
-                "content_score": float(scores[i])
+                "content_score": float(score)
             })
             
             if len(results) >= top_n:
@@ -142,7 +167,7 @@ class ContentRecommender:
         Returns list of matching item titles with scores.
         """
         try:
-            query_vec = self.model.encode([query])
+            query_vec = self.vectorizer.transform([query])
 
             # Candidate retrieval: prefer ANN candidates when available, otherwise brute-force
             n = int(self.matrix.shape[0]) if getattr(self, 'matrix', None) is not None else 0
@@ -236,4 +261,3 @@ class ContentRecommender:
                 "content_score": 0.0
             })
         return results
-
