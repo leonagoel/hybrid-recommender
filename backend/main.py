@@ -1372,51 +1372,6 @@ def search_items(
         for p in products:
             if 'rank' not in p or p['rank'] is None:
                 p['rank'] = 0.0
-
-
-    # Format response
-    results = []
-    
-    for p in products:
-    
-        raw_sentiment = p.get('avg_sentiment', 0.0)
-        reviews = p.get('reviews', [])
-    
-        # Newly added products may still have the default
-        # sentiment value before the NLP batch pipeline runs.
-        # Recompute dynamically so the UI never shows misleading 0.0.
-        if raw_sentiment == 0.0 and reviews:
-            try:
-                from nlp_engine import compute_product_sentiment
-    
-                computed_sentiment = compute_product_sentiment(reviews)
-    
-                sentiment_value = (
-                    computed_sentiment
-                    if computed_sentiment is not None
-                    else "N/A"
-                )
-    
-            except Exception:
-                sentiment_value = "N/A"
-    
-        else:
-            sentiment_value = (
-                raw_sentiment
-                if raw_sentiment != 0.0
-                else "N/A"
-            )
-    
-        results.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''),
-            'rating': p.get('rating', 0.0),
-            'avg_sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0),
-        })
     
     
     def _product_price(product):
@@ -1447,15 +1402,10 @@ def search_items(
             key=lambda p: float(p.get('rating') or 0),
             reverse=True
         )
-    
-    
     results = []
-    
     for p in products:
-    
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
@@ -1471,17 +1421,22 @@ def search_items(
             except Exception:
                 sentiment_value = "N/A"
         else:
-            sentiment_value = raw_sentiment
-  
+            sentiment_value = (
+                raw_sentiment
+                if raw_sentiment != 0.0
+                else "N/A"
+            )
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title'),
-            'description': p.get('description'),
+            'description': str(p.get('description',''))[:200],
             'category': p.get('category'),
             'price': _product_price(p),
             'rating': float(p.get('rating') or 0),
-            'sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0)
+            'avg_sentiment': sentiment_value,
+            'review_count': p.get('review_count', 0),
+            'rank': p.get('rank', 0.0)
         })
   
     final_output = {
@@ -2595,28 +2550,20 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
-    
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
+
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
 
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
