@@ -218,25 +218,25 @@ class HybridRecommender:
         if random.random() < self.epsilon:
             return random.randint(0, len(self.bandit_arms) - 1)
 
-                review_count = int(review_count)
-                self._review_count_map[title] = review_count
-                self._rating_map[title] = bayesian_rating(
-                    raw_rating, review_count, global_avg
-                )
-                self._category_map[title] = row.get('category', '')
-                self._catalog_map[title] = row.get('catalog', '')
+        review_count = int(review_count)
+        self._review_count_map[title] = review_count
+        self._rating_map[title] = bayesian_rating(
+            raw_rating, review_count, global_avg
+            )
+        self._category_map[title] = row.get('category', '')
+        self._catalog_map[title] = row.get('catalog', '')
 
-            # Popularity rank (0-1 scale, higher = more popular)
-            if 'review_count' in item_df.columns:
-                max_reviews = item_df['review_count'].max()
-                if max_reviews > 0:
-                    for _, row in item_df.iterrows():
-                        self._popularity_map[row['title']] = (
-                            row['review_count'] / max_reviews
-                        )
+        # Popularity rank (0-1 scale, higher = more popular)
+        if 'review_count' in item_df.columns:
+            max_reviews = item_df['review_count'].max()
+            if max_reviews > 0:
+                for _, row in item_df.iterrows():
+                    self._popularity_map[row['title']] = (
+                        row['review_count'] / max_reviews
+                    )
 
             # Optional runtime hook for online updates (attachable)
-            self.online_updater = None
+        self.online_updater = None
 
     def set_weights(self, alpha, beta, gamma, delta=0.05):
         """Update the scoring weights. Normalized to sum to 1.
