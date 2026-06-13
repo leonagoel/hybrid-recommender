@@ -13,12 +13,15 @@ Improvements:
 __all__ = ["CollaborativeRecommender"]
 
 import logging
+from typing import Any, Dict, List, Optional, Union
+
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import coo_matrix
 from src.model.validation import validate_recommendations
+import gc
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,10 @@ class CollaborativeRecommender:
         self._catalog_map = {}
         if 'catalog' in self.df.columns:
             self._catalog_map = dict(zip(self.df['title'], self.df['catalog']))
+
+  if hasttar(self, 'user_item_sparse'):
+    del self.user_item_sparse
+    gc.collect()
 
     def recommend(self, title: str, top_n: int = 10, target_catalog: Optional[str] = None) -> List[Dict[str, Any]]:
         """
