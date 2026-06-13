@@ -456,17 +456,19 @@ class HybridRecommender:
                 g * sentiment_scores[i]
             )
 
-          # Popularity as a proper fourth component weighted by delta.
-            # All four weights are normalized to sum to 1.0 in set_weights(),
-            # so hybrid is guaranteed within [0, 1] with no clamping needed.
+            # Popularity as a proper fourth component weighted by delta.
+            # Weights a, b, g are re-normalized here to leave room for delta,
+            # guaranteeing hybrid_score in [0, 1].
             popularity = self._popularity_map.get(item['title'], 0.5)
+            weight_sum = a + b + g + self.delta
+            if weight_sum <= 0:
+                weight_sum = 1.0
             hybrid = (
-                a * content_scores[i] +
-                b * collab_scores[i] +
-                g * sentiment_scores[i] +
-                self.delta * popularity
+                (a * content_scores[i] +
+                 b * collab_scores[i] +
+                 g * sentiment_scores[i] +
+                 self.delta * popularity) / weight_sum
             )
-
             # Lookup info from content model's df
             row_data = self.content_model.df[
                 self.content_model.df['title'] == item['title']
@@ -659,7 +661,7 @@ class HybridRecommender:
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'raw_content': roaund(raw_item['raw_content'], 4),
+                'raw_content': round(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
             },
