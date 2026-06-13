@@ -31,3 +31,20 @@ export const state = {
     pendingRecommendationTitle: null,
     realtimeReady: false
 };
+
+export function setState(changes) {
+    Object.assign(state, changes);
+}
+
+export function getAnonymousUserId() {
+    if (state.user && state.user.id) {
+        return state.user.id;
+    }
+    let token = localStorage.getItem('guest_session_token');
+    if (!token) {
+        token = 'guest_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        localStorage.setItem('guest_session_token', token);
+    }
+    return token;
+}
+

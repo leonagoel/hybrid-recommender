@@ -16,6 +16,7 @@ import math
 import secrets
 
 import json
+from urllib.parse import urlsplit
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -151,9 +152,6 @@ async def csrf_header_dep(
     # The middleware has already validated the token before this runs.
     # This function exists solely to make the header visible in Swagger UI.
 
-# ── App ──────────────────────────────────────────────────────────────
-app = FastAPI(title="Hybrid Recommender API", version="3.0")
-
 @app.on_event("startup")
 def download_nltk_assets():
     """
@@ -193,6 +191,8 @@ _request_counter = 0
 _cache_lock = Lock()
 
 # ── Redis client ──────────────────────────────────────────────────────
+_redis_client = None
+
 _redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 try:
     _redis_client = Redis.from_url(_redis_url, decode_responses=True, socket_connect_timeout=2)
@@ -396,10 +396,14 @@ def _apply_rate_limit(
         reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
         reset_time = max(0, reset_time)
 
-        # Garbage Collection: Remove empty buckets to prevent memory leak
-        empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
-        for k in empty_keys:
-            del _rate_limit_buckets[k]
+        global _request_counter
+        _request_counter += 1
+        if _request_counter >= CLEANUP_THRESHOLD:
+            _request_counter = 0
+            # Garbage Collection: Remove empty buckets to prevent memory leak
+            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
+            for k in empty_keys:
+                del _rate_limit_buckets[k]
 
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
@@ -637,6 +641,18 @@ class FeedbackCreate(BaseModel):
     feedback: str = Field(..., min_length=1, max_length=2000)
     thumbs: str = Field(..., pattern=r"^(up|down)$")
 
+
+class InteractionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(..., min_length=1, max_length=128)
+    item_id: int = Field(..., gt=0)
+    interaction_type: str = Field(
+        ...,
+        pattern=r"^(view|click|search)$"
+    )
+
+
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     item_title: str
@@ -675,9 +691,28 @@ def health_check():
     Checks database (Supabase), model readiness, and cache (Redis).
     """
     from src.data.db import get_supabase
-    from redis import Redis
-    from redis.exceptions import RedisError
-    import os
+
+    redis_ok = False
+    if _redis_client is not None:
+        try:
+            _redis_client.ping()
+            redis_ok = True
+        except Exception:
+            pass
+
+    db_ok = False
+    try:
+        get_supabase()
+        db_ok = True
+    except Exception:
+        pass
+
+    return {
+        "status": "healthy" if db_ok else "degraded",
+        "database": db_ok,
+        "redis": redis_ok,
+        "models_ready": models.get("ready", False),
+    }
 
 def _set_cached_response(key: str, value: Any) -> None:
     if _redis_client is not None:
@@ -931,90 +966,6 @@ def _get_feedback_storage_client():
     return client
 
 
-# ── Response Time Monitoring ─────────────────────────────────────────
-SLOW_RESPONSE_THRESHOLD_MS = 500.0
-METRICS_SAMPLE_SIZE = 1000
-response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
-METRICS_WINDOW_SECONDS = 600
-response_metrics = {
-    "total_requests": 0,
-    "error_requests": 0,
-}
-response_metrics_lock = Lock()
-
-
-def _percentile(values, percentile):
-    if not values:
-        return 0.0
-    sorted_values = sorted(values)
-    index = math.ceil((percentile / 100) * len(sorted_values)) - 1
-    index = max(0, min(index, len(sorted_values) - 1))
-    return sorted_values[index]
-
-
-def record_response_metric(endpoint, method, status_code, response_time_ms):
-    with response_metrics_lock:
-        response_metrics["total_requests"] += 1
-        if status_code >= 400:
-            response_metrics["error_requests"] += 1
-        response_time_samples.append(
-          (time.time(), response_time_ms)
-        )
-
-        current_time = time.time()
-
-        while (
-          response_time_samples
-          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
-        ):
-          response_time_samples.popleft()
-    log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
-    if log_level == logging.WARNING:
-        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
-                       endpoint, method, status_code, response_time_ms, response_time_ms, endpoint)
-    else:
-        logger.info("API request endpoint=%s method=%s status=%s time=%.2fms",
-                    endpoint, method, status_code, response_time_ms)
-
-
-def reset_response_metrics():
-    with response_metrics_lock:
-        response_metrics["total_requests"] = 0
-        response_metrics["error_requests"] = 0
-        response_time_samples.clear()
-
-
-def get_response_metrics_snapshot():
-    with response_metrics_lock:
-        samples = [value for _, value in response_time_samples]
-        total_requests = response_metrics["total_requests"]
-        error_requests = response_metrics["error_requests"]
-    avg_response_time = sum(samples) / len(samples) if samples else 0.0
-    error_rate = (error_requests / total_requests) * 100 if total_requests else 0.0
-    return {
-        "avg_response_time": round(avg_response_time, 2),
-        "p95_response_time": round(_percentile(samples, 95), 2),
-        "total_requests": total_requests,
-        "error_rate": round(error_rate, 2),
-    }
-
-
-@app.middleware("http")
-async def response_time_middleware(request, call_next):
-    start_time = time.perf_counter()
-    response = None
-    status_code = 500
-    try:
-        response = await call_next(request)
-        status_code = response.status_code
-        return response
-    finally:
-        response_time_ms = (time.perf_counter() - start_time) * 1000
-        if response is not None:
-            response.headers["X-Response-Time"] = f"{response_time_ms:.2f}ms"
-        record_response_metric(request.url.path, request.method, status_code, response_time_ms)
-
-
 # ── State ─────────────────────────────────────────────────────────────
 models = {
     "content": None,
@@ -1100,6 +1051,12 @@ class InteractionCreate(BaseModel):
         pattern=r"^(view|click|search)$"
     )
 
+class MergeHistoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    guest_id: str = Field(..., min_length=1, max_length=128)
+    user_id: str = Field(..., min_length=1, max_length=128)
+
+
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     item_title: str
@@ -1127,17 +1084,6 @@ class FederatedTrainRequest(BaseModel):
     epochs: int = 5
     lr: float = 0.05
     reg: float = 0.05
-
-
-# ── Health ────────────────────────────────────────────────────────────
-@app.get("/health")
-@app.get("/api/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "model_loaded": models["ready"],
-    }
 
 
 # ── API Metrics ───────────────────────────────────────────────────────
@@ -1579,57 +1525,61 @@ async def recommend_item(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
 @app.get("/api/recommendations/{item_id}/explanation")
 async def get_recommendation_explanation(item_id: str, user_id: str):
     """
-    Task 3: Executes a typo-tolerant string similarity lookup 
-    using the PostgreSQL pg_trgm extension via Supabase RPC.
+    Return a score-level explanation for why item_id is recommended.
+
+    Delegates to HybridRecommender.recommend(..., explain=True) and returns
+    the explanation block attached to the first result whose title matches
+    item_id.  If the models have not been built yet, or item_id is not found
+    in the recommendation results, an appropriate HTTP error is raised.
     """
-    query = _normalize_search_query(q)
+    query = _normalize_search_query(item_id)
     if not query:
         return {"results": [], "count": 0, "query": query}
+    if not models.get("ready") or not models.get("hybrid"):
+        raise HTTPException(status_code=400, detail="Models not built. Call /api/build first.")
+
+    item_id = item_id.strip()
+    if not item_id:
+        raise HTTPException(status_code=422, detail="item_id must not be empty.")
 
     try:
-        # Configuration tuning hyper-parameters
-        alpha, beta, gamma = 0.5, 0.3, 0.2
-        
-        # Base engine performance profiles (TF-IDF, SVD, VADER)
-        content_score = 0.72
-        collaborative_score = 0.60
-        sentiment_score = 0.50
-        
-        weighted_content = alpha * content_score
-        weighted_collab = beta * collaborative_score
-        weighted_sentiment = gamma * sentiment_score
-        
-        products = result.data or []
-        
-        results = []
-        for p in products:
-            metadata = p.get('metadata') or {}
-            price = float(p.get('price') if p.get('price') is not None else metadata.get('price', 0.0))
-            results.append({
-                'id': p.get('id'), 
-                'title': p.get('title', ''),
-                'description': str(p.get('description', ''))[:200],
-                'category': p.get('category', ''), 
-                'rating': p.get('rating', 0.0),
-                'price': price,
-                'avg_sentiment': p.get('avg_sentiment', 0.0),
-                'review_count': p.get('review_count', 0), 
-                'rank': p.get('rank', 0.0),
-            })
-            
-        return {
-            "results": results,
-            "count": len(results),
-            "query": query,
-            "threshold": threshold
-        }
+        recs = models["hybrid"].recommend(
+            title=item_id,
+            user_id=user_id or None,
+            top_n=10,
+            explain=True,
+        )
     except Exception as e:
-        logger.error("Fuzzy search pipeline exception: %s", e)
-        raise HTTPException(status_code=500, detail="Fuzzy search failed")
+        logger.error("Explanation generation failed for item '%s': %s", item_id, e)
+        raise HTTPException(status_code=500, detail="Failed to generate explanation.")
+
+    if not recs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No recommendations found for item '{item_id}'.",
+        )
+
+    explanation_entry = next(
+        (r for r in recs if r.get("explanation") is not None),
+        None,
+    )
+    if explanation_entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Explanation not available for item '{item_id}'.",
+        )
+
+    return {
+        "item_id": item_id,
+        "user_id": user_id or None,
+        "explanation": explanation_entry["explanation"],
+        "representative_recommendation": {
+            k: v for k, v in explanation_entry.items() if k != "explanation"
+        },
+    }
 
 
 def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
@@ -2057,15 +2007,15 @@ def get_recommendations(
     if rate_limited is not None:
         return rate_limited
 
-    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog, model_version, user_id)
-# ----- EDGE CASES SAFE CHECK -----
+    query_title = title or item_title
+    if not query_title:
+        raise HTTPException(422, "Query parameter 'title' is required.")
+
+    # ----- EDGE CASES SAFE CHECK -----
     # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
         raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
     # ---------------------------------
-    query_title = title or item_title
-    if not query_title:
-        raise HTTPException(422, "Query parameter 'title' is required.")
     selected_models = models
 
     if model_version == "staging":
@@ -2595,28 +2545,41 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
-    
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
 
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
+@app.post("/api/register")
+def register_and_merge_history(
+    data: MergeHistoryRequest,
+    _csrf: None = Depends(csrf_header_dep),
+):
+    sb = get_supabase()
+    try:
+        # Update purchases in database
+        result = sb.table('purchases').update({'user_id': data.user_id}).eq('user_id', data.guest_id).execute()
+        
+        # Also update in-memory USER_INTERACTIONS list
+        for interaction in USER_INTERACTIONS:
+            if interaction.get("user_id") == data.guest_id:
+                interaction["user_id"] = data.user_id
+                
+        _clear_response_cache()
+        return {"status": "success", "message": "Guest history merged successfully", "updated_count": len(result.data or [])}
+    except Exception as e:
+        logger.error("Failed to merge guest history: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
@@ -2954,3 +2917,52 @@ class SearchRequest(BaseModel):
     @app.get("/dashboard.html")
     def serve_dashboard():
         return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
+
+# ── CLEAR USER PREFERENCES & RESET CACHE ENDPOINT ───────────────────
+@app.post("/api/v1/user/preferences/reset", dependencies=[Depends(csrf_header_dep)])
+async def reset_user_preferences(request: Request):
+    """
+    Clears the user interaction weights/history from Supabase 
+    and wipes the local/Redis recommendation cache for that user.
+    """
+    # 1. Authentic/Validate user (In production, replace with your real auth dependency)
+    user_id = request.headers.get("x-user-id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing x-user-id header.")
+    
+    # Securely validate the user ID format
+    validated_user_id = _validate_user_id(user_id)
+    
+    try:
+        # 2. Connect to Supabase and delete preference entries
+        supabase = get_supabase_admin()
+        
+        # Adjust table name and column names to match your schema
+        supabase.table("user_preferences").delete().eq("user_id", validated_user_id).execute()
+        supabase.table("user_interactions").delete().eq("user_id", validated_user_id).execute()
+        
+        # 3. Wipe out the internal memory cache
+        _clear_response_cache()
+
+
+        global global_redis_client
+      
+        if _redis_client is not None:
+            try:
+                # Find keys matching this user's recommendation cache pattern
+                cache_pattern = f"*recommend*:{validated_user_id.lower()}*"
+                keys_to_delete = _redis_client.keys(cache_pattern)
+                if keys_to_delete:
+                    _redis_client.delete(*keys_to_delete)
+            except Exception as cache_err:
+                logger.warning(f"Failed to clear Redis cache keys: {cache_err}")
+
+        return {
+            "status": "success",
+            "message": "User preferences completely reset. Cache successfully evicted."
+        }
+        
+    except Exception as e:
+        logger.error(f"Error resetting preferences for user {validated_user_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to reset user data.")
+

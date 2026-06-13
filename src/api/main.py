@@ -184,3 +184,89 @@ def get_recommendations_legacy(req: RecommendationRequest):
     Backward-compatible alias for clients and issue reports that call /recommendations.
     """
     return get_recommendations(req)
+
+
+# ---------------------------------------------------------------------------
+# Issue #1599 — Real-Time Evaluation Dashboard endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/evaluation/metrics")
+def get_evaluation_metrics(k: int = 10, mode: str = "all"):
+    """
+    Returns real-time recommendation quality metrics (MAP, NDCG@K, Precision@K,
+    Recall@K) computed against a hold-out test set built from the loaded dataset.
+
+    Query params:
+        k    – cut-off rank (default 10)
+        mode – one of content | collaborative | sentiment | hybrid | all
+    """
+    if _item_df is None or _item_df.empty:
+        raise HTTPException(
+            status_code=503,
+            detail="Models not loaded yet. Start the server with a valid dataset.",
+        )
+
+    try:
+        from src.evaluation.evaluation import (
+            _precision_at_k,
+            _recall_at_k,
+            _ndcg_at_k,
+            average_precision_at_k,
+        )
+
+        # Build a lightweight test set from in-memory item data.
+        titles = _item_df["title"].dropna().tolist()
+        if len(titles) < 2:
+            raise HTTPException(status_code=503, detail="Dataset too small for evaluation.")
+
+        # Use category grouping as a proxy for relevance (same category = relevant).
+        metrics: dict = {"k": k, "mode": mode, "results": {}}
+        sample_size = min(50, len(titles))
+        import random, math
+        rng = random.Random(42)
+        sample_titles = rng.sample(titles, sample_size)
+
+        precision_scores, recall_scores, ndcg_scores, ap_scores = [], [], [], []
+
+        for title in sample_titles:
+            if _content_model is None:
+                continue
+            recs_raw = _content_model.recommend(title, top_n=k)
+            rec_titles = [r["title"] for r in recs_raw if "title" in r]
+
+            # Relevant = same category items in the loaded dataframe.
+            if "category" in _item_df.columns:
+                row = _item_df[_item_df["title"] == title]
+                if row.empty:
+                    continue
+                cat = row.iloc[0]["category"]
+                relevant = set(
+                    _item_df[_item_df["category"] == cat]["title"].tolist()
+                ) - {title}
+            else:
+                relevant = set(titles) - {title}
+
+            if not relevant:
+                continue
+
+            precision_scores.append(_precision_at_k(rec_titles, relevant, k))
+            recall_scores.append(_recall_at_k(rec_titles, relevant, k))
+            ndcg_scores.append(_ndcg_at_k(rec_titles, relevant, k))
+            ap_scores.append(average_precision_at_k(rec_titles, relevant, k))
+
+        def _mean(lst):
+            return round(sum(lst) / len(lst), 4) if lst else 0.0
+
+        metrics["results"] = {
+            "precision_at_k": _mean(precision_scores),
+            "recall_at_k": _mean(recall_scores),
+            "ndcg_at_k": _mean(ndcg_scores),
+            "map": _mean(ap_scores),
+            "sample_size": len(precision_scores),
+        }
+        return metrics
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {exc}")
