@@ -2573,7 +2573,7 @@ def register_and_merge_history(
         logger.error("Failed to merge guest history: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
->>>>>>> origin/main
+
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
