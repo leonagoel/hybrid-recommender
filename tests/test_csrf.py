@@ -219,6 +219,46 @@ def test_mutating_request_with_mismatched_tokens_returns_403(client, method, pat
     assert "CSRF" in response.json()["detail"]
 
 
+# ── Invalid token format / length → 403 ───────────────────────────────────────
+
+@pytest.mark.parametrize("method,path,body", [
+    ("POST",   "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
+    ("PUT",    "/api/weights",  {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}),
+    ("PATCH",  "/api/feedback", {}),
+    ("DELETE", "/api/feedback", {}),
+])
+def test_mutating_request_with_invalid_token_length_returns_403(client, method, path, body):
+    """
+    Cookie token == header token, but length is invalid → 403.
+    This prevents trivial token injection like "a".
+    """
+    short_token = "a"
+    _inject_csrf_cookie(client, short_token)
+    response = client.request(
+        method, path, json=body,
+        headers={CSRF_HEADER_NAME: short_token},
+    )
+    assert response.status_code == 403
+    assert "CSRF" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("POST",   "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
+])
+def test_mutating_request_with_non_hex_tokens_returns_403(client, method, path, body):
+    """
+    Cookie token == header token and valid length, but non-hex characters → 403.
+    """
+    invalid_hex_token = "Z" * (CSRF_TOKEN_BYTES * 2)
+    _inject_csrf_cookie(client, invalid_hex_token)
+    response = client.request(
+        method, path, json=body,
+        headers={CSRF_HEADER_NAME: invalid_hex_token},
+    )
+    assert response.status_code == 403
+    assert "CSRF" in response.json()["detail"]
+
+
 # ── Valid matching tokens → request proceeds past CSRF ───────────────────────
 
 def test_post_feedback_with_valid_csrf_passes(client):

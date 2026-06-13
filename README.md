@@ -7,7 +7,20 @@
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+## 📌 Table of Contents
+- [🚀 Features](#-features)
+- [⚙️ Installation](#️-installation)
+- [💻 Usage](#-usage)
+- [📂 Project Structure](#-project-structure)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
+
+---
+
+
 ![Coverage](https://img.shields.io/badge/coverage-50%25-brightgreen)
+[![Live Demo](https://shields.io)](https://vercel.app)
+[![GitHub Discussions](https://shields.io)](https://github.com)
 
 <div align="center">
 
@@ -39,6 +52,26 @@
 ```text
 25,000+ products  ·  Sub-50ms search  ·  3 ML models fused  ·  ~60% faster integration
 ```
+
+---
+
+## Table of Contents
+
+- [Architecture](#01--architecture)
+- [Features](#02--features)
+- [Tech Stack](#03--tech-stack)
+- [Project Structure](#04--project-structure)
+- [Quick Start](#05--quick-start)
+- [API Reference](#06--api-reference)
+- [Security](#07--security)
+- [FAQ](#08--faq)
+- [Screenshots](#09--screenshots)
+- [Troubleshooting](#10--troubleshooting)
+- [Setup Verification](#11--setup-verification)
+- [Beginner Contributor Tips](#12--beginner-contributor-tips)
+- [Contributors](#contributors)
+- [License](#license)
+- [Knowledge Graph Embeddings](#knowledge-graph-embeddings)
 
 ---
 
@@ -391,7 +424,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
-## 08 — Security
+## 07 — Security
 
 ```text
 ✓  No hardcoded credentials — config served via /api/config
@@ -405,7 +438,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
-## 09 — FAQ
+## 08 — FAQ
 
 <details>
 <summary><strong>How do I set up the project locally?</strong></summary>
@@ -749,4 +782,5 @@ Run:
 python scripts/generate_kg_embeddings.py
 
 ---
+
 
