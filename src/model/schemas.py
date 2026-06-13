@@ -38,4 +38,4 @@ class HybridWeightsSchema(BaseModel):
 
     class Config:
         frozen = True
-        extra = "forbid"
+        extra = "forbid"

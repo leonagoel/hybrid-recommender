@@ -7,6 +7,11 @@ const root = document.documentElement;
 function initThemeToggle() {
   if (!themeToggle) return;
 
+  // Ensure theme toggle button is focusable as a keyboard-accessible control.
+  themeToggle.setAttribute('role', 'button');
+  themeToggle.setAttribute('tabindex', '0');
+
+
   const savedTheme = localStorage.getItem('theme') || 'dark';
 
   root.setAttribute('data-theme', savedTheme);
@@ -118,7 +123,6 @@ const state = {
     isAuthSignUp: false,
     modelReady: false,
     scrollObserver: null,
-    filters: { category: '', rating: '', sentiment: '' },
 };
 
 // ── DOM Elements ────────────────────────────────────────────────────
@@ -1706,7 +1710,9 @@ function closeSearchDropdown() {
 }
 
 function handleSearchKeydown(e) {
-    const results = state.searchResults;
+    // Use autocompleteResults (single source of truth for dropdown)
+    const results = state.autocompleteResults || [];
+
     if (!results.length || !els.searchDropdown.classList.contains('active')) return;
 
     if (e.key === 'ArrowDown') {
@@ -1715,11 +1721,11 @@ function handleSearchKeydown(e) {
         renderSearchDropdown(results, els.searchInput.value);
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, -1);
+        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, 0);
         renderSearchDropdown(results, els.searchInput.value);
     } else if (e.key === 'Enter' && state.selectedSearchIdx >= 0) {
         e.preventDefault();
-        selectSearchResult(results[state.selectedSearchIdx].title);
+        selectSearchResult(results[state.selectedSearchIdx]);
     } else if (e.key === 'Escape') {
         closeSearchDropdown();
     }
@@ -2034,8 +2040,51 @@ document.querySelectorAll(".product-card").forEach(card => {
 
 document.addEventListener('DOMContentLoaded', init);
 
+// ── FIX: state filters + chips compatibility ────────────────
+// Some UI paths reference state.activeChips but the base state was missing it.
+// Ensure it exists and is initialized.
+if (!state.activeChips) {
+    state.activeChips = new Set(['all']);
+}
+if (!state.filters) {
+    state.filters = { category: '', rating: '', sentiment: '' };
+}
+
+// Utility: reset search box + filters and reload results.
+function resetAllFiltersAndSearch() {
+    if (els.searchInput) els.searchInput.value = '';
+    state.filters.category = '';
+    state.filters.rating = '';
+    state.filters.sentiment = '';
+
+    if (els.categoryFilter) els.categoryFilter.value = '';
+    if (els.ratingFilter) els.ratingFilter.value = '';
+    if (els.sentimentFilter) els.sentimentFilter.value = '';
+
+    if (state.activeChips) {
+        state.activeChips = new Set(['all']);
+        const chipsContainer = document.getElementById('filter-chips');
+        if (chipsContainer) {
+            chipsContainer.querySelectorAll('.chip').forEach((c) => {
+                if (c.dataset.filter === 'all') c.classList.add('active');
+                else c.classList.remove('active');
+            });
+        }
+    }
+
+    if (els.productGrid) {
+        // Reload the non-search product feed.
+        els.productsTitle.textContent = 'All Products';
+    }
+
+    // Prefer backend status-driven load if available.
+    checkStatus().catch(() => loadProducts(false));
+    closeSearchDropdown();
+}
+
 // ── Language Toggle ─────────────────────────────────────────────────
 let currentLang = 'EN';
+
 
 function toggleLanguage() {
     currentLang = currentLang === 'EN' ? 'HI' : 'EN';

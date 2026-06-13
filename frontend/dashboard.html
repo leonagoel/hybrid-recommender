@@ -35,12 +35,44 @@
       font-weight: bold;
       margin-top: 10px;
     }
+
+    /* Added styles for resilient states */
+    .loading-notice {
+      color: #666;
+      font-style: italic;
+      grid-column: 1 / -1;
+      text-align: center;
+      font-size: 18px;
+      padding: 20px;
+    }
+
+    .error-banner {
+      background-color: #ffdddd;
+      color: #990000;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      text-align: center;
+      font-weight: bold;
+      grid-column: 1 / -1;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+
+    .empty-notice {
+      color: #777;
+      font-style: italic;
+      list-style-type: none;
+      padding: 10px 0;
+    }
   </style>
 </head>
 
 <body>
 
 <h1>Admin Dashboard</h1>
+
+<!-- Status box for error and loading alerts -->
+<div id="dashboard-status"></div>
 
 <div class="grid">
 
@@ -83,42 +115,78 @@
 
 <script>
 async function loadDashboard() {
-
-  const response = await fetch('/api/dashboard');
-
-  if (!response.ok) {
-    throw new Error('Failed to load dashboard data');
-  }
-
-  const data = await response.json();
-
-  document.getElementById('products').textContent =
-    data.total_products;
-
-  document.getElementById('users').textContent =
-    data.total_users;
-
-  document.getElementById('interactions').textContent =
-    data.total_interactions;
-
-  document.getElementById('recommendation').textContent =
-    data.avg_recommendation_score;
-
-  document.getElementById('sentiment').textContent =
-    data.avg_sentiment_score;
-
-  document.getElementById('trained').textContent =
-    new Date(data.model_last_trained).toLocaleString();
-
+  const statusBox = document.getElementById('dashboard-status');
   const list = document.getElementById('top-products');
+  
+  try {
+    // 1. Show user-visible loading state feedback while fetching data
+    statusBox.innerHTML = '<div class="loading-notice">⌛ Loading dashboard telemetry records...</div>';
+    list.innerHTML = '<li class="loading-notice">Loading products...</li>';
 
-  list.innerHTML = '';
+    const response = await fetch('/api/dashboard');
 
-  data.top_5_recommended_products.forEach(product => {
-    const li = document.createElement('li');
-    li.textContent = product;
-    list.appendChild(li);
-  });
+    if (!response.ok) {
+      throw new Error(`Failed to load dashboard data (HTTP ${response.status})`);
+    }
+
+    const rawData = await response.json();
+    const data = rawData || {}; // Guard against null/undefined root elements
+
+    // Clear loading state notice safely on network success
+    statusBox.innerHTML = '';
+
+    // 2. Render missing numerical metrics safely as 0 or N/A using nullish coalescing
+    document.getElementById('products').textContent = data.total_products ?? 0;
+    document.getElementById('users').textContent = data.total_users ?? 0;
+    document.getElementById('interactions').textContent = data.total_interactions ?? 0;
+    document.getElementById('recommendation').textContent = data.avg_recommendation_score ?? 'N/A';
+    document.getElementById('sentiment').textContent = data.avg_sentiment_score ?? 'N/A';
+
+    // 3. Strict timestamp validation routing to prevent "Invalid Date" layout errors
+    const rawDate = data.model_last_trained;
+    let formattedDate = 'N/A';
+    if (rawDate) {
+      const parsedDate = new Date(rawDate);
+      if (!isNaN(parsedDate.getTime())) {
+        formattedDate = parsedDate.toLocaleString();
+      }
+    }
+    document.getElementById('trained').textContent = formattedDate;
+
+    // 4. Secure loop iterations using Array.isArray type-guards to prevent runtime crash
+    list.innerHTML = '';
+    if (Array.isArray(data.top_5_recommended_products) && data.top_5_recommended_products.length > 0) {
+      data.top_5_recommended_products.forEach(product => {
+        const li = document.createElement('li');
+        // Handle both string arrays and object structures safely
+        li.textContent = typeof product === 'object' ? (product.title || 'Unknown Product') : product;
+        list.appendChild(li);
+      });
+    } else {
+      // 5. Show clean fallback empty state notice when product arrays are absent
+      list.innerHTML = '<li class="empty-notice">📭 No product recommendation telemetry available.</li>';
+    }
+
+  } catch (error) {
+    // Log tracking for developer console debugging context mapping
+    console.error('Handled dashboard compilation crash successfully:', error);
+    
+    // 6. Display persistent clear user-facing failure alert message state
+    statusBox.innerHTML = `
+      <div class="error-banner">
+        ⚠️ <strong>Dashboard Sync Failure:</strong> Unable to connect to the administration server endpoint. Please check your system connection and refresh.
+      </div>
+    `;
+    
+    // Fallback UI variables to baseline states so '-' layout doesn't hang
+    document.getElementById('products').textContent = 'N/A';
+    document.getElementById('users').textContent = 'N/A';
+    document.getElementById('interactions').textContent = 'N/A';
+    document.getElementById('recommendation').textContent = 'N/A';
+    document.getElementById('sentiment').textContent = 'N/A';
+    document.getElementById('trained').textContent = 'N/A';
+    list.innerHTML = '<li class="empty-notice">⚠️ Failed to compile recommended products.</li>';
+  }
 }
 
 loadDashboard();
