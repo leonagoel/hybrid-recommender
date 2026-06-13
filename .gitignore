@@ -218,3 +218,10 @@ requirements-dev.txt
 # macOS metadata
 .DS_Store
 **/.DS_Store
+
+# Developer scratch / draft files
+PR_DESCRIPTION_*.md
+old_*.py
+old_*.txt
+checks.json
+bug[0-9]*.md

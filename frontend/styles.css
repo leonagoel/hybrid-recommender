@@ -2063,3 +2063,47 @@ RESPONSIVE FIX
 .load-more-btn:hover svg {
   transform: translateY(2px);
 }
+
+/* --- Filter Chips --- */
+.filter-chips-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    padding: 1rem 0;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+.filter-chips-wrapper::-webkit-scrollbar {
+    display: none;
+}
+
+.filter-chips {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0 1rem;
+    white-space: nowrap;
+}
+
+.chip {
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    background-color: var(--bg-surface, #2a2a2a);
+    color: var(--text-primary, #ffffff);
+    border: 1px solid var(--border-color, #444);
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: all 0.2s ease-in-out;
+    user-select: none;
+    outline: none;
+}
+
+.chip:hover {
+    background-color: var(--bg-surface-hover, #3a3a3a);
+    transform: scale(1.05);
+}
+
+.chip.active {
+    background-color: var(--accent-color, #007bff);
+    color: #fff;
+    border-color: var(--accent-color, #007bff);
+    transform: scale(1.05);
+}

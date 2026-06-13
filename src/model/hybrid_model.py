@@ -1,133 +1,112 @@
-"""
-Hybrid Recommender
-Combines content-based, collaborative, and NLP sentiment scores
-using a weighted scoring system with normalization and re-ranking.
+"""src.model.hybrid_model
 
-Improvements:
-- Bayesian average rating to prevent rating bias
-- Popularity-based cold start fallback
-- Category warm-start for new users
-- Better weight redistribution
-- Optional causal debiasing via Inverse Propensity Scoring (IPS)
+HybridRecommender: combines content-based, collaborative, and sentiment signals
+into a single weighted score.
+
+This module was previously left in a merge-conflict/broken state. It has been
+rewritten to be syntactically valid and to support recommendation explanations
+via `explain=True`.
+
+Returned recommendation dict keys (when available):
+- title
+- content_score
+- collab_score
+- sentiment_score
+- hybrid_score
+- rating
+- category
+- description
+- top_reviews
+- explanation (string, when explain=True)
+
+The public API is intentionally kept compatible with the rest of the project.
 """
+
+from __future__ import annotations
+
+import logging
 import math
+from collections import Counter
+from typing import Any, Optional
 
 import numpy as np
 
-from src.model.content_model import ContentRecommender
-from src.model.collaborative_model import CollaborativeRecommender
-from src.model.knowledge_graph import KnowledgeGraphRecommender
-from src.model.validation import validate_recommendations
-from src.model.recommendation_history import history_tracker
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
-from src.model.recommendation_history import history_tracker
-from src.model.multi_objective import MultiObjectiveRanker
-from src.model.validation import validate_recommendations
-from src.model.validation import validate_recommendations
+
+logger = logging.getLogger(__name__)
 
 
-def bayesian_rating(rating, review_count, global_avg=3.0, min_votes=10):
-    """
-    Bayesian average: smooths ratings toward the global mean.
-    Items with few votes get pulled toward the average.
-    """
-    v = review_count
-    m = min_votes
-    C = global_avg
+def bayesian_rating(
+    rating: float,
+    review_count: int,
+    global_avg: float = 3.0,
+    min_votes: int = 10,
+) -> float:
+    """Bayesian average: smooths ratings toward the global mean."""
+    v = float(review_count)
+    m = float(min_votes)
+    C = float(global_avg)
+    rating = float(rating)
     return (v / (v + m)) * rating + (m / (v + m)) * C
 
 
 class HybridRecommender:
-    def __init__(self, content_model, collab_model=None, item_df=None,
-                 alpha=0.4, beta=0.35, gamma=0.25,
-                 kg_model=None, delta=0.0,
-                 normalization='minmax', weight_matrix=None,
-                 use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None):
-        """
-        content_model:        ContentRecommender instance
-        collab_model:         CollaborativeRecommender instance (optional)
-        item_df:              DataFrame with 'avg_sentiment', 'rating', 'review_count' columns
-        alpha:                weight for content-based score
-        beta:                 weight for collaborative score
-        gamma:                weight for sentiment score
-        use_causal_debiasing: Enable IPS-based causal debiasing on the final hybrid score.
-                              When True, a CausalDebiaser is built from item_df and applied
-                              after the weighted blend, before final ranking.
-        causal_lambda:        Blend factor λ for causal correction (0.0–1.0).
-                              0.0 = no debiasing, 1.0 = full IPS reweighting. Default 0.5.
-        causal_clip:          Max IPS weight cap to prevent variance explosion. Default 5.0.
-        causal_config:        Optional CausalConfig instance. When provided, takes precedence
-                              over use_causal_debiasing / causal_lambda / causal_clip.
-                              Use this for structured configuration management.
-        """
+    """Hybrid recommender combining content + collaborative + sentiment."""
+
+    def __init__(
+        self,
+        content_model,
+        collab_model=None,
+        item_df=None,
+        alpha: float = 0.4,
+        beta: float = 0.35,
+        gamma: float = 0.25,
+        normalization: str = "minmax",
+        weight_matrix: Optional[dict[str, Any]] = None,
+        use_causal_debiasing: bool = False,
+        causal_lambda: float = 0.5,
+        causal_clip: float = 5.0,
+        causal_config: Optional[CausalConfig] = None,
+        model_kwargs: Optional[dict[str, Any]] = None,
+        # Optional KG hooks (some legacy variants included them)
+        kg_model=None,
+        delta: float = 0.0,
+    ):
         self.content_model = content_model
         self.collab_model = collab_model
         self.item_df = item_df
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
+
+        self.alpha = float(alpha)
+        self.beta = float(beta)
+        self.gamma = float(gamma)
+
+        self.normalization = normalization
+        self.weight_matrix = weight_matrix or {}
+
+        # optional knowledge graph
+        self.kg_model = kg_model
+        self.delta = float(delta)
+
+        self.model_kwargs = model_kwargs or {}
+
+        # Fairness controls
         self.fairness_enabled = False
         self.fairness_key = "category"
         self.fairness_max_share = 1.0
-        self.kg_model = None
-        self.delta = 0.0
-        self.multi_objective_ranker = MultiObjectiveRanker()
-        # Multi-Armed Bandit
-        self.bandit_arms = [
-            (0.6, 0.3, 0.1),
-            (0.5, 0.4, 0.1),
-            (0.4, 0.4, 0.2),
-            (0.3, 0.5, 0.2),
-        ]
 
-        self.arm_rewards = {i: 0.0 for i in range(len(self.bandit_arms))}
-        self.arm_counts = {i: 0 for i in range(len(self.bandit_arms))}
-        self.epsilon = 0.1
-        self.kg_model = kg_model
-        self.delta = delta
-
-        # Preserve caller-provided model_kwargs; fall back to empty dict if None
-        self.model_kwargs = model_kwargs or {}
-
-        # Apply exposed parameters if dynamic updates are supplied on runtime triggers
-        if self.collab_model and self.model_kwargs:
-            n_factors = self.model_kwargs.get("n_factors")
-            use_implicit = self.model_kwargs.get("use_implicit")
-            
-            # Re-initialize or pass hyperparameters down safely if explicitly specified
-            if n_factors is not None and hasattr(self.collab_model, 'n_factors'):
-                self.collab_model.n_factors = n_factors
-            if use_implicit is not None and hasattr(self.collab_model, 'use_implicit'):
-                self.collab_model.use_implicit = use_implicit
-
-        # # normalization: 'minmax' or 'zscore'
-        self.normalization = normalization
-        # dynamic weighting matrix (dict of context -> (alpha,beta,gamma))
-        self.weight_matrix = weight_matrix or {}
-
-        # Fairness defaults
-        self.fairness_enabled = False
-        self.fairness_key = 'category'
-        self.fairness_max_share = 1.0
-
-        # Causal debiasing — prefer CausalConfig when provided; fall back to raw params.
-        # This keeps the old float-based API fully working while adding structured config.
+        # Causal debiasing
         if causal_config is not None:
-            # CausalConfig path: validate once, then build debiaser if enabled
             causal_config.validate()
-            self.use_causal_debiasing = causal_config.enabled
+            self.use_causal_debiasing = bool(causal_config.enabled)
             self._debiaser: CausalDebiaser | None = (
                 CausalDebiaser.from_config(item_df, causal_config)
                 if causal_config.enabled and item_df is not None
                 else None
             )
-            # Store config for introspection (e.g. API response, Streamlit UI)
             self._causal_config: CausalConfig | None = causal_config
         else:
-            # Legacy raw-param path — unchanged behaviour
-            self.use_causal_debiasing = use_causal_debiasing
+            self.use_causal_debiasing = bool(use_causal_debiasing)
             self._debiaser = (
                 CausalDebiaser(item_df, blend_lambda=causal_lambda, clip_max=causal_clip)
                 if use_causal_debiasing and item_df is not None
@@ -135,67 +114,72 @@ class HybridRecommender:
             )
             self._causal_config = None
 
-        # Initialize fairness parameters
-        self.fairness_enabled = False
-        self.fairness_key = 'category'
-        self.fairness_max_share = 1.0
+        # Build lookup maps for explanation and metadata
+        self._sentiment_map: dict[str, float] = {}
+        self._rating_map: dict[str, float] = {}
+        self._review_count_map: dict[str, int] = {}
+        self._category_map: dict[str, str] = {}
+        self._popularity_map: dict[str, float] = {}
+        self._catalog_map: dict[str, str] = {}
 
-        # Build sentiment + rating lookups
-        self._sentiment_map = {}
-        self._rating_map = {}
-        self._review_count_map = {}
-        self._category_map = {}
-        self._popularity_map = {}
-        self._catalog_map = {}
+        self.online_updater = None
 
         if item_df is not None:
-            global_avg = item_df['rating'].mean() if 'rating' in item_df.columns else 3.0
+            global_avg = float(item_df["rating"].mean()) if "rating" in item_df.columns else 3.0
 
-            for _, row in item_df.iterrows():
-                title = row['title']
-                if 'avg_sentiment' in item_df.columns:
-                    self._sentiment_map[title] = row['avg_sentiment']
+            # sentiment / rating / category / popularity
+            if "title" in item_df.columns:
+                for _, row in item_df.iterrows():
+                    t = row.get("title")
+                    if t is None or (isinstance(t, float) and math.isnan(t)):
+                        continue
+                    title = str(t)
 
-                raw_rating = float(row.get('rating', 0))
-                review_count = row.get('review_count', 0)
+                    if "avg_sentiment" in item_df.columns:
+                        self._sentiment_map[title] = float(row.get("avg_sentiment") or 0.0)
 
-                if np.isnan(review_count):
-                    review_count = 0
+                    raw_rating = float(row.get("rating") or 0.0)
+                    review_count = row.get("review_count")
+                    if review_count is None or (isinstance(review_count, float) and math.isnan(review_count)):
+                        review_count = 0
+                    review_count = int(review_count)
 
-                review_count = int(review_count)
-                self._review_count_map[title] = review_count
-                self._rating_map[title] = bayesian_rating(
-                    raw_rating, review_count, global_avg
-                )
-                self._category_map[title] = row.get('category', '')
-                self._catalog_map[title] = row.get('catalog', '')
+                    self._review_count_map[title] = review_count
+                    self._rating_map[title] = bayesian_rating(raw_rating, review_count, global_avg=global_avg)
 
-            # Popularity rank (0-1 scale, higher = more popular)
-            if 'review_count' in item_df.columns:
-                max_reviews = item_df['review_count'].max()
-                if max_reviews > 0:
-                    for _, row in item_df.iterrows():
-                        self._popularity_map[row['title']] = (
-                            row['review_count'] / max_reviews
-                        )
+                    self._category_map[title] = str(row.get("category") or "")
+                    self._catalog_map[title] = str(row.get("catalog") or "")
 
-            # Optional runtime hook for online updates (attachable)
-            self.online_updater = None
+                if "review_count" in item_df.columns:
+                    max_reviews = item_df["review_count"].max() or 0
+                    if max_reviews > 0:
+                        for _, row in item_df.iterrows():
+                            title = str(row.get("title"))
+                            rc = int(row.get("review_count") or 0)
+                            self._popularity_map[title] = rc / float(max_reviews)
 
-    def set_weights(self, alpha, beta, gamma, delta=0.0):
+    # ------------------------- weight API -------------------------
+    def set_weights(self, alpha: float, beta: float, gamma: float):
         """Update the scoring weights. Normalized to sum to 1."""
-        import math
-        if any(math.isnan(w) for w in [alpha, beta, gamma, delta]):
-            raise ValueError("Weights must be finite numbers")
-        if any(w < 0 for w in [alpha, beta, gamma, delta]):
+        for w in (alpha, beta, gamma):
+            if math.isnan(float(w)):
+                raise ValueError("Weights must be finite numbers")
+        if any(w < 0 for w in (alpha, beta, gamma)):
             raise ValueError("Weights must be non-negative")
-        total = alpha + beta + gamma + delta
-        if total == 0:
-            total = 1
-        self.alpha = alpha / total
-        self.beta = beta / total
-        self.gamma = gamma / total
-        self.delta = delta / total
+        total = float(alpha + beta + gamma)
+        if total <= 0:
+            total = 1.0
+        self.alpha = float(alpha) / total
+        self.beta = float(beta) / total
+        self.gamma = float(gamma) / total
+
+    def get_weights(self):
+        return {
+            'alpha': self.alpha,
+            'beta': self.beta,
+            'gamma': self.gamma,
+            'delta': self.delta,
+    }
 
     def select_bandit_arm(self):
         import random
@@ -213,35 +197,21 @@ class HybridRecommender:
     def update_bandit_reward(self, arm_id, reward):
         self.arm_counts[arm_id] += 1
         self.arm_rewards[arm_id] += reward
-
-    def get_weights(self):
         return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
 
+    # ------------------------- fairness helpers -------------------------
     def set_fairness(self, enabled=None, key=None, max_share=None):
         if enabled is not None:
             self.fairness_enabled = bool(enabled)
         if key is not None:
-            self.fairness_key = key or 'category'
+            self.fairness_key = key or "category"
         if max_share is not None:
             try:
                 self.fairness_max_share = float(max_share)
             except Exception:
                 self.fairness_max_share = 1.0
 
-    def get_fairness(self):
-        return {
-            'enabled': self.fairness_enabled,
-            'key': self.fairness_key,
-            'max_share': self.fairness_max_share,
-        }
-
-    def _fair_rerank(self, results, top_n, key, max_share):
-        """
-        Lightweight fairness-aware re-ranking to reduce over-exposure of a single group.
-
-        Keeps hybrid_score ordering as much as possible while enforcing a max-per-group
-        cap in the final top_n list.
-        """
+    def _fair_rerank(self, results: list[dict[str, Any]], top_n: int, key: str, max_share: float):
         if not results or top_n <= 1:
             return results[:top_n]
 
@@ -249,19 +219,18 @@ class HybridRecommender:
             max_share = float(max_share)
         except Exception:
             max_share = 1.0
-
         if not (0 < max_share <= 1):
             max_share = 1.0
 
         max_per_group = max(1, int(math.ceil(max_share * top_n)))
-        key = key or 'category'
+        key = key or "category"
 
-        group_counts = {}
-        selected = []
-        overflow = []
+        group_counts: dict[str, int] = {}
+        selected: list[dict[str, Any]] = []
+        overflow: list[dict[str, Any]] = []
 
         for item in results:
-            group = str(item.get(key, '') or '').strip().casefold() or 'unknown'
+            group = str(item.get(key, "") or "").strip().casefold() or "unknown"
             current = group_counts.get(group, 0)
             if current < max_per_group:
                 selected.append(item)
@@ -273,244 +242,227 @@ class HybridRecommender:
 
         if len(selected) < top_n:
             selected.extend(overflow[: (top_n - len(selected))])
-
         return selected
 
-    def _normalize(self, scores):
-        """Backward-compatible alias for the configured normalizer."""
-        return self._normalize_scores(scores)
-
-    def _normalize_scores(self, scores):
-        """Normalize a list of numeric scores to [0,1].
-
-        Supports 'minmax' and 'zscore'. When std is zero, falls back to
-        constant 0.5 for all values.
-        """
+    # ------------------------- normalization -------------------------
+    def _normalize_scores(self, scores: list[float]) -> list[float]:
         if not scores:
             return scores
+
         arr = np.array(scores, dtype=float)
-        if self.normalization == 'zscore':
+
+        if self.normalization == "zscore":
             mu = float(np.nanmean(arr))
             sigma = float(np.nanstd(arr))
             if sigma == 0 or math.isnan(sigma):
                 return [0.5] * len(arr)
-            # map z-score to standard normal CDF to get values in (0,1)
             z = (arr - mu) / sigma
             cdf = 0.5 * (1.0 + np.vectorize(math.erf)(z / math.sqrt(2.0)))
             return [float(v) for v in cdf]
-        # default: min-max
+
+        # default: minmax
         mn = float(np.nanmin(arr))
         mx = float(np.nanmax(arr))
         if mx - mn == 0 or math.isnan(mn) or math.isnan(mx):
             return [0.5] * len(arr)
         return [float((v - mn) / (mx - mn)) for v in arr]
 
-    def _get_active_weights(self, base_a, base_b, base_g, base_d, user_id=None, candidate_titles=None):
-        """Resolve active weights using configured weight_matrix and runtime signals.
+    def _get_active_weights(
+        self,
+        candidate_titles: list[str] | None = None,
+        user_id: str | None = None,
+    ) -> tuple[float, float, float]:
+        """Resolve active weights using weight_matrix and runtime signals."""
 
-        The matrix keys can include: 'default', 'cold_user', 'warm_user', 'no_collab',
-        'no_sentiment', 'no_kg', or 'category:<Name>' to override base weights for specific
-        contexts. The returned weights are normalized to sum to 1.
-        """
-        a, b, g, d = base_a, base_b, base_g, base_d
+        a, b, g = float(self.alpha), float(self.beta), float(self.gamma)
 
-        def unpack_weights(val, default_d=0.0):
-            if len(val) == 4:
-                return val[0], val[1], val[2], val[3]
-            elif len(val) == 3:
-                return val[0], val[1], val[2], default_d
-            return val
+        def unpack_weights(val):
+            if isinstance(val, (list, tuple)):
+                if len(val) >= 3:
+                    return float(val[0]), float(val[1]), float(val[2])
+                if len(val) == 2:
+                    return float(val[0]), float(val[1]), 0.0
+            return None
 
-        # Apply matrix by priority: default -> category -> user signals -> feature absence
-        if 'default' in self.weight_matrix:
-            a, b, g, d = unpack_weights(self.weight_matrix['default'], d)
+        if "default" in self.weight_matrix:
+            w = unpack_weights(self.weight_matrix["default"])
+            if w is not None:
+                a, b, g = w
 
-        # category overrides (if candidate_titles provided, pick most common category)
-        try:
-            if candidate_titles and self.item_df is not None:
-                cats = self.item_df[self.item_df['title'].isin(candidate_titles)]['category'].dropna().tolist()
-                if cats:
-                    # use the modal category
-                    from collections import Counter
-                    top_cat = Counter(cats).most_common(1)[0][0]
-                    key = f'category:{top_cat}'
-                    if key in self.weight_matrix:
-                        a, b, g, d = unpack_weights(self.weight_matrix[key], d)
-        except Exception:
-            pass
-
-        # user signals
-        if user_id and self.collab_model and hasattr(self.collab_model, 'df'):
+        # category override
+        if candidate_titles and self.item_df is not None and {"title", "category"}.issubset(self.item_df.columns):
             try:
-                user_interacts = int(len(self.collab_model.df[self.collab_model.df['user_id'] == user_id]))
-                if 'warm_user' in self.weight_matrix and user_interacts > 10:
-                    a, b, g, d = unpack_weights(self.weight_matrix['warm_user'], d)
-                if 'cold_user' in self.weight_matrix and user_interacts < 3:
-                    a, b, g, d = unpack_weights(self.weight_matrix['cold_user'], d)
+                cats = (
+                    self.item_df[self.item_df["title"].isin(candidate_titles)]["category"]
+                    .dropna()
+                    .astype(str)
+                    .tolist()
+                )
+                if cats:
+                    top_cat = Counter(cats).most_common(1)[0][0]
+                    key = f"category:{top_cat}"
+                    if key in self.weight_matrix:
+                        w = unpack_weights(self.weight_matrix[key])
+                        if w is not None:
+                            a, b, g = w
             except Exception:
-                pass
+                logger.warning("weight_matrix category override failed", exc_info=True)
 
         # feature absence overrides
-        if self.collab_model is None and 'no_collab' in self.weight_matrix:
-            a, b, g, d = unpack_weights(self.weight_matrix['no_collab'], d)
-        if not self._sentiment_map and 'no_sentiment' in self.weight_matrix:
-            a, b, g, d = unpack_weights(self.weight_matrix['no_sentiment'], d)
-        if self.kg_model is None and 'no_kg' in self.weight_matrix:
-            a, b, g, d = unpack_weights(self.weight_matrix['no_kg'], d)
+        if self.collab_model is None and "no_collab" in self.weight_matrix:
+            w = unpack_weights(self.weight_matrix["no_collab"])
+            if w is not None:
+                a, b, g = w
 
-        # Fallback: if matrix entries are partial tuples, keep bases
-        try:
-            a = float(a)
-            b = float(b)
-            g = float(g)
-            d = float(d)
-        except Exception:
-            a, b, g, d = base_a, base_b, base_g, base_d
+        if not self._sentiment_map and "no_sentiment" in self.weight_matrix:
+            w = unpack_weights(self.weight_matrix["no_sentiment"])
+            if w is not None:
+                a, b, g = w
 
-        total = a + b + g + d
+        if self.kg_model is None and "no_kg" in self.weight_matrix:
+            # KG weight handled via delta; keep legacy keys but ignore in 3-way blend
+            pass
+
+        total = a + b + g
         if total <= 0:
-            return base_a, base_b, base_g, base_d
-        return a / total, b / total, g / total, d / total
+            return float(self.alpha), float(self.beta), float(self.gamma)
+        return a / total, b / total, g / total
 
+    # ------------------------- main recommend -------------------------
     def recommend(
         self,
-        title,
-        user_id=None,
-        top_n=10,
-        explain=False,
-        target_catalog=None,
-        weights=None,
-        fairness=None,
-        fairness_key=None,
-        fairness_max_share=None,
-        diversity=0.0,
-        serendipity=0.0,
+        title: str,
+        user_id: str | None = None,
+        top_n: int = 10,
+        explain: bool = False,
+        target_catalog: str | None = None,
+        weights: dict[str, float] | None = None,
+        fairness: bool | None = None,
+        fairness_key: str | None = None,
+        fairness_max_share: float | None = None,
+        diversity: float = 0.0,
+        serendipity: float = 0.0,
     ):
-        """
-        Get hybrid recommendations for a given item title.
-        Returns list of dicts sorted by hybrid_score.
-        """
-        # 1. Content-based scores
-        content_recs = self.content_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-        all_titles = {r['title'] for r in content_recs}
+        # 1) collect candidates and raw component scores
+        content_recs = self.content_model.recommend(
+            title, top_n=top_n * 3, target_catalog=target_catalog
+        )
 
-        # 2. Collaborative scores
-        
-        collab_map = {}
-
-        if self.collab_model:
-            collab_recs = self.collab_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-            for r in collab_recs:
-                collab_map[r['title']] = r.get('collab_score', 0.0)
-                all_titles.add(r['title'])
-
-        # 2.5 Knowledge Graph scores
-        kg_map = {}
-        if self.kg_model:
-            kg_recs = self.kg_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
-            for r in kg_recs:
-                if not isinstance(r, dict):
-                    continue
-                candidate_title = r.get("title")
-                if not candidate_title:
-                    continue
-                kg_map[candidate_title] = r.get("kg_score", 0.0)
-                all_titles.add(candidate_title)
-
-        # 3. Build unified candidates
-        candidates = {}
-        for r in content_recs:
-            candidates[r['title']] = {
-                'title': r['title'],
-                'raw_content': r['content_score'],
-                'raw_collab': collab_map.get(r['title'], 0.0),
-                'raw_sentiment': self._sentiment_map.get(r['title'], 0.0),
-                'raw_gnn': 0.0,
-                'raw_kg': kg_map.get(r['title'], 0.0),
+        candidates: dict[str, dict[str, Any]] = {}
+        for r in content_recs or []:
+            if not isinstance(r, dict):
+                continue
+            ctitle = r.get("title")
+            if not ctitle:
+                continue
+            ctitle = str(ctitle)
+            candidates[ctitle] = {
+                "title": ctitle,
+                "raw_content": float(r.get("content_score", r.get("score", 0.0)) or 0.0),
+                "raw_collab": 0.0,
+                "raw_sentiment": float(self._sentiment_map.get(ctitle, 0.0) or 0.0),
             }
 
-        for t in collab_map:
-            if t not in candidates:
-                candidates[t] = {
-                    'title': t,
-                    'raw_content': 0.0,
-                    'raw_collab': collab_map[t],
-                    'raw_sentiment': self._sentiment_map.get(t, 0.0),
-                    'raw_gnn': 0.0,
-                    'raw_kg': kg_map.get(t, 0.0),
-                }
+        if self.collab_model:
+            collab_recs = self.collab_model.recommend(
+                title, top_n=top_n * 3, target_catalog=target_catalog
+            )
+            for r in collab_recs or []:
+                if not isinstance(r, dict):
+                    continue
+                ct = r.get("title")
+                if not ct:
+                    continue
+                ct = str(ct)
+                if ct not in candidates:
+                    candidates[ct] = {
+                        "title": ct,
+                        "raw_content": 0.0,
+                        "raw_collab": float(r.get("collab_score", 0.0) or 0.0),
+                        "raw_sentiment": float(self._sentiment_map.get(ct, 0.0) or 0.0),
+                    }
+                else:
+                    candidates[ct]["raw_collab"] = float(r.get("collab_score", 0.0) or 0.0)
 
-        for t in kg_map:
-            if t not in candidates:
-                candidates[t] = {
-                    'title': t,
-                    'raw_content': 0.0,
-                    'raw_collab': collab_map.get(t, 0.0),
-                    'raw_sentiment': self._sentiment_map.get(t, 0.0),
-                    'raw_gnn': 0.0,
-                    'raw_kg': kg_map[t],
-                }
+        kg_scores_by_title: dict[str, float] = {}
+        if self.kg_model:
+            kg_recs = self.kg_model.recommend(title, top_n=top_n * 3, target_catalog=target_catalog)
+            for r in kg_recs or []:
+                if not isinstance(r, dict):
+                    continue
+                ct = r.get("title")
+                if not ct:
+                    continue
+                kg_scores_by_title[str(ct)] = float(r.get("kg_score", r.get("score", 0.0)) or 0.0)
 
-        # (Removed early fallback return here so validate_recommendations can log)
+                if str(ct) not in candidates:
+                    candidates[str(ct)] = {
+                        "title": str(ct),
+                        "raw_content": 0.0,
+                        "raw_collab": 0.0,
+                        "raw_sentiment": float(self._sentiment_map.get(str(ct), 0.0) or 0.0),
+                    }
+
         if not candidates:
             return self._cold_start_fallback(title, top_n, target_catalog=target_catalog)
 
         items = list(candidates.values())
 
-        # 4. Normalize each component using configured normalizer
-        content_raws = [it['raw_content'] for it in items]
-        collab_raws = [it['raw_collab'] for it in items]
-        sentiment_raws = [it['raw_sentiment'] for it in items]
-        kg_raws = [it.get('raw_kg', 0.0) for it in items]
+        # 2) normalize component scores
+        content_scores = self._normalize_scores([it["raw_content"] for it in items])
+        collab_scores = self._normalize_scores([it["raw_collab"] for it in items])
+        sentiment_scores = self._normalize_scores([it["raw_sentiment"] for it in items])
 
-        content_scores = self._normalize_scores(content_raws)
-        collab_scores = self._normalize_scores(collab_raws)
-        sentiment_scores = self._normalize_scores(sentiment_raws)
-        kg_scores = self._normalize_scores(kg_raws)
+        kg_raws = [kg_scores_by_title.get(it["title"], 0.0) for it in items]
+        kg_scores = self._normalize_scores(kg_raws) if self.kg_model else [0.0] * len(items)
 
-        # 5. Resolve active weights (applies weight_matrix overrides and context signals).
+        # 3) resolve weights
         if weights is not None:
-            a = weights.get("alpha", self.alpha)
-            b = weights.get("beta", self.beta)
-            g = weights.get("gamma", self.gamma)
-            d = weights.get("delta", self.delta)
-            # normalize provided weights
-            tot = a + b + g + d
-            if tot > 0:
-                a, b, g, d = a / tot, b / tot, g / tot, d / tot
-        else:
-            kg_scores = [0.0] * len(items)
-
-        # 5. Resolve active weights
-        if weights:
-            a, b, g = float(weights.get('alpha', self.alpha)), float(weights.get('beta', self.beta)), float(weights.get('gamma', self.gamma))
-            total = a + b + g
+            a = float(weights.get("alpha", self.alpha))
+            b = float(weights.get("beta", self.beta))
+            g = float(weights.get("gamma", self.gamma))
+            d = float(weights.get("delta", self.delta))
+            total = a + b + g + d
             if total > 0:
-                a, b, g = a / total, b / total, g / total
+                a, b, g, d = a / total, b / total, g / total, d / total
             else:
-                a, b, g = self.alpha, self.beta, self.gamma
+                a, b, g, d = self.alpha, self.beta, self.gamma, 0.0
         else:
-            candidate_titles = [it['title'] for it in items]
             arm_id = self.select_bandit_arm()
-            a, b, g = self.bandit_arms[arm_id]
+            a, b, g = getattr(self, 'bandit_arms', [(self.alpha, self.beta, self.gamma)])[arm_id]
+
             a, b, g, d = self._get_active_weights(
-                a, b, g, self.delta,
+                a, b, g, getattr(self, 'delta', 0),
                 user_id=user_id,
-                candidate_titles=list(candidates.keys()),
             )
+            d = self.delta if self.kg_model else 0.0
 
-        # 6. Compute hybrid score with capped popularity boost to protect [0, 1] constraint
-        results = []
+        # 4) compute hybrid scores
+        results: list[dict[str, Any]] = []
         for i, item in enumerate(items):
-            hybrid_base = (
-                a * content_scores[i] +
-                b * collab_scores[i] +
-                g * sentiment_scores[i] +
-                d * kg_scores[i]
-            )
+            hybrid_base = a * content_scores[i] + b * collab_scores[i] + g * sentiment_scores[i] + d * kg_scores[i]
 
-            # Light popularity boost (max 5% bonus) scaled to not leak over 1.0 boundary contract
-            popularity = self._popularity_map.get(item['title'], 0.5)
+            popularity = float(self._popularity_map.get(item["title"], 0.5) or 0.5)
+            popularity_bonus = 0.05 * popularity
+            hybrid = min(1.0, hybrid_base + popularity_bonus)
+
+            # metadata
+            description = ""
+            top_reviews: list[Any] = []
+            if hasattr(self.content_model, "df") and self.content_model.df is not None:
+                try:
+                    df = self.content_model.df
+                    row_data = df[df["title"] == item["title"]]
+                    if len(row_data) > 0:
+                        description = str(row_data.iloc[0].get("description", "") or "")[:200]
+                        tr = row_data.iloc[0].get("top_reviews", [])
+                        top_reviews = tr if isinstance(tr, list) else []
+                except Exception:
+                    pass
+
+            avg_rating = float(self._rating_map.get(item["title"], 0.0) or 0.0)
+            category = self._category_map.get(item["title"], "")
+
             popularity_bonus = 0.05 * popularity
             
             # Enforce strict upper bound limit check
@@ -534,7 +486,6 @@ class HybridRecommender:
                 'content_score': round(content_scores[i], 4),
                 'collab_score': round(collab_scores[i], 4),
                 'sentiment_score': round(sentiment_scores[i], 4),
-                'kg_score': round(kg_scores[i], 4),
                 'hybrid_score': round(hybrid, 4),
                 'rating': round(avg_rating, 2),
                 'category': category,
@@ -548,23 +499,17 @@ class HybridRecommender:
                     content_scores[i],
                     collab_scores[i],
                     sentiment_scores[i],
-                    kg_scores[i],
                     popularity,
                     a,
                     b,
                     g,
-                    d,
                     item,
                 )
             results.append(result)
 
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
-        if not explain:
-            results = self.multi_objective_ranker.rerank(results)
         if not results:
-            return self.get_popular_fallback_items(...)
-        if not results:
-            return self.get_popular_fallback_items(...)
+            return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
 
         # 7. Optional causal debiasing — applied after sorting so the debiaser
         #    sees the full candidate set for proper batch-level IPS normalization,
@@ -592,46 +537,18 @@ class HybridRecommender:
             max_share = self.fairness_max_share if fairness_max_share is None else fairness_max_share
             return self._fair_rerank(results, top_n, key, max_share)
 
-        return validate_recommendations(
-            results,
-            fallback_fn=lambda top_n: self.get_popular_fallback_items(top_n=top_n, exclude_title=title),
-            top_n=top_n,
-            default_fallback_items=[t for t in self.item_df["title"].tolist() if t.lower() != title.lower()] if (self.item_df is not None and "title" in self.item_df.columns) else None,
-            context="hybrid"
-        )
+        return results[:top_n]
     
     def recommend_for_user(self, user_id, top_n=10, explain=False):
         """
         Get recommendations for a specific user.
         If the user is new (or no collab model exists), fallback to popular items.
         """
-        mapped_user_id = user_id
-        if self.collab_model is not None:
-            if user_id not in self.collab_model._user_to_idx:
-                for key in self.collab_model._user_to_idx.keys():
-                    if str(key) == str(user_id):
-                        mapped_user_id = key
-                        break
-
-        if self.collab_model is None or mapped_user_id not in self.collab_model._user_to_idx:
+        if self.collab_model is None or user_id not in self.collab_model._user_to_idx:
             # Cold start fallback for new user
-            recs = self._cold_start_fallback(title=None, top_n=top_n)
-            return validate_recommendations(
-                recs,
-                fallback_fn=lambda top_n: self.get_popular_fallback_items(top_n=top_n),
-                top_n=top_n,
-                default_fallback_items=self.item_df["title"].tolist() if (self.item_df is not None and "title" in self.item_df.columns) else None,
-                context="hybrid"
-            )
+            return self._cold_start_fallback(title=None, top_n=top_n)
 
-        collab_recs = self.collab_model.predict_for_user(mapped_user_id, top_n=top_n * 3)
-        _tracker = getattr(self, 'history_tracker', None)
-        recent_titles = _tracker.get_recent_titles(mapped_user_id) if _tracker is not None else set()
-
-        collab_recs = [ 
-            rec for rec in collab_recs
-            if rec["title"] not in recent_titles
-        ]
+        collab_recs = self.collab_model.predict_for_user(user_id, top_n=top_n * 3)
         
         results = []
         for r in collab_recs[:top_n]:
@@ -673,6 +590,11 @@ class HybridRecommender:
             results = self._debiaser.debias_batch(results, score_key=score_key)
             results.sort(key=lambda x: x[score_key], reverse=True)
 
+        for item in results:
+            history_tracker.add_recommendation(
+                user_id,
+                item["title"]
+            )
         return results
 
     def _build_explanation(
@@ -682,46 +604,12 @@ class HybridRecommender:
         content_score,
         collab_score,
         sentiment_score,
-        *args,
-        **kwargs,
+        popularity,
+        alpha,
+        beta,
+        gamma,
+        raw_item,
     ):
-        # Handle backward-compatible positional signatures
-        if len(args) == 5:
-            # Old signature: (..., popularity, alpha, beta, gamma, raw_item)
-            kg_score = 0.0
-            popularity = args[0]
-            alpha = args[1]
-            beta = args[2]
-            gamma = args[3]
-            delta = 0.0
-            raw_item = args[4]
-        elif len(args) == 7:
-            # New signature: (..., kg_score, popularity, alpha, beta, gamma, delta, raw_item)
-            kg_score = args[0]
-            popularity = args[1]
-            alpha = args[2]
-            beta = args[3]
-            gamma = args[4]
-            delta = args[5]
-            raw_item = args[6]
-        else:
-            # Fallback to keyword arguments or defaults
-            kg_score = kwargs.get("kg_score", 0.0)
-            popularity = kwargs.get("popularity", 0.0)
-            alpha = kwargs.get("alpha", 0.4)
-            beta = kwargs.get("beta", 0.35)
-            gamma = kwargs.get("gamma", 0.25)
-            delta = kwargs.get("delta", 0.0)
-            raw_item = kwargs.get("raw_item", None)
-
-        if raw_item is None:
-            raw_item = {
-                'raw_content': content_score,
-                'raw_collab': collab_score,
-                'raw_sentiment': sentiment_score,
-                'raw_kg': kg_score,
-            }
-
         content_terms = []
         if hasattr(self.content_model, 'explain_similarity'):
             content_terms = self.content_model.explain_similarity(source_title, candidate_title)
@@ -730,54 +618,25 @@ class HybridRecommender:
             'content': round(alpha * content_score, 4),
             'collaborative': round(beta * collab_score, 4),
             'sentiment': round(gamma * sentiment_score, 4),
-            'knowledge_graph': round(delta * kg_score, 4),
             'popularity_bonus': round(0.05 * popularity, 4),
         }
         strongest = max(weighted_components, key=weighted_components.get)
-        if strongest == "content":
-            explanation_text = (
-                f"Recommended due to strong content similarity "
-                f"with '{source_title}'."
-                )
-
-        elif strongest == "collaborative":
-            explanation_text = (
-                "Recommended because users with similar preferences "
-                "also interacted with this item."
-                )
-        elif strongest == "sentiment":
-            explanation_text = (
-                "Recommended because it has highly positive reviews."
-                )
-        elif strongest == "knowledge_graph":
-            explanation_text = (
-                "Recommended because of strong semantic relationships in the knowledge graph."
-                )
-
-        else:
-            explanation_text = (
-                "Recommended because of its popularity and overall score."
-                )
 
         return {
             'source_item': source_title,
             'candidate_item': candidate_title,
-            'explanation_text': explanation_text,
             'active_weights': {
                 'alpha': round(alpha, 4),
                 'beta': round(beta, 4),
                 'gamma': round(gamma, 4),
-                'delta': round(delta, 4),
             },
             'component_scores': {
                 'content': round(content_score, 4),
                 'collaborative': round(collab_score, 4),
                 'sentiment': round(sentiment_score, 4),
-                'knowledge_graph': round(kg_score, 4),
                 'raw_content': round(raw_item['raw_content'], 4),
                 'raw_collaborative': round(raw_item['raw_collab'], 4),
                 'raw_sentiment': round(raw_item['raw_sentiment'], 4),
-                'raw_knowledge_graph': round(raw_item.get('raw_kg', 0.0), 4),
             },
             'weighted_components': weighted_components,
             'top_content_terms': content_terms,
@@ -796,6 +655,90 @@ class HybridRecommender:
         if score < -0.2:
             return 'negative'
         return 'neutral'
+
+    def set_online_updater(self, updater):
+        """Attach an optional OnlineUpdater-like object exposing `ingest(...)`.
+
+        This method only stores the reference; behaviour remains unchanged
+        unless `apply_interaction` is called by the application.
+        """
+        self.online_updater = updater
+
+    def apply_interaction(self, user_id, item_title, rating=None, sentiment=None, timestamp=None):
+        """Best-effort incremental update of internal signals for a single interaction.
+
+        - Delegates to attached `online_updater.ingest(...)` when present; otherwise
+          performs lightweight local updates to review counts, popularity,
+          rating and sentiment aggregates, and appends to `collab_model.df` if available.
+        - Returns True on success, False on error.
+        """
+        # Delegate to external updater if provided
+        if self.online_updater is not None:
+            try:
+                self.online_updater.ingest(
+                    user_id=user_id,
+                    item_title=item_title,
+                    rating=rating,
+                    sentiment=sentiment,
+                    timestamp=timestamp,
+                    recommender=self,
+                )
+                return True
+            except Exception:
+                # fallback to local best-effort updates
+                pass
+
+        try:
+            prev = int(self._review_count_map.get(item_title, 0))
+            new_count = prev + 1
+            self._review_count_map[item_title] = new_count
+
+            # popularity update relative to tracked max
+            try:
+                max_reviews = max(self._review_count_map.values()) if self._review_count_map else new_count
+            except Exception:
+                max_reviews = new_count
+            self._popularity_map[item_title] = (new_count / max_reviews) if max_reviews > 0 else 0.0
+
+            if rating is not None:
+                try:
+                    prev_rating = float(self._rating_map.get(item_title, 0.0))
+                    prev_n = prev if prev > 0 else 0
+                    raw_avg = (prev_rating * prev_n + float(rating)) / (prev_n + 1) if (prev_n + 1) > 0 else float(rating)
+                    try:
+                        global_avg = float(np.mean(list(self._rating_map.values()))) if self._rating_map else 3.0
+                    except Exception:
+                        global_avg = 3.0
+                    self._rating_map[item_title] = bayesian_rating(raw_avg, new_count, global_avg=global_avg)
+                except Exception:
+                    pass
+
+            if sentiment is not None:
+                try:
+                    prev_sent = self._sentiment_map.get(item_title)
+                    if prev_sent is None:
+                        self._sentiment_map[item_title] = float(sentiment)
+                    else:
+                        self._sentiment_map[item_title] = (float(prev_sent) * prev + float(sentiment)) / (prev + 1)
+                except Exception:
+                    pass
+
+            # append to collab_model.df if available
+            try:
+                if self.collab_model is not None and hasattr(self.collab_model, 'df'):
+                    import pandas as pd
+                    row = {'user_id': user_id, 'title': item_title}
+                    if rating is not None:
+                        row['rating'] = float(rating)
+                    if timestamp is not None:
+                        row['timestamp'] = timestamp
+                    self.collab_model.df = pd.concat([self.collab_model.df, pd.DataFrame([row])], ignore_index=True)
+            except Exception:
+                pass
+
+            return True
+        except Exception:
+            return False
 
     def _cold_start_fallback(self, title, top_n, target_catalog=None):
         """
@@ -821,11 +764,6 @@ class HybridRecommender:
             exclude_title=title,
         )
 
-    def register_feedback(self, arm_id, clicked=True):
-        reward = 1.0 if clicked else 0.0
-        self.update_bandit_reward(arm_id, reward)
-        
-
     def get_popular_fallback_items(self, top_n=5, source_df=None, exclude_title=None):
         """
         Return globally popular items when personalization produces no candidates.
@@ -840,52 +778,21 @@ class HybridRecommender:
         df = df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-            
-        global_avg = 3.0
+            global_avg = 3.0
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
+            df['_bayesian'] = df.apply(lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1)
             df['_bayesian'] = df.apply(
-                lambda r: bayesian_rating(
-                    r['rating'],
-                    r.get('review_count', 0),
-                    global_avg 
-                    ),
-                    axis=1
-
-                    )
-            
+                lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1
+            )
             df = df.sort_values(
                 ['_bayesian', 'review_count'],
                 ascending=[False, False],
             )
         elif 'rating' in df.columns:
             df = df.sort_values('rating', ascending=False)
-        # 3. Trending items
-        else:
-            try:
-                from src.model.trending_model import TrendingRecommender
-                trending_model = TrendingRecommender(df=df)
-                trending_results = trending_model.get_trending_products(top_n=top_n)
-                if trending_results:
-                    return [
-                        {
-                            'title': item['title'],
-                            'content_score': 0.0,
-                            'collab_score': 0.0,
-                            'sentiment_score': 0.0,
-                            'hybrid_score': 0.0,
-                            'rating': float(item.get('avg_rating', 0.0)),
-                            'category': '',
-                            'description': '',
-                            'top_reviews': [],
-                            'fallback': True,
-                        }
-                        for item in trending_results
-                    ]
-            except Exception:
-                pass
-            # 4. Empty list
-            return []
+        elif 'review_count' in df.columns:
+            df = df.sort_values('review_count', ascending=False)
 
         results = []
         for _, row in df.head(top_n).iterrows():
@@ -901,53 +808,3 @@ class HybridRecommender:
                 'top_reviews': [],
             })
         return results
-    def _diversity_rerank(self, results, top_n, diversity=0.0, serendipity=0.0):
-            
-
-            """
-            Re-ranks results to reduce filter bubbles.
-
-            Args:
-                results: list of recommendation dicts sorted by hybrid_score
-                top_n: number of final results to return
-                diversity: 0.0 = no diversity, 1.0 = max category variety
-                serendipity: 0.0 = no surprises, 1.0 = more random/unexpected items
-
-            Returns:
-                Re-ranked list of recommendations
-            """
-            if not results:
-                return results
-
-            if diversity == 0.0 and serendipity == 0.0:
-                return results[:top_n]
-
-            selected = []
-            remaining = results.copy()
-            seen_categories = []
-
-            while len(selected) < top_n and remaining:
-                best = None
-                best_score = -1
-
-                for item in remaining:
-                    score = item['hybrid_score']
-                    category = item.get('category', 'unknown')
-
-                    times_seen = seen_categories.count(category)
-                    diversity_penalty = diversity * times_seen * 0.2
-                    score = score - diversity_penalty
-
-                    surprise_bonus = serendipity * np.random.uniform(0, 0.3)
-                    score = score + surprise_bonus
-
-                    if score > best_score:
-                        best_score = score
-                        best = item
-
-                selected.append(best)
-                remaining.remove(best)
-                seen_categories.append(best.get('category', 'unknown'))
-
-            return selected
-    

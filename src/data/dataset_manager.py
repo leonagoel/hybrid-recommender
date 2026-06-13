@@ -52,8 +52,6 @@ class DatasetManager:
         adapted_df['catalog'] = catalog
         
         ds_id = str(uuid.uuid4())[:8]
-
-        ds_id = str(uuid.uuid4())[:8]
         self._datasets[ds_id] = {
             'name': name,
             'catalog': catalog,
