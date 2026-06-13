@@ -41,7 +41,7 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
-
+celery_app.conf.worker_max_tasks_per_child = 5
 
 def dispatch_task_safely(task, *args, **kwargs):
     """
@@ -66,3 +66,4 @@ def dispatch_task_safely(task, *args, **kwargs):
         )
         # .apply() tells Celery to run the function right now on the main execution thread
         return task.apply(args=args, kwargs=kwargs)
+      app.conf.worker_max_tasks_per_child = 5

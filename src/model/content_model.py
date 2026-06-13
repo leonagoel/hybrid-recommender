@@ -11,8 +11,10 @@ import logging
 import threading
 import numpy as np
 import pandas as pd
+from sentence_transformers import SentenceTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
 from src.model.validation import validate_recommendations
 
 logger = logging.getLogger(__name__)
@@ -127,7 +129,7 @@ class ContentRecommender:
             
             results.append({
                 "title": t,
-                "content_score": float(scores[i])
+                "content_score": float(score)
             })
             
             if len(results) >= top_n:
@@ -165,7 +167,7 @@ class ContentRecommender:
         Returns list of matching item titles with scores.
         """
         try:
-            query_vec = self.model.encode([query])
+            query_vec = self.vectorizer.transform([query])
 
             # Candidate retrieval: prefer ANN candidates when available, otherwise brute-force
             n = int(self.matrix.shape[0]) if getattr(self, 'matrix', None) is not None else 0
@@ -259,4 +261,3 @@ class ContentRecommender:
                 "content_score": 0.0
             })
         return results
-

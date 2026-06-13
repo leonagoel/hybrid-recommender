@@ -33,6 +33,7 @@ import numpy as np
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
+from src.model.recommendation_history import history_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,12 @@ class HybridRecommender:
         self._catalog_map: dict[str, str] = {}
 
         self.online_updater = None
+
+        # Bandit exploration
+        self.epsilon = 0.1
+        self.bandit_arms = [(self.alpha, self.beta, self.gamma)]
+        self.arm_rewards = {0: 0.0}
+        self.arm_counts = {0: 0}
 
         if item_df is not None:
             global_avg = float(item_df["rating"].mean()) if "rating" in item_df.columns else 3.0
@@ -269,25 +276,31 @@ class HybridRecommender:
 
     def _get_active_weights(
         self,
-        candidate_titles: list[str] | None = None,
+        base_a: float,
+        base_b: float,
+        base_g: float,
+        base_d: float = 0.0,
         user_id: str | None = None,
-    ) -> tuple[float, float, float]:
+        candidate_titles: list[str] | None = None,
+    ) -> tuple[float, float, float, float]:
         """Resolve active weights using weight_matrix and runtime signals."""
 
-        a, b, g = float(self.alpha), float(self.beta), float(self.gamma)
+        a, b, g, d = float(base_a), float(base_b), float(base_g), float(base_d)
 
-        def unpack_weights(val):
+        def unpack_weights(val, default_d=0.0):
             if isinstance(val, (list, tuple)):
-                if len(val) >= 3:
-                    return float(val[0]), float(val[1]), float(val[2])
+                if len(val) >= 4:
+                    return float(val[0]), float(val[1]), float(val[2]), float(val[3])
+                if len(val) == 3:
+                    return float(val[0]), float(val[1]), float(val[2]), default_d
                 if len(val) == 2:
-                    return float(val[0]), float(val[1]), 0.0
+                    return float(val[0]), float(val[1]), 0.0, default_d
             return None
 
         if "default" in self.weight_matrix:
-            w = unpack_weights(self.weight_matrix["default"])
+            w = unpack_weights(self.weight_matrix["default"], d)
             if w is not None:
-                a, b, g = w
+                a, b, g, d = w
 
         # category override
         if candidate_titles and self.item_df is not None and {"title", "category"}.issubset(self.item_df.columns):
@@ -302,31 +315,42 @@ class HybridRecommender:
                     top_cat = Counter(cats).most_common(1)[0][0]
                     key = f"category:{top_cat}"
                     if key in self.weight_matrix:
-                        w = unpack_weights(self.weight_matrix[key])
+                        w = unpack_weights(self.weight_matrix[key], d)
                         if w is not None:
-                            a, b, g = w
+                            a, b, g, d = w
             except Exception:
                 logger.warning("weight_matrix category override failed", exc_info=True)
 
+        # user signals
+        if user_id and self.collab_model and hasattr(self.collab_model, 'df'):
+            try:
+                user_interacts = int(len(self.collab_model.df[self.collab_model.df['user_id'] == user_id]))
+                if 'warm_user' in self.weight_matrix and user_interacts > 10:
+                    w = unpack_weights(self.weight_matrix['warm_user'], d)
+                    if w is not None:
+                        a, b, g, d = w
+                if 'cold_user' in self.weight_matrix and user_interacts < 3:
+                    w = unpack_weights(self.weight_matrix['cold_user'], d)
+                    if w is not None:
+                        a, b, g, d = w
+            except Exception:
+                pass
+
         # feature absence overrides
         if self.collab_model is None and "no_collab" in self.weight_matrix:
-            w = unpack_weights(self.weight_matrix["no_collab"])
+            w = unpack_weights(self.weight_matrix["no_collab"], d)
             if w is not None:
-                a, b, g = w
+                a, b, g, d = w
 
         if not self._sentiment_map and "no_sentiment" in self.weight_matrix:
-            w = unpack_weights(self.weight_matrix["no_sentiment"])
+            w = unpack_weights(self.weight_matrix["no_sentiment"], d)
             if w is not None:
-                a, b, g = w
+                a, b, g, d = w
 
-        if self.kg_model is None and "no_kg" in self.weight_matrix:
-            # KG weight handled via delta; keep legacy keys but ignore in 3-way blend
-            pass
-
-        total = a + b + g
+        total = a + b + g + d
         if total <= 0:
-            return float(self.alpha), float(self.beta), float(self.gamma)
-        return a / total, b / total, g / total
+            return base_a, base_b, base_g, base_d
+        return a / total, b / total, g / total, d / total
 
     # ------------------------- main recommend -------------------------
     def recommend(
@@ -432,7 +456,7 @@ class HybridRecommender:
             a, b, g = getattr(self, 'bandit_arms', [(self.alpha, self.beta, self.gamma)])[arm_id]
 
             a, b, g, d = self._get_active_weights(
-                a, b, g, getattr(self, 'delta', 0),
+                a, b, g, getattr(self, 'delta', 0.0),
                 user_id=user_id,
             )
             d = self.delta if self.kg_model else 0.0
