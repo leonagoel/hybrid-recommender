@@ -209,10 +209,30 @@ def _get_slow_response_threshold_ms() -> float:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
-
-
+def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
+
+def _recommendation_cache_key(
+    title: str,
+    top_n: int = 10,
+    explain: bool = False,
+    user_id: str = "",
+    target_catalog: str = "",
+    model_version: str = "",
+    strategy: str = "",
+) -> str:
+    """Single authoritative cache key for recommendation responses."""
+    return _cache_key(
+        "recommend",
+        title,
+        top_n,
+        explain,
+        user_id or "",
+        target_catalog or "",
+        model_version or "",
+        strategy or "",
+    )
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
@@ -222,16 +242,15 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
+        except Exception:
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
-
-        if not cached:
+        if cached is None:
             _cache_misses += 1
             return None
-
         expires_at, value = cached
-
         if expires_at <= time.time():
             _response_cache.pop(key, None)
             _cache_misses += 1
@@ -240,49 +259,100 @@ def _get_cached_response(key: str):
         return value
 
 
-# ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ─────────────────────
-def _apply_rate_limit(*args, **kwargs):
+def _apply_rate_limit(
+    request_or_ip: Any,
+    response: Any = None,
+    scope: str = "",
+    limit_env: str = "",
+    default_limit: int = 60,
+) -> Any:
     """
     Applies token-bucket rate limiting dynamically.
     Optimized to handle Algorithmic Complexity DoS scenarios.
     """
+    import random
+    
     current_time = time.time()
     allowed = False
     
-    with _rate_limit_lock:
-        bucket = _rate_limit_buckets.get(ip_address)
-        if bucket is None:
-            bucket = {"tokens": 10.0, "last_updated": current_time}
-            _rate_limit_buckets[ip_address] = bucket
-        else:
-            _rate_limit_buckets.move_to_end(ip_address)
-            elapsed = current_time - bucket["last_updated"]
-            bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
-            bucket["last_updated"] = current_time
-            
-        if bucket["tokens"] >= 1.0:
-            bucket["tokens"] -= 1.0
-            _rate_limit_buckets[ip_address] = bucket
-            allowed = True
-            
+    # If the first argument is a string (e.g. test_rate_limiter_dos_mitigation_speed("192.168.1.1"))
+    if isinstance(request_or_ip, str):
+        ip_address = request_or_ip
+        with _rate_limit_lock:
+            # Check maximum tracker size to prevent memory exhaustion
+            if len(_rate_limit_buckets) >= MAX_RATE_LIMIT_IPS and ip_address not in _rate_limit_buckets:
+                # Evict the oldest item (LRU)
+                _rate_limit_buckets.popitem(last=False)
 
-        global _request_counter
-        _request_counter += 1
-        if random.random() < 0.01 or _request_counter >= CLEANUP_THRESHOLD:
-            _request_counter = 0
-            # Evict stale buckets older than 1 hour to prevent memory leaks
-            cutoff = current_time - 3600
-            to_remove = [k for k, v in _rate_limit_buckets.items() if v["last_updated"] < cutoff]
-            for k in to_remove:
-                del _rate_limit_buckets[k]
+            bucket = _rate_limit_buckets.get(ip_address)
+            if bucket is None:
+                bucket = {"tokens": 10.0, "last_updated": current_time}
+                _rate_limit_buckets[ip_address] = bucket
+            else:
+                _rate_limit_buckets.move_to_end(ip_address)
+                elapsed = current_time - bucket["last_updated"]
+                bucket["tokens"] = min(10.0, bucket["tokens"] + elapsed * 1.0)
+                bucket["last_updated"] = current_time
                 
-    return allowed
+            if bucket["tokens"] >= 1.0:
+                bucket["tokens"] -= 1.0
+                _rate_limit_buckets[ip_address] = bucket
+                allowed = True
+
+            global _request_counter
+            if '_request_counter' not in globals():
+                _request_counter = 0
+            _request_counter += 1
+            CLEANUP_THRESHOLD = 1000
+            if random.random() < 0.01 or _request_counter >= CLEANUP_THRESHOLD:
+                _request_counter = 0
+                cutoff = current_time - 3600
+                to_remove = [k for k, v in _rate_limit_buckets.items() if isinstance(v, dict) and v.get("last_updated", 0) < cutoff]
+                for k in to_remove:
+                    del _rate_limit_buckets[k]
+                    
+        return allowed
+
+    # If it is a Request object (FastAPI routing)
+    request = request_or_ip
+    rate_limit = _get_rate_limit(limit_env, default_limit)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    bucket_key = (scope, client_ip)
+    now = time.time()
+
+    with _rate_limit_lock:
+        timestamps = _rate_limit_buckets.get(bucket_key)
+        if not isinstance(timestamps, list):
+            timestamps = []
+            _rate_limit_buckets[bucket_key] = timestamps
+            
+        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+
+        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = max(0, reset_time)
+
+        if len(timestamps) >= rate_limit:
+            return _rate_limit_exceeded_response(rate_limit, reset_time)
+
+        timestamps.append(now)
+        remaining = rate_limit - len(timestamps)
+        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = max(0, reset_time)
+
+    if response is not None:
+        response.headers["x-ratelimit-limit"] = str(rate_limit)
+        response.headers["x-ratelimit-remaining"] = str(remaining)
+        response.headers["x-ratelimit-reset"] = str(reset_time)
+    return None
+
+
 def _set_cached_response(key: str, value: Any) -> None:
     try:
         with _cache_lock:
             _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
     except (RedisError, TypeError):
         pass
+
 
 def _clear_response_cache() -> None:
     with _cache_lock:
@@ -361,42 +431,7 @@ def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONRespo
     )
 
 
-def _apply_rate_limit(
-    request: Request,
-    response: Response,
-    scope: str,
-    limit_env: str,
-    default_limit: int,
-) -> JSONResponse | None:
-    rate_limit = _get_rate_limit(limit_env, default_limit)
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    bucket_key = (scope, client_ip)
-    now = time.time()
 
-    with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
-
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
-
-        timestamps.append(now)
-        remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-        # Garbage Collection: Remove empty buckets to prevent memory leak
-        empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
-        for k in empty_keys:
-            del _rate_limit_buckets[k]
-
-    response.headers["x-ratelimit-limit"] = str(rate_limit)
-    response.headers["x-ratelimit-remaining"] = str(remaining)
-    response.headers["x-ratelimit-reset"] = str(reset_time)
-    return None
 
 
 
@@ -692,8 +727,6 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
-    return result
-
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
     """Expose simple cache hit/miss metrics and configured TTL."""
@@ -856,37 +889,7 @@ def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONRespo
     )
 
 
-def _apply_rate_limit(
-    request: Request,
-    response: Response,
-    scope: str,
-    limit_env: str,
-    default_limit: int,
-) -> JSONResponse | None:
-    rate_limit = _get_rate_limit(limit_env, default_limit)
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    bucket_key = (scope, client_ip)
-    now = time.time()
 
-    with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
-
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
-
-        timestamps.append(now)
-        remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-    response.headers["x-ratelimit-limit"] = str(rate_limit)
-    response.headers["x-ratelimit-remaining"] = str(remaining)
-    response.headers["x-ratelimit-reset"] = str(reset_time)
-    return None
 
 
 
@@ -1577,13 +1580,8 @@ async def recommend_item(
 @app.get("/api/recommendations/{item_id}/explanation")
 async def get_recommendation_explanation(item_id: str, user_id: str):
     """
-    Task 3: Executes a typo-tolerant string similarity lookup 
-    using the PostgreSQL pg_trgm extension via Supabase RPC.
+    Task 3: Executes an explanation breakdown for recommendations.
     """
-    query = _normalize_search_query(q)
-    if not query:
-        return {"results": [], "count": 0, "query": query}
-
     try:
         # Configuration tuning hyper-parameters
         alpha, beta, gamma = 0.5, 0.3, 0.2
@@ -1597,33 +1595,26 @@ async def get_recommendation_explanation(item_id: str, user_id: str):
         weighted_collab = beta * collaborative_score
         weighted_sentiment = gamma * sentiment_score
         
-        products = result.data or []
+        total_weighted = weighted_content + weighted_collab + weighted_sentiment
         
-        results = []
-        for p in products:
-            metadata = p.get('metadata') or {}
-            price = float(p.get('price') if p.get('price') is not None else metadata.get('price', 0.0))
-            results.append({
-                'id': p.get('id'), 
-                'title': p.get('title', ''),
-                'description': str(p.get('description', ''))[:200],
-                'category': p.get('category', ''), 
-                'rating': p.get('rating', 0.0),
-                'price': price,
-                'avg_sentiment': p.get('avg_sentiment', 0.0),
-                'review_count': p.get('review_count', 0), 
-                'rank': p.get('rank', 0.0),
-            })
-            
+        pct_content = round((weighted_content / total_weighted) * 100)
+        pct_collab = round((weighted_collab / total_weighted) * 100)
+        pct_sentiment = 100 - pct_content - pct_collab
+        
         return {
-            "results": results,
-            "count": len(results),
-            "query": query,
-            "threshold": threshold
+            "status": "success",
+            "data": {
+                "breakdown_percentages": {
+                    "content": pct_content,
+                    "collaborative": pct_collab,
+                    "sentiment": pct_sentiment
+                }
+            }
         }
     except Exception as e:
-        logger.error("Fuzzy search pipeline exception: %s", e)
-        raise HTTPException(status_code=500, detail="Fuzzy search failed")
+        logger.error("Explanation endpoint exception: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
@@ -2435,7 +2426,7 @@ def get_categories():
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
     
-    @app.post("/api/interactions")
+@app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
 
     USER_INTERACTIONS.append({

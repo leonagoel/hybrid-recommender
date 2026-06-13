@@ -13,8 +13,9 @@ Fixes vs. original:
 
 import os
 import uuid
+import pandas as pd
 from typing import Any, Dict, List, Optional, Tuple
-from src.data.data_adapter import adapt_data
+from src.data.data_adapter import adapt_data, read_file
 from src.data.data_preprocessing import preprocess
 
 
@@ -45,6 +46,7 @@ class DatasetManager:
         if catalog is None:
             catalog = os.path.splitext(name)[0]
 
+        raw_df = read_file(file_path_or_buffer)
         raw_df = preprocess(raw_df)
         adapted_df, meta = adapt_data(raw_df)
         adapted_df['catalog'] = catalog

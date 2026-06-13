@@ -197,24 +197,24 @@ class HybridRecommender:
         self.gamma = gamma / total
         self.delta = delta / total
 
-    def get_weights(self):
-        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
     def select_bandit_arm(self):
-    import random
+        import random
 
-    if random.random() < self.epsilon:
-        return random.randint(0, len(self.bandit_arms) - 1)
+        if random.random() < self.epsilon:
+            return random.randint(0, len(self.bandit_arms) - 1)
 
-    best_arm = max(
-        self.arm_rewards,
-        key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
-    )
+        best_arm = max(
+            self.arm_rewards,
+            key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
+        )
 
-    return best_arm
+        return best_arm
 
     def update_bandit_reward(self, arm_id, reward):
-    self.arm_counts[arm_id] += 1
-    self.arm_rewards[arm_id] += reward
+        self.arm_counts[arm_id] += 1
+        self.arm_rewards[arm_id] += reward
+
+    def get_weights(self):
         return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
 
     def set_fairness(self, enabled=None, key=None, max_share=None):
@@ -492,9 +492,9 @@ class HybridRecommender:
         else:
             candidate_titles = [it['title'] for it in items]
             arm_id = self.select_bandit_arm()
-a, b, g = self.bandit_arms[arm_id]
+            a, b, g = self.bandit_arms[arm_id]
             a, b, g, d = self._get_active_weights(
-                self.alpha, self.beta, self.gamma, self.delta,
+                a, b, g, self.delta,
                 user_id=user_id,
                 candidate_titles=list(candidates.keys()),
             )
@@ -682,14 +682,46 @@ a, b, g = self.bandit_arms[arm_id]
         content_score,
         collab_score,
         sentiment_score,
-        kg_score,
-        popularity,
-        alpha,
-        beta,
-        gamma,
-        delta,
-        raw_item,
+        *args,
+        **kwargs,
     ):
+        # Handle backward-compatible positional signatures
+        if len(args) == 5:
+            # Old signature: (..., popularity, alpha, beta, gamma, raw_item)
+            kg_score = 0.0
+            popularity = args[0]
+            alpha = args[1]
+            beta = args[2]
+            gamma = args[3]
+            delta = 0.0
+            raw_item = args[4]
+        elif len(args) == 7:
+            # New signature: (..., kg_score, popularity, alpha, beta, gamma, delta, raw_item)
+            kg_score = args[0]
+            popularity = args[1]
+            alpha = args[2]
+            beta = args[3]
+            gamma = args[4]
+            delta = args[5]
+            raw_item = args[6]
+        else:
+            # Fallback to keyword arguments or defaults
+            kg_score = kwargs.get("kg_score", 0.0)
+            popularity = kwargs.get("popularity", 0.0)
+            alpha = kwargs.get("alpha", 0.4)
+            beta = kwargs.get("beta", 0.35)
+            gamma = kwargs.get("gamma", 0.25)
+            delta = kwargs.get("delta", 0.0)
+            raw_item = kwargs.get("raw_item", None)
+
+        if raw_item is None:
+            raw_item = {
+                'raw_content': content_score,
+                'raw_collab': collab_score,
+                'raw_sentiment': sentiment_score,
+                'raw_kg': kg_score,
+            }
+
         content_terms = []
         if hasattr(self.content_model, 'explain_similarity'):
             content_terms = self.content_model.explain_similarity(source_title, candidate_title)
