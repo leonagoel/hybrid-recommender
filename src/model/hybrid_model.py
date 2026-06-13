@@ -34,6 +34,7 @@ import numpy as np
 
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
+from src.model.recommendation_history import history_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,29 @@ def bayesian_rating(
 
 
 class HybridRecommender:
+    def __init__(self, content_model, collab_model=None, item_df=None,
+                 alpha=0.4, beta=0.35, gamma=0.25,
+                 normalization='minmax', weight_matrix=None,
+                 use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
+                 causal_config=None, model_kwargs=None,
+                 kg_model=None, delta=0.05):
+        """
+        content_model:        ContentRecommender instance
+        collab_model:         CollaborativeRecommender instance (optional)
+        item_df:              DataFrame with 'avg_sentiment', 'rating', 'review_count' columns
+        alpha:                weight for content-based score
+        beta:                 weight for collaborative score
+        gamma:                weight for sentiment score
+        use_causal_debiasing: Enable IPS-based causal debiasing on the final hybrid score.
+                              When True, a CausalDebiaser is built from item_df and applied
+                              after the weighted blend, before final ranking.
+        causal_lambda:        Blend factor λ for causal correction (0.0–1.0).
+                              0.0 = no debiasing, 1.0 = full IPS reweighting. Default 0.5.
+        causal_clip:          Max IPS weight cap to prevent variance explosion. Default 5.0.
+        causal_config:        Optional CausalConfig instance. When provided, takes precedence
+                              over use_causal_debiasing / causal_lambda / causal_clip.
+                              Use this for structured configuration management.
+        """
     """Hybrid recommender combining content + collaborative + sentiment."""
 
     def __init__(
@@ -134,6 +158,12 @@ class HybridRecommender:
 
         self.online_updater = None
 
+        # Bandit exploration
+        self.epsilon = 0.1
+        self.bandit_arms = [(self.alpha, self.beta, self.gamma)]
+        self.arm_rewards = {0: 0.0}
+        self.arm_counts = {0: 0}
+
         if item_df is not None:
             global_avg = float(item_df["rating"].mean()) if "rating" in item_df.columns else 3.0
 
@@ -189,7 +219,8 @@ class HybridRecommender:
             'beta': self.beta,
             'gamma': self.gamma,
             'delta': self.delta,
-    }
+        }
+
 
     def select_bandit_arm(self):
         import random
@@ -197,6 +228,49 @@ class HybridRecommender:
         if random.random() < self.epsilon:
             return random.randint(0, len(self.bandit_arms) - 1)
 
+                review_count = int(review_count)
+                self._review_count_map[title] = review_count
+                self._rating_map[title] = bayesian_rating(
+                    raw_rating, review_count, global_avg
+                )
+                self._category_map[title] = row.get('category', '')
+                self._catalog_map[title] = row.get('catalog', '')
+
+            # Popularity rank (0-1 scale, higher = more popular)
+            if 'review_count' in item_df.columns:
+                max_reviews = item_df['review_count'].max()
+                if max_reviews > 0:
+                    for _, row in item_df.iterrows():
+                        self._popularity_map[row['title']] = (
+                            row['review_count'] / max_reviews
+                        )
+
+            # Optional runtime hook for online updates (attachable)
+            self.online_updater = None
+
+    def set_weights(self, alpha, beta, gamma, delta=0.05):
+        """Update the scoring weights. Normalized to sum to 1.
+
+        Args:
+            alpha: weight for content_score
+            beta:  weight for collab_score
+            gamma: weight for sentiment_score
+            delta: weight for popularity (default 0.05). All four weights are
+                   normalized to sum to 1.0, guaranteeing hybrid_score in [0, 1].
+        """
+        if any(math.isnan(w) for w in [alpha, beta, gamma, delta]):
+            raise ValueError("Weights must be finite numbers")
+        if any(w < 0 for w in [alpha, beta, gamma, delta]):
+            raise ValueError("Weights must be non-negative")
+        total = alpha + beta + gamma + delta
+        if total == 0:
+            total = 1
+        self.alpha = alpha / total
+        self.beta = beta / total
+        self.gamma = gamma / total
+        self.delta = delta / total
+    def get_weights(self):
+        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
         best_arm = max(
             self.arm_rewards,
             key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
@@ -207,7 +281,7 @@ class HybridRecommender:
     def update_bandit_reward(self, arm_id, reward):
         self.arm_counts[arm_id] += 1
         self.arm_rewards[arm_id] += reward
-        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
+
 
     # ------------------------- fairness helpers -------------------------
     def set_fairness(self, enabled=None, key=None, max_share=None):
@@ -279,25 +353,31 @@ class HybridRecommender:
 
     def _get_active_weights(
         self,
-        candidate_titles: list[str] | None = None,
+        base_a: float,
+        base_b: float,
+        base_g: float,
+        base_d: float = 0.0,
         user_id: str | None = None,
-    ) -> tuple[float, float, float]:
+        candidate_titles: list[str] | None = None,
+    ) -> tuple[float, float, float, float]:
         """Resolve active weights using weight_matrix and runtime signals."""
 
-        a, b, g = float(self.alpha), float(self.beta), float(self.gamma)
+        a, b, g, d = float(base_a), float(base_b), float(base_g), float(base_d)
 
-        def unpack_weights(val):
+        def unpack_weights(val, default_d=0.0):
             if isinstance(val, (list, tuple)):
-                if len(val) >= 3:
-                    return float(val[0]), float(val[1]), float(val[2])
+                if len(val) >= 4:
+                    return float(val[0]), float(val[1]), float(val[2]), float(val[3])
+                if len(val) == 3:
+                    return float(val[0]), float(val[1]), float(val[2]), default_d
                 if len(val) == 2:
-                    return float(val[0]), float(val[1]), 0.0
+                    return float(val[0]), float(val[1]), 0.0, default_d
             return None
 
         if "default" in self.weight_matrix:
-            w = unpack_weights(self.weight_matrix["default"])
+            w = unpack_weights(self.weight_matrix["default"], d)
             if w is not None:
-                a, b, g = w
+                a, b, g, d = w
 
         # category override
         if candidate_titles and self.item_df is not None and {"title", "category"}.issubset(self.item_df.columns):
@@ -312,31 +392,42 @@ class HybridRecommender:
                     top_cat = Counter(cats).most_common(1)[0][0]
                     key = f"category:{top_cat}"
                     if key in self.weight_matrix:
-                        w = unpack_weights(self.weight_matrix[key])
+                        w = unpack_weights(self.weight_matrix[key], d)
                         if w is not None:
-                            a, b, g = w
+                            a, b, g, d = w
             except Exception:
                 logger.warning("weight_matrix category override failed", exc_info=True)
 
+        # user signals
+        if user_id and self.collab_model and hasattr(self.collab_model, 'df'):
+            try:
+                user_interacts = int(len(self.collab_model.df[self.collab_model.df['user_id'] == user_id]))
+                if 'warm_user' in self.weight_matrix and user_interacts > 10:
+                    w = unpack_weights(self.weight_matrix['warm_user'], d)
+                    if w is not None:
+                        a, b, g, d = w
+                if 'cold_user' in self.weight_matrix and user_interacts < 3:
+                    w = unpack_weights(self.weight_matrix['cold_user'], d)
+                    if w is not None:
+                        a, b, g, d = w
+            except Exception:
+                pass
+
         # feature absence overrides
         if self.collab_model is None and "no_collab" in self.weight_matrix:
-            w = unpack_weights(self.weight_matrix["no_collab"])
+            w = unpack_weights(self.weight_matrix["no_collab"], d)
             if w is not None:
-                a, b, g = w
+                a, b, g, d = w
 
         if not self._sentiment_map and "no_sentiment" in self.weight_matrix:
-            w = unpack_weights(self.weight_matrix["no_sentiment"])
+            w = unpack_weights(self.weight_matrix["no_sentiment"], d)
             if w is not None:
-                a, b, g = w
+                a, b, g, d = w
 
-        if self.kg_model is None and "no_kg" in self.weight_matrix:
-            # KG weight handled via delta; keep legacy keys but ignore in 3-way blend
-            pass
-
-        total = a + b + g
+        total = a + b + g + d
         if total <= 0:
-            return float(self.alpha), float(self.beta), float(self.gamma)
-        return a / total, b / total, g / total
+            return base_a, base_b, base_g, base_d
+        return a / total, b / total, g / total, d / total
 
     # ------------------------- main recommend -------------------------
     def recommend(
@@ -438,9 +529,11 @@ class HybridRecommender:
             else:
                 a, b, g, d = self.alpha, self.beta, self.gamma, 0.0
         else:
-            _ = self.select_bandit_arm()
-            # The original implementation always used _get_active_weights
-            a, b, g = self._get_active_weights(
+            arm_id = self.select_bandit_arm()
+            a, b, g = getattr(self, 'bandit_arms', [(self.alpha, self.beta, self.gamma)])[arm_id]
+
+            a, b, g, d = self._get_active_weights(
+                a, b, g, getattr(self, 'delta', 0.0),
                 candidate_titles=[it["title"] for it in items],
                 user_id=user_id,
             )
@@ -472,6 +565,19 @@ class HybridRecommender:
             avg_rating = float(self._rating_map.get(item["title"], 0.0) or 0.0)
             category = self._category_map.get(item["title"], "")
 
+            # Popularity as a proper fourth component weighted by delta.
+            # Weights a, b, g are re-normalized here to leave room for delta,
+            # guaranteeing hybrid_score in [0, 1].
+            popularity = self._popularity_map.get(item['title'], 0.5)
+            weight_sum = a + b + g + self.delta
+            if weight_sum <= 0:
+                weight_sum = 1.0
+            hybrid = (
+                (a * content_scores[i] +
+                 b * collab_scores[i] +
+                 g * sentiment_scores[i] +
+                 self.delta * popularity) / weight_sum
+            )
             popularity_bonus = 0.05 * popularity
             
             # Enforce strict upper bound limit check
@@ -627,7 +733,7 @@ class HybridRecommender:
             'content': round(alpha * content_score, 4),
             'collaborative': round(beta * collab_score, 4),
             'sentiment': round(gamma * sentiment_score, 4),
-            'popularity_bonus': round(0.05 * popularity, 4),
+            'popularity_bonus': round(self.delta * popularity, 4),
         }
         strongest = max(weighted_components, key=weighted_components.get)
 
