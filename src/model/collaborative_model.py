@@ -56,6 +56,10 @@ class CollaborativeRecommender:
         self.user_item_sparse = coo_matrix(
             (data, (row, col)), shape=(n_users, n_items)
         ).tocsr()
+        # Cleanup temporary arrays to free memory
+        del row, col, data
+        import gc
+        gc.collect()
 
         # Adaptive rank: reduce factors dynamically for sparse matrices
         min_dim = min(self.user_item_sparse.shape)
@@ -84,6 +88,10 @@ class CollaborativeRecommender:
                 self.svd = TruncatedSVD(n_components=n_components, random_state=42)
                 self.user_factors = self.svd.fit_transform(self.user_item_sparse)
                 self.item_factors = self.svd.components_
+                # Cleanup heavy SVD objects after use to reduce memory pressure
+                del self.svd
+                import gc
+                gc.collect()
             except ValueError:
                 # Safe baseline fallback if SVD initialization constraints fail on edge-case data shapes
                 self.svd = None
