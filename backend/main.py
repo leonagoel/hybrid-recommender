@@ -938,90 +938,6 @@ def _get_feedback_storage_client():
     return client
 
 
-# ── Response Time Monitoring ─────────────────────────────────────────
-SLOW_RESPONSE_THRESHOLD_MS = 500.0
-METRICS_SAMPLE_SIZE = 1000
-response_time_samples = deque(maxlen=METRICS_SAMPLE_SIZE)
-METRICS_WINDOW_SECONDS = 600
-response_metrics = {
-    "total_requests": 0,
-    "error_requests": 0,
-}
-response_metrics_lock = Lock()
-
-
-def _percentile(values, percentile):
-    if not values:
-        return 0.0
-    sorted_values = sorted(values)
-    index = math.ceil((percentile / 100) * len(sorted_values)) - 1
-    index = max(0, min(index, len(sorted_values) - 1))
-    return sorted_values[index]
-
-
-def record_response_metric(endpoint, method, status_code, response_time_ms):
-    with response_metrics_lock:
-        response_metrics["total_requests"] += 1
-        if status_code >= 400:
-            response_metrics["error_requests"] += 1
-        response_time_samples.append(
-          (time.time(), response_time_ms)
-        )
-
-        current_time = time.time()
-
-        while (
-          response_time_samples
-          and current_time - response_time_samples[0][0] > METRICS_WINDOW_SECONDS
-        ):
-          response_time_samples.popleft()
-    log_level = logging.WARNING if response_time_ms > SLOW_RESPONSE_THRESHOLD_MS else logging.INFO
-    if log_level == logging.WARNING:
-        logger.warning("API request slow endpoint=%s method=%s status=%s time=%.2fms response_time_ms=%.2f endpoint=%s",
-                       endpoint, method, status_code, response_time_ms, response_time_ms, endpoint)
-    else:
-        logger.info("API request endpoint=%s method=%s status=%s time=%.2fms",
-                    endpoint, method, status_code, response_time_ms)
-
-
-def reset_response_metrics():
-    with response_metrics_lock:
-        response_metrics["total_requests"] = 0
-        response_metrics["error_requests"] = 0
-        response_time_samples.clear()
-
-
-def get_response_metrics_snapshot():
-    with response_metrics_lock:
-        samples = [value for _, value in response_time_samples]
-        total_requests = response_metrics["total_requests"]
-        error_requests = response_metrics["error_requests"]
-    avg_response_time = sum(samples) / len(samples) if samples else 0.0
-    error_rate = (error_requests / total_requests) * 100 if total_requests else 0.0
-    return {
-        "avg_response_time": round(avg_response_time, 2),
-        "p95_response_time": round(_percentile(samples, 95), 2),
-        "total_requests": total_requests,
-        "error_rate": round(error_rate, 2),
-    }
-
-
-@app.middleware("http")
-async def response_time_middleware(request, call_next):
-    start_time = time.perf_counter()
-    response = None
-    status_code = 500
-    try:
-        response = await call_next(request)
-        status_code = response.status_code
-        return response
-    finally:
-        response_time_ms = (time.perf_counter() - start_time) * 1000
-        if response is not None:
-            response.headers["X-Response-Time"] = f"{response_time_ms:.2f}ms"
-        record_response_metric(request.url.path, request.method, status_code, response_time_ms)
-
-
 # ── State ─────────────────────────────────────────────────────────────
 models = {
     "content": None,
@@ -1072,6 +988,68 @@ class RealtimeConnectionHub:
 realtime_hub = RealtimeConnectionHub()
 
 USER_INTERACTIONS = []
+
+
+class WeightsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alpha: float = 0.5
+    beta: float = 0.3
+    gamma: float = 0.2
+
+
+class PurchaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    product_id: int = Field(..., gt=0)
+    rating: float = Field(0.0, ge=0.0, le=5.0)
+    review_text: str = Field("", max_length=1000)
+
+
+class FeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    item: str = Field(..., min_length=1, max_length=500)
+    feedback: str = Field(..., min_length=1, max_length=2000)
+    thumbs: str = Field(..., pattern=r"^(up|down)$")
+
+class InteractionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(..., min_length=1, max_length=128)
+    item_id: int = Field(..., gt=0)
+    interaction_type: str = Field(
+        ...,
+        pattern=r"^(view|click|search)$"
+    )
+
+class RealtimeRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_title: str
+    top_n: int = 10
+    explain: bool = False
+    target_catalog: Optional[str] = None
+
+
+# ── CSRF Token ───────────────────────────────────────────────────────
+@app.get(
+    "/api/csrf-token",
+    response_model=CSRFTokenResponse,
+    summary="Issue a CSRF token",
+    tags=["Security"],
+)
+def get_csrf_token(response: Response):
+    token = generate_csrf_token()
+    set_csrf_cookie(response, token)
+    return CSRFTokenResponse(csrfToken=token)
+
+
+class FederatedTrainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    n_factors: int = 20
+    epochs: int = 5
+    lr: float = 0.05
+    reg: float = 0.05
 
 
 # ── API Metrics ───────────────────────────────────────────────────────
@@ -1513,57 +1491,58 @@ async def recommend_item(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── FIX #1315: EXPLAINABLE AI RECOVERY ENDPOINT ROUTE ─────────────────
 @app.get("/api/recommendations/{item_id}/explanation")
 async def get_recommendation_explanation(item_id: str, user_id: str):
     """
-    Task 3: Executes a typo-tolerant string similarity lookup 
-    using the PostgreSQL pg_trgm extension via Supabase RPC.
+    Return a score-level explanation for why item_id is recommended.
+
+    Delegates to HybridRecommender.recommend(..., explain=True) and returns
+    the explanation block attached to the first result whose title matches
+    item_id.  If the models have not been built yet, or item_id is not found
+    in the recommendation results, an appropriate HTTP error is raised.
     """
-    query = _normalize_search_query(q)
-    if not query:
-        return {"results": [], "count": 0, "query": query}
+    if not models.get("ready") or not models.get("hybrid"):
+        raise HTTPException(status_code=400, detail="Models not built. Call /api/build first.")
+
+    item_id = item_id.strip()
+    if not item_id:
+        raise HTTPException(status_code=422, detail="item_id must not be empty.")
 
     try:
-        # Configuration tuning hyper-parameters
-        alpha, beta, gamma = 0.5, 0.3, 0.2
-        
-        # Base engine performance profiles (TF-IDF, SVD, VADER)
-        content_score = 0.72
-        collaborative_score = 0.60
-        sentiment_score = 0.50
-        
-        weighted_content = alpha * content_score
-        weighted_collab = beta * collaborative_score
-        weighted_sentiment = gamma * sentiment_score
-        
-        products = result.data or []
-        
-        results = []
-        for p in products:
-            metadata = p.get('metadata') or {}
-            price = float(p.get('price') if p.get('price') is not None else metadata.get('price', 0.0))
-            results.append({
-                'id': p.get('id'), 
-                'title': p.get('title', ''),
-                'description': str(p.get('description', ''))[:200],
-                'category': p.get('category', ''), 
-                'rating': p.get('rating', 0.0),
-                'price': price,
-                'avg_sentiment': p.get('avg_sentiment', 0.0),
-                'review_count': p.get('review_count', 0), 
-                'rank': p.get('rank', 0.0),
-            })
-            
-        return {
-            "results": results,
-            "count": len(results),
-            "query": query,
-            "threshold": threshold
-        }
+        recs = models["hybrid"].recommend(
+            title=item_id,
+            user_id=user_id or None,
+            top_n=10,
+            explain=True,
+        )
     except Exception as e:
-        logger.error("Fuzzy search pipeline exception: %s", e)
-        raise HTTPException(status_code=500, detail="Fuzzy search failed")
+        logger.error("Explanation generation failed for item '%s': %s", item_id, e)
+        raise HTTPException(status_code=500, detail="Failed to generate explanation.")
+
+    if not recs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No recommendations found for item '{item_id}'.",
+        )
+
+    explanation_entry = next(
+        (r for r in recs if r.get("explanation") is not None),
+        None,
+    )
+    if explanation_entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Explanation not available for item '{item_id}'.",
+        )
+
+    return {
+        "item_id": item_id,
+        "user_id": user_id or None,
+        "explanation": explanation_entry["explanation"],
+        "representative_recommendation": {
+            k: v for k, v in explanation_entry.items() if k != "explanation"
+        },
+    }
 
 
 def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
