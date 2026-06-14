@@ -239,6 +239,7 @@ MOCK_PRODUCTS = [
         "price": 499,
     },
 ]
+_model_lock = Lock()
 
 
 def _get_slow_response_threshold_ms() -> float:
@@ -733,8 +734,6 @@ def _clear_response_cache() -> None:
         global _cache_hits, _cache_misses
         _cache_hits = 0
         _cache_misses = 0
-
-    return result
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
@@ -1429,7 +1428,6 @@ def search_items(
             'sentiment': sentiment_value,
             'review_count': p.get('review_count', 0)
         })
-  
     final_output = {
         'query': query,
         'limit': limit,
@@ -1437,92 +1435,10 @@ def search_items(
         'total_found': len(results),
         'results': results
     }
-    
+    _set_cached_response(cache_key, final_output)
+    _set_cache_headers(response, "MISS")
     return final_output
 
-
-# ── Feature: Paginated Recommendations ───────────────────────────────
-@app.get("/api/recommend")
-async def recommend_item(
-    title: str = Query(..., min_length=1, description="Item title to base recommendations on"),
-    limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
-    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
-    user_id: str = Query(default="", description="Optional user ID for personalised scoring"),
-):
-    """
-    Returns paginated hybrid recommendations for the given item title.
-    Supports limit/offset pagination with a pagination metadata block.
-    """
-    try:
-        all_results: list[dict] = []
-
-        # Attempt to use the hybrid model via Celery task
-        try:
-            from src.model.hybrid_model import HybridRecommender
-            from src.model.content_model import ContentRecommender
-            from src.model.collaborative_model import CollaborativeRecommender
-
-            dm = getattr(sys.modules.get("__main__"), "_dataset_manager", None)
-            if dm is None:
-                from src.data.dataset_manager import DatasetManager
-                dm = DatasetManager()
-            item_df = getattr(dm, "_item_df", None) or getattr(dm, "item_df", None)
-            interaction_df = getattr(dm, "_interaction_df", None) or getattr(dm, "interaction_df", None)
-
-            if item_df is not None and not item_df.empty:
-                content_model = ContentRecommender(item_df)
-                
-                import os
-                from src.model.neural_collaborative_model import NeuralCollaborativeRecommender
-                use_ncf = os.getenv("USE_NCF", "true").lower() == "true"
-                
-                if interaction_df is not None and not interaction_df.empty:
-                    if use_ncf:
-                        collab_model = NeuralCollaborativeRecommender(interaction_df)
-                    else:
-                        collab_model = CollaborativeRecommender(interaction_df)
-                else:
-                    collab_model = None
-                
-                hybrid = HybridRecommender(content_model, collab_model, item_df)
-                all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
-        except Exception:
-            logger.warning("Hybrid model unavailable, using fallback recommendations")
-
-            # Fallback: return mock products sorted by title similarity
-            if not all_results:
-                query = title.lower()
-                scored = []
-                for p in MOCK_PRODUCTS:
-                    score = sum(1 for w in query.split() if w in p["title"].lower())
-                    if score > 0 or query in p["category"].lower():
-                        scored.append({**p, "hybrid_score": score, "content_score": score, "collab_score": 0})
-                scored.sort(key=lambda x: x["hybrid_score"], reverse=True)
-                all_results = scored if scored else [{
-                    "title": p["title"],
-                    "rating": p["rating"],
-                    "hybrid_score": 0.5,
-                    "content_score": 0.3,
-                    "collab_score": 0.2,
-                    "category": p["category"],
-                    "review_count": p.get("review_count", 0),
-                } for p in MOCK_PRODUCTS[:3]]
-
-            total = len(all_results)
-            paginated = all_results[offset:offset + limit]
-
-            return {
-                "recommendations": paginated,
-                "pagination": {
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                    "next_offset": offset + limit if offset + limit < total else None,
-                    "has_more": (offset + limit) < total,
-                },
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/recommendations/{item_id}/explanation")
@@ -1995,7 +1911,9 @@ def get_recommendations(
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
-    strategy: Optional[str] = Query(None), 
+    strategy: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
+    offset: Optional[int] = Query(None),
 ):
     rate_limited = _apply_rate_limit(
         request,
@@ -2030,10 +1948,14 @@ def get_recommendations(
 
         selected_models = MODEL_REGISTRY[model_version]
 
+    req_limit = limit if limit is not None else top_n
+    req_offset = offset if offset is not None else 0
+
     cache_key = _cache_key(
         "recommend",
         query_title,
-        top_n,
+        req_limit,
+        req_offset,
         explain,
         user_id or "",
         target_catalog or "",
@@ -2056,21 +1978,21 @@ def get_recommendations(
 
     recs = hybrid_model.recommend(
         query_title,
-        top_n=top_n,
+        top_n=req_limit + req_offset,
         explain=explain,
         target_catalog=target_catalog
     )
 
     # Popularity fallback (existing behaviour)
     if not recs and strategy == "popularity" and models["collab"]:
-        recs = models["collab"]._popularity_fallback(top_n)
+        recs = models["collab"]._popularity_fallback(req_limit + req_offset)
 
     # Cold-start fallback: blend content similarity with popularity/rating
     if not recs and strategy == "cold":
         combined_text = query_title
         cold_recs = cold_start_recommendation(
             combined_text,
-            top_n=top_n,
+            top_n=req_limit + req_offset,
             target_catalog=target_catalog
         )
         if cold_recs:
@@ -2090,17 +2012,27 @@ def get_recommendations(
     if user_id and models.get("collab") is not None:
         has_history = user_id in models["collab"]._user_to_idx
 
+    total = len(recs)
+    paginated_recs = recs[req_offset:req_offset + req_limit]
+
     payload = {
         "query": query_title,
         "query_item": query_title,
-        "count": len(recs),
-        "results": recs,
-        "recommendations": recs,
-        "weights": active_hybrid.get_weights(),
+        "count": len(paginated_recs),
+        "results": paginated_recs,
+        "recommendations": paginated_recs,
+        "weights": hybrid_model.get_weights(),
         "explain": explain,
         "target_catalog": target_catalog,
         "model_version": model_version or ACTIVE_MODEL_VERSION,
         "has_history": has_history,
+        "pagination": {
+            "total": total,
+            "limit": req_limit,
+            "offset": req_offset,
+            "next_offset": req_offset + req_limit if req_offset + req_limit < total else None,
+            "has_more": (req_offset + req_limit) < total,
+        }
     }
 
     if (
@@ -2115,7 +2047,7 @@ def get_recommendations(
         try:
             shadow_recommend_func = shadow_model["hybrid"].recommend
             shadow_sig = inspect.signature(shadow_recommend_func)
-            shadow_kwargs = {"top_n": top_n}
+            shadow_kwargs = {"top_n": req_limit + req_offset}
             if "explain" in shadow_sig.parameters:
                 shadow_kwargs["explain"] = explain
             if "target_catalog" in shadow_sig.parameters:
@@ -2500,19 +2432,20 @@ def update_weights(
     return {"message": "Weights updated", "weights": models["hybrid"].get_weights()}
 
 
-# ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(
+    page: int = Query(1, ge=1),
+    limit: Optional[int] = Query(None, ge=1, le=100),
+    per_page: Optional[int] = Query(None, ge=1, le=100)
+):
     sb = get_supabase()
-    limit = per_page
-    offset = (page - 1) * limit
+    effective_limit = limit if limit is not None else (per_page if per_page is not None else 20)
+    offset = (page - 1) * effective_limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
         .order('rating', desc=True) \
-        .range(offset, offset + limit - 1) \
+        .range(offset, offset + effective_limit - 1) \
         .execute()
-
-    result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').order('rating', desc=True).range(offset, offset + limit - 1).execute()
     count_result = sb.table('products').select('id', count='exact').limit(0).execute()
     total = count_result.count or 0
     items = []
@@ -2524,7 +2457,7 @@ def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100))
             'avg_sentiment': round(float(p.get('avg_sentiment', 0)), 4),
             'description': str(p.get('description', ''))[:200],
         })
-    return {"items": items, "total": total, "page": page, "limit": limit, "has_more": (offset + len(items)) < total}
+    return {"items": items, "total": total, "page": page, "limit": effective_limit, "has_more": (offset + len(items)) < total}
 
 
 # ── Categories ────────────────────────────────────────────────────────
