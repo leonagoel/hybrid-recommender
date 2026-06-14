@@ -23,9 +23,9 @@ import json
 import logging
 import math
 import os
+from typing import Any, Dict, List, Set, Tuple, Literal
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, List, Set, Tuple, Literal
 
 # ---------------------------------------------------------------------------
 # Types
@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Set, Tuple, Literal
 logger = logging.getLogger(__name__)
 Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
 
-MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
+MetricsDict = dict[str, float]      # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
 ResultsDict = dict[str, MetricsDict]    # {"content": {...}, "hybrid": {...}, ...}
 UNSAFE_CACHE_SUFFIXES = {".pkl", ".pickle"}
 
@@ -49,16 +49,13 @@ def _precision_at_k(recommended: list, relevant: set, k: int) -> float:
     hits = sum(1 for item in recommended[:k] if item in relevant)
     return hits / k
 
-def recall_at_k(rec, rel, k):
-    rec = rec[:k]
-    return len(set(rec) & set(rel)) / len(rel) if rel else 0.0
 
 def _recall_at_k(recommended: list, relevant: set, k: int) -> float:
     """Fraction of relevant items found in top-K recommendations."""
     if not relevant or k == 0 or not recommended:
         return 0.0
     hits = sum(1 for item in recommended[:k] if item in relevant)
-    
+
     # FIX FOR ISSUE #486: Guard cold states to prevent ZeroDivisionError
     denom = len(relevant)
     return hits / denom if denom > 0 else 0.0
@@ -79,7 +76,7 @@ def _ndcg_at_k(recommended: list, relevant: set, k: int) -> float:
     """Normalised DCG at K (IDCG assumes all relevant items are at top)."""
     dcg = _dcg_at_k(recommended, relevant, k)
     ideal = _dcg_at_k(list(relevant)[:k], relevant, k)
-    
+
     # FIX FOR ISSUE #486: Handle zero baseline ideal scores gracefully
     return dcg / ideal if ideal > 0.0 else 0.0
 
@@ -131,7 +128,7 @@ def _catalog_coverage(all_recommendations: list[list], catalog_size: int) -> flo
     if not all_recommendations:
         logger.warning("Cold-start fallback triggered: 'all_recommendations' sequence is empty. Returning 0.0.")
         return 0.0
-        
+
     # Guard Clause: Prevent division by zero
     if catalog_size <= 0:
         logger.warning(f"Cold-start fallback triggered: Invalid catalog_size ({catalog_size}). Returning 0.0.")
@@ -143,7 +140,7 @@ def _catalog_coverage(all_recommendations: list[list], catalog_size: int) -> flo
             # Fallback guard if a specific user slice has null or empty lists
             if recs:
                 unique.update(recs)
-                
+
         if not unique:
             logger.warning("Cold-start fallback triggered: No unique recommendation elements extracted. Returning 0.0.")
             return 0.0
@@ -154,14 +151,13 @@ def _catalog_coverage(all_recommendations: list[list], catalog_size: int) -> flo
         logger.warning(f"Unexpected cold-start computation anomaly intercepted: {str(e)}. Returning fallback 0.0.")
         return 0.0
 
+
 def _load_or_build_svd(df: pd.DataFrame) -> np.ndarray:
     """Helper to mock or build an SVD matrix for collaborative filtering."""
     return np.random.default_rng(42).random((len(df), 10))
 
-def _build_test_data(
-    data_path: str | None = None,
-    random_seed: int = 42,
-):
+
+def _build_test_data(data_path: str | None = None, random_seed: int = 42):
     """Build minimal models and test pairs for benchmark scripts."""
     rng = np.random.default_rng(random_seed)
     from src.model.content_model import ContentRecommender
@@ -186,6 +182,7 @@ def _build_test_data(
         content_model = ContentRecommender(df, batch_size=256)
 
     svd_matrix = _load_or_build_svd(df)
+
     class _Collab:
         def recommend(self, title, top_n=10, **kwargs):
             return [{"title": t} for t in _get_collab_recs(title, df, svd_matrix, top_n)]
@@ -206,6 +203,7 @@ def _build_test_data(
             test_pairs.append((uid, title, relevant))
     return content_model, collab_model, df, test_pairs
 
+
 def _get_content_recs(title: str, df: pd.DataFrame, tfidf_matrix, k: int) -> list[str]:
     from sklearn.metrics.pairwise import cosine_similarity
     try:
@@ -217,6 +215,7 @@ def _get_content_recs(title: str, df: pd.DataFrame, tfidf_matrix, k: int) -> lis
     top_indices = np.argsort(sim_scores)[::-1][:k]
     return df.iloc[top_indices]["title"].tolist()
 
+
 def _get_collab_recs(title: str, df: pd.DataFrame, svd_matrix, k: int) -> list[str]:
     from sklearn.metrics.pairwise import cosine_similarity
     try:
@@ -227,6 +226,7 @@ def _get_collab_recs(title: str, df: pd.DataFrame, svd_matrix, k: int) -> list[s
     sim_scores[idx] = -1
     top_indices = np.argsort(sim_scores)[::-1][:k]
     return df.iloc[top_indices]["title"].tolist()
+
 
 def _get_sentiment_recs(title: str, df: pd.DataFrame, k: int) -> list[str]:
     try:
@@ -240,6 +240,7 @@ def _get_sentiment_recs(title: str, df: pd.DataFrame, k: int) -> list[str]:
     top = df_copy.sort_values(by="sentiment_score", ascending=False).head(k)
     return top["title"].tolist()
 
+
 def _get_hybrid_recs(title: str, df: pd.DataFrame, tfidf_matrix, svd_matrix, alpha: float, beta: float, gamma: float, k: int) -> list[str]:
     from sklearn.metrics.pairwise import cosine_similarity
     try:
@@ -247,7 +248,7 @@ def _get_hybrid_recs(title: str, df: pd.DataFrame, tfidf_matrix, svd_matrix, alp
     except IndexError:
         return []
     content_scores = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
-    collab_scores  = cosine_similarity(svd_matrix[idx].reshape(1, -1), svd_matrix).flatten()
+    collab_scores = cosine_similarity(svd_matrix[idx].reshape(1, -1), svd_matrix).flatten()
     sentiment_raw = df.get("sentiment_score", pd.Series(np.zeros(len(df)))).values.astype(float)
     s_min, s_max = sentiment_raw.min(), sentiment_raw.max()
     sentiment_scores = ((sentiment_raw - s_min) / (s_max - s_min) if s_max != s_min else np.zeros_like(sentiment_raw))
@@ -255,6 +256,7 @@ def _get_hybrid_recs(title: str, df: pd.DataFrame, tfidf_matrix, svd_matrix, alp
     hybrid_scores[idx] = -1
     top_indices = np.argsort(hybrid_scores)[::-1][:k]
     return df.iloc[top_indices]["title"].tolist()
+
 
 def run_evaluation(
     k: int = 10,
@@ -266,7 +268,7 @@ def run_evaluation(
 ) -> ResultsDict:
     """Run core precision, recall, and tracking computations."""
     # Dummy placeholder grouping for compilation safety
-    user_groups = [] 
+    user_groups = []
     test_pairs = []
 
     for user_id, group in user_groups:
