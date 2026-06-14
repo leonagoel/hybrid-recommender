@@ -2011,6 +2011,52 @@ def get_recommendations(
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
 
+    # KNN branch - Issue #51
+    if method == "knn":
+        try:
+            from knn_collaborative import KNNCollaborativeRecommender
+            import pandas as _pd
+            _sb = get_supabase()
+            _purchases = (_sb.table("purchases").select("user_id, product_id, rating").limit(50000).execute().data or [])
+            if len(_purchases) < 2:
+                raise HTTPException(status_code=400, detail="Not enough interaction data for KNN.")
+            _item_df = models["item_df"]
+            _title_map = dict(zip(_item_df["id"], _item_df["title"])) if "id" in _item_df.columns else {}
+            _rows = [{"user_id": p["user_id"], "title": _title_map[p["product_id"]], "rating": float(p.get("rating") or 3.0)} for p in _purchases if _title_map.get(p.get("product_id"))]
+            if len(_rows) < 2:
+                raise HTTPException(status_code=400, detail="Not enough matched interactions for KNN.")
+            _knn = KNNCollaborativeRecommender(_pd.DataFrame(_rows), k=10)
+            _recs = _knn.recommend(title=query_title, top_n=top_n, user_id=user_id)
+            return {"query_item": query_title, "method": "knn", "count": len(_recs), "recommendations": _recs}
+        except HTTPException:
+            raise
+        except Exception as _e:
+            logger.error("KNN recommend error: %s", _e, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"KNN failed: {str(_e)}")
+
+    # KNN branch - Issue #51
+    if method == "knn":
+        try:
+            from knn_collaborative import KNNCollaborativeRecommender
+            import pandas as _pd
+            _sb = get_supabase()
+            _purchases = (_sb.table("purchases").select("user_id, product_id, rating").limit(50000).execute().data or [])
+            if len(_purchases) < 2:
+                raise HTTPException(status_code=400, detail="Not enough interaction data for KNN.")
+            _item_df = models["item_df"]
+            _title_map = dict(zip(_item_df["id"], _item_df["title"])) if "id" in _item_df.columns else {}
+            _rows = [{"user_id": p["user_id"], "title": _title_map[p["product_id"]], "rating": float(p.get("rating") or 3.0)} for p in _purchases if _title_map.get(p.get("product_id"))]
+            if len(_rows) < 2:
+                raise HTTPException(status_code=400, detail="Not enough matched interactions for KNN.")
+            _knn = KNNCollaborativeRecommender(_pd.DataFrame(_rows), k=10)
+            _recs = _knn.recommend(title=query_title, top_n=top_n, user_id=user_id)
+            return {"query_item": query_title, "method": "knn", "count": len(_recs), "recommendations": _recs}
+        except HTTPException:
+            raise
+        except Exception as _e:
+            logger.error("KNN recommend error: %s", _e, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"KNN failed: {str(_e)}")
+
     # ----- EDGE CASES SAFE CHECK -----
     # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
@@ -2172,6 +2218,7 @@ def get_recommendations_alias(
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
     strategy: Optional[str] = Query(None),
+    method: Optional[str] = Query(None, description="knn for KNN-based collaborative filtering"),
 ):
     """Backward-compatible alias for clients calling /api/recommendations."""
     return get_recommendations(
