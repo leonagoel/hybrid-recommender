@@ -114,6 +114,32 @@ with st.sidebar:
         help="Maximum IPS weight cap. Prevents rare items from dominating.",
     )
 
+    # ── Issue #1598 — TF-IDF Vectorizer Controls ─────────────────────────
+    st.subheader("🔤 TF-IDF Vectorizer Settings")
+    st.caption("Tune the content-based TF-IDF vectorizer before building models.")
+
+    tfidf_ngram_min, tfidf_ngram_max = st.select_slider(
+        "N-gram Range",
+        options=[1, 2, 3],
+        value=(1, 2),
+        help="Minimum and maximum n-gram sizes. (1,1)=unigrams; (1,2)=unigrams+bigrams.",
+    )
+    tfidf_max_features = st.number_input(
+        "Max Features",
+        min_value=500,
+        max_value=50000,
+        value=10000,
+        step=500,
+        help="Maximum number of vocabulary features to keep.",
+    )
+    tfidf_stop_words = st.selectbox(
+        "Stop Words",
+        options=["english", "none"],
+        index=0,
+        help="Language for built-in stop-word list, or 'none' to keep all words.",
+    )
+    tfidf_stop_words_val = None if tfidf_stop_words == "none" else tfidf_stop_words
+
     st.subheader("⚖️ Hybrid Weights")
     st.caption("Weights are auto-normalised to sum to 1 by the model.")
 
@@ -225,8 +251,13 @@ else:
 
         with st.spinner("Building models — this may take a moment for large datasets…"):
             try:
-                # Content model (always built)
-                content_model = ContentRecommender(adapted_df)
+                # Content model (always built), using sidebar TF-IDF settings (Issue #1598)
+                content_model = ContentRecommender(
+                    adapted_df,
+                    ngram_range=(tfidf_ngram_min, tfidf_ngram_max),
+                    max_features=int(tfidf_max_features),
+                    stop_words=tfidf_stop_words_val,
+                )
 
                 # Collaborative model — requires more than one unique user
                 collab_model = None

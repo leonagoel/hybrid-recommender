@@ -24,7 +24,7 @@ import math
 import os
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple, Literal
 
 # ---------------------------------------------------------------------------
 # Types

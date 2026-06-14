@@ -235,17 +235,76 @@ def _get_worker_models() -> dict:
 
 # ── Celery Tasks ─────────────────────────────────────────────────────────────
 
-@celery_app.task(name="tasks.get_recommendations")
-@serialize_user_requests
-def get_recommendations(user_id: str, top_n: int = 10) -> list[dict]:
+# Issue #1577 — Webhook URL for task completion notifications.
+# Set CELERY_PROGRESS_WEBHOOK_URL in .env (e.g. https://example.com/webhook/celery-progress).
+WEBHOOK_URL: str | None = os.environ.get("CELERY_PROGRESS_WEBHOOK_URL", "").strip() or None
+
+
+def _fire_webhook(task_id: str, status: str, result: object) -> None:
     """
-    Generate hybrid recommendations for a user.
+    Issue #1577 — POST a task-completion notification to the configured webhook URL.
+
+    Sends a JSON payload:
+        {"task_id": ..., "status": "SUCCESS"|"FAILURE", "result": ...}
+
+    Failures are logged and silently swallowed so they never block the task.
     """
+    if not WEBHOOK_URL:
+        return
     try:
+        import urllib.request, json as _json
+        payload = _json.dumps({
+            "task_id":  task_id,
+            "status":   status,
+            "result":   str(result),
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            WEBHOOK_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+        logger.info("Webhook fired for task %s → %s", task_id, WEBHOOK_URL)
+    except Exception as exc:
+        logger.warning("Webhook delivery failed for task %s: %s", task_id, exc)
+
+
+@celery_app.task(
+    name="tasks.get_recommendations",
+    bind=True,          # Issue #1577: bind=True gives access to self for update_state
+    max_retries=3,
+)
+@serialize_user_requests
+def get_recommendations(self, user_id: str, top_n: int = 10) -> list[dict]:
+    """
+    Issue #1577 — Generate hybrid recommendations for a user with progress tracking.
+
+    Progress states emitted during execution:
+        STARTED   → task received and running
+        PROGRESS  → intermediate step completed (value 0–100)
+        SUCCESS   → final result ready (Celery built-in)
+    """
+    task_id = self.request.id
+
+    try:
+        # Step 1 — update progress to 10 %
+        self.update_state(state="PROGRESS", meta={"progress": 10, "step": "loading_models"})
         models = _get_worker_models()
+
+        # Step 2 — update progress to 50 %
+        self.update_state(state="PROGRESS", meta={"progress": 50, "step": "running_recommendations"})
         hybrid_model = models["hybrid"]
         recs = hybrid_model.recommend(user_id, top_n=top_n)
+
+        # Step 3 — done; fire webhook
+        self.update_state(state="PROGRESS", meta={"progress": 100, "step": "done"})
+        _fire_webhook(task_id, "SUCCESS", f"{len(recs)} recommendations returned")
         return recs
+
     except Exception as exc:
         logger.error("Worker: recommendation generation failed for user %s: %s", user_id, exc)
+        _fire_webhook(task_id, "FAILURE", str(exc))
         raise
+

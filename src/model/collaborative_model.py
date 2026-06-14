@@ -12,13 +12,17 @@ Improvements:
 """
 __all__ = ["CollaborativeRecommender"]
 
+from typing import Optional, List, Dict, Any
 import logging
+from typing import Any, Dict, List, Optional, Union
+
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
 from scipy.sparse import coo_matrix
 from src.model.validation import validate_recommendations
+import gc
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,10 @@ class CollaborativeRecommender:
         self.user_item_sparse = coo_matrix(
             (data, (row, col)), shape=(n_users, n_items)
         ).tocsr()
+        # Cleanup temporary arrays to free memory
+        del row, col, data
+        import gc
+        gc.collect()
 
         # Adaptive rank: reduce factors dynamically for sparse matrices
         min_dim = min(self.user_item_sparse.shape)
@@ -84,6 +92,10 @@ class CollaborativeRecommender:
                 self.svd = TruncatedSVD(n_components=n_components, random_state=42)
                 self.user_factors = self.svd.fit_transform(self.user_item_sparse)
                 self.item_factors = self.svd.components_
+                # Cleanup heavy SVD objects after use to reduce memory pressure
+                del self.svd
+                import gc
+                gc.collect()
             except ValueError:
                 # Safe baseline fallback if SVD initialization constraints fail on edge-case data shapes
                 self.svd = None
@@ -93,9 +105,58 @@ class CollaborativeRecommender:
         # Build catalog map if catalog column is present in interaction_df
         self._catalog_map = {}
         if 'catalog' in self.df.columns:
-            self._catalog_map = self.df.groupby('title')['catalog'].first().to_dict()
+            self._catalog_map = dict(zip(self.df['title'], self.df['catalog']))
 
-    def recommend(self, title, top_n=10, target_catalog=None):
+        # Online SGD learning rate — used by online_update() (Issue #1596)
+        self._lr = 0.01
+        self._reg = 0.02
+
+    def online_update(self, user_id: str, title: str, rating: float) -> None:
+        """
+        Issue #1596 — Incremental (online) SGD update for Bayesian collaborative filtering.
+
+        Updates the latent user and item factor vectors based on a single new
+        interaction without full retraining.  Uses a regularised gradient step:
+
+            err = rating - user_vec · item_vec
+            user_vec += lr * (err * item_vec - reg * user_vec)
+            item_vec += lr * (err * user_vec - reg * item_vec)
+
+        Args:
+            user_id: ID of the user who interacted.
+            title:   Title of the item they interacted with.
+            rating:  Observed rating / implicit feedback signal.
+        """
+        if user_id not in self._user_to_idx or title not in self._title_to_idx:
+            # Unknown user or item — cannot update; silently skip (cold-start).
+            logger.debug(
+                "online_update skipped: unknown user=%s or item=%s", user_id, title
+            )
+            return
+
+        u_idx = self._user_to_idx[user_id]
+        i_idx = self._title_to_idx[title]
+
+        user_vec = self.user_factors[u_idx].copy()
+        # item_factors shape is (n_components, n_items) — column i is item vector
+        item_vec = self.item_factors[:, i_idx].copy()
+
+        prediction = float(np.dot(user_vec, item_vec))
+        err = rating - prediction
+
+        # Gradient step with L2 regularisation
+        self.user_factors[u_idx] += self._lr * (err * item_vec - self._reg * user_vec)
+        self.item_factors[:, i_idx] += self._lr * (err * user_vec - self._reg * item_vec)
+
+        logger.debug(
+            "online_update applied: user=%s item=%s rating=%.3f err=%.4f",
+            user_id,
+            title,
+            rating,
+            err,
+        )
+
+    def recommend(self, title: str, top_n: int = 10, target_catalog: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Item-item collaborative recommendations using SVD latent space.
         Returns list of dicts: [{ 'title', 'collab_score' }, ...]
@@ -151,7 +212,7 @@ class CollaborativeRecommender:
             force_padding=False
         )
 
-    def predict_for_user(self, user_id, top_n=10, target_catalog=None):
+    def predict_for_user(self, user_id: str, top_n: int = 10, target_catalog: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Personalized recommendations for a specific user.
         Predicts scores for all unseen items and returns top N.
