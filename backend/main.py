@@ -222,6 +222,8 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
+        except Exception:
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -2434,8 +2436,9 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
-    
-    @app.post("/api/interactions")
+
+
+@app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
 
     USER_INTERACTIONS.append({
