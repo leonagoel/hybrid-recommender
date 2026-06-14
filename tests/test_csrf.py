@@ -13,6 +13,7 @@ Covers:
 """
 
 import os
+import secrets
 import pytest
 from fastapi import Response
 from fastapi.testclient import TestClient
@@ -237,6 +238,25 @@ def test_mutating_request_with_invalid_token_length_returns_403(client, method, 
     response = client.request(
         method, path, json=body,
         headers={CSRF_HEADER_NAME: short_token},
+    )
+    assert response.status_code == 403
+    assert "CSRF" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("POST",   "/api/feedback", {"user_id": "u1", "item": "x", "feedback": "y"}),
+])
+def test_mutating_request_with_unissued_token_returns_403(client, method, path, body):
+    """
+    A matching token pair is still rejected unless the server actually issued it.
+    This closes the token-injection path where an attacker can set an arbitrary
+    valid-looking cookie/header pair.
+    """
+    forged_token = secrets.token_hex(CSRF_TOKEN_BYTES)
+    client.cookies.set(CSRF_COOKIE_NAME, forged_token)
+    response = client.request(
+        method, path, json=body,
+        headers={CSRF_HEADER_NAME: forged_token},
     )
     assert response.status_code == 403
     assert "CSRF" in response.json()["detail"]
