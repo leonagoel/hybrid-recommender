@@ -3170,4 +3170,3 @@ async def reset_user_preferences(request: Request):
     except Exception as e:
         logger.error(f"Error resetting preferences for user {validated_user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to reset user data.")
-
