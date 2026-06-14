@@ -18,6 +18,7 @@ bleach
 # Pre-commit hooks
 pre-commit>=3.7
 sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
 
 # Pre-commit hooks
 pre-commit>=3.7
