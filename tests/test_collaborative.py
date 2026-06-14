@@ -130,3 +130,19 @@ def test_user_with_all_items_seen():
     model = CollaborativeRecommender(df)
     results = model.predict_for_user(1, top_n=10)
     assert len(results) == 0
+
+
+def test_recommend_with_catalog():
+    """Test catalog filtering in recommend."""
+    df_with_catalog = pd.DataFrame({
+        "user_id": [1, 1, 2, 2, 3, 3],
+        "title": ["Item A", "Item B", "Item A", "Item C", "Item B", "Item D"],
+        "rating": [5, 4, 3, 4, 5, 4],
+        "catalog": ["books", "books", "movies", "movies", "books", "games"]
+    })
+    model = CollaborativeRecommender(df_with_catalog)
+    results = model.recommend("Item A", target_catalog="books", top_n=10)
+    assert isinstance(results, list)
+    for r in results:
+        assert model._catalog_map[r['title']] == "books"
+

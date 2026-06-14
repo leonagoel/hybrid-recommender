@@ -16,6 +16,7 @@ def _load_safe(module_name, class_name):
 
 ContentRecommender = _load_safe("src.model.content_model", "ContentRecommender")
 CollaborativeRecommender = _load_safe("src.model.collaborative_model", "CollaborativeRecommender")
+NeuralCollaborativeRecommender = _load_safe("src.model.neural_collaborative_model", "NeuralCollaborativeRecommender")
 HybridRecommender = _load_safe("src.model.hybrid_model", "HybridRecommender")
 CausalDebiaser = _load_safe("src.model.causal_model", "CausalDebiaser")
 CausalConfig = _load_safe("src.model.causal_config", "CausalConfig")
@@ -24,6 +25,7 @@ PropensityModel = _load_safe("src.model.propensity_model", "PropensityModel")
 __all__ = [
     "ContentRecommender",
     "CollaborativeRecommender",
+    "NeuralCollaborativeRecommender",
     "HybridRecommender",
     "CausalDebiaser",
     "CausalConfig",

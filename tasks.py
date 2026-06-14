@@ -30,6 +30,7 @@ import logging
 import os
 import sys
 import threading
+from functools import wraps
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -38,6 +39,32 @@ from redis import Redis  # noqa: E402  (module-level for patchability in tests)
 from celery_app import celery_app, REDIS_URL  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# ── User Request Serialization Lock Registry ──────────────────────────────
+_user_task_locks: dict[str, threading.Lock] = {}
+_lock_registry_mutex: threading.Lock = threading.Lock()
+
+def serialize_user_requests(func):
+    """
+    Decorator to prevent race conditions on concurrent tasks for the same user.
+    Ensures that parallel weight matrix or recommendation generation requests
+    from an identical user_id are executed sequentially.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        user_id = kwargs.get("user_id") or (args[0] if args else None)
+        
+        if not user_id:
+            return func(*args, **kwargs)
+
+        with _lock_registry_mutex:
+            if user_id not in _user_task_locks:
+                _user_task_locks[user_id] = threading.Lock()
+            user_lock = _user_task_locks[user_id]
+        
+        with user_lock:
+            return func(*args, **kwargs)
+    return wrapper
 
 # ── Redis coordination key (must match the constant in backend/main.py) ───────
 REDIS_MODEL_VERSION_KEY = "hybrid_recommender:model_version"
@@ -187,20 +214,11 @@ def _get_worker_models() -> dict:
 
     current_version = _read_current_version()
 
-    # Fast path: cached model is available and does not need a rebuild.
-    # A model is considered current when:
-    #   (a) Redis reports the same version the worker already cached, OR
-    #   (b) Redis is unreachable (current_version is None) — we keep serving
-    #       the cached copy rather than doing an unnecessary rebuild.
-    # Reading the globals without the lock is safe because CPython's GIL
-    # guarantees that object-reference reads are atomic.
     if _worker_models is not None and _worker_models.get("ready"):
         if current_version is None or _worker_model_version == current_version:
             return _worker_models
 
-    # Slow path: acquire lock, then double-check before rebuilding.
     with _worker_lock:
-        # Another thread may have completed the rebuild while we waited.
         if _worker_models is not None and _worker_models.get("ready"):
             if current_version is None or _worker_model_version == current_version:
                 return _worker_models
@@ -213,83 +231,80 @@ def _get_worker_models() -> dict:
         )
         _worker_models = _build_models_for_worker()
         _worker_model_version = current_version
-        logger.info(
-            "Worker: models rebuilt successfully (version=%s).",
-            current_version,
+        return _worker_models
+
+# ── Celery Tasks ─────────────────────────────────────────────────────────────
+
+# Issue #1577 — Webhook URL for task completion notifications.
+# Set CELERY_PROGRESS_WEBHOOK_URL in .env (e.g. https://example.com/webhook/celery-progress).
+WEBHOOK_URL: str | None = os.environ.get("CELERY_PROGRESS_WEBHOOK_URL", "").strip() or None
+
+
+def _fire_webhook(task_id: str, status: str, result: object) -> None:
+    """
+    Issue #1577 — POST a task-completion notification to the configured webhook URL.
+
+    Sends a JSON payload:
+        {"task_id": ..., "status": "SUCCESS"|"FAILURE", "result": ...}
+
+    Failures are logged and silently swallowed so they never block the task.
+    """
+    if not WEBHOOK_URL:
+        return
+    try:
+        import urllib.request, json as _json
+        payload = _json.dumps({
+            "task_id":  task_id,
+            "status":   status,
+            "result":   str(result),
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            WEBHOOK_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+        logger.info("Webhook fired for task %s → %s", task_id, WEBHOOK_URL)
+    except Exception as exc:
+        logger.warning("Webhook delivery failed for task %s: %s", task_id, exc)
 
-    return _worker_models
-
-
-# ── Public API: reset the worker cache (used by tests) ───────────────────────
-
-def _reset_worker_cache() -> None:
-    """Clear the worker-local model cache.  For use in tests only."""
-    global _worker_model_version, _worker_models
-    with _worker_lock:
-        _worker_model_version = None
-        _worker_models = None
-
-
-# ── Celery task ───────────────────────────────────────────────────────────────
 
 @celery_app.task(
-    bind=True,
-    name="tasks.compute_recommendations",
+    name="tasks.get_recommendations",
+    bind=True,          # Issue #1577: bind=True gives access to self for update_state
     max_retries=3,
-    default_retry_delay=5,
 )
-def compute_recommendations(
-    self,
-    item_title: str,
-    top_n: int = 10,
-    explain: bool = False,
-):
+@serialize_user_requests
+def get_recommendations(self, user_id: str, top_n: int = 10) -> list[dict]:
     """
-    Background task: run hybrid recommendation computation.
+    Issue #1577 — Generate hybrid recommendations for a user with progress tracking.
 
-    Models are loaded from the shared data source (Supabase) rather than
-    from API-process memory, so this task executes correctly in any worker
-    process without requiring a prior in-process ``POST /api/build`` call.
-
-    Returns:
-        dict with ``query_item``, ``recommendations``, ``weights``, ``explain``.
-
-    Raises:
-        ValueError  — item not found or no model available.
-        Retries up to 3 times on transient infrastructure failures.
+    Progress states emitted during execution:
+        STARTED   → task received and running
+        PROGRESS  → intermediate step completed (value 0–100)
+        SUCCESS   → final result ready (Celery built-in)
     """
+    task_id = self.request.id
+
     try:
-        worker_models = _get_worker_models()
+        # Step 1 — update progress to 10 %
+        self.update_state(state="PROGRESS", meta={"progress": 10, "step": "loading_models"})
+        models = _get_worker_models()
 
-        recs = worker_models["hybrid"].recommend(item_title, top_n=top_n, explain=explain)
+        # Step 2 — update progress to 50 %
+        self.update_state(state="PROGRESS", meta={"progress": 50, "step": "running_recommendations"})
+        hybrid_model = models["hybrid"]
+        recs = hybrid_model.recommend(user_id, top_n=top_n)
 
-        if not recs:
-            raise ValueError(
-                f"Item '{item_title}' not found or no recommendations available."
-            )
-
-        logger.info(
-            "compute_recommendations completed: item=%s top_n=%d",
-            item_title,
-            top_n,
-        )
-
-        return {
-            "query_item": item_title,
-            "recommendations": recs,
-            "weights": worker_models["hybrid"].get_weights(),
-            "explain": explain,
-        }
-
-    except ValueError:
-        raise
+        # Step 3 — done; fire webhook
+        self.update_state(state="PROGRESS", meta={"progress": 100, "step": "done"})
+        _fire_webhook(task_id, "SUCCESS", f"{len(recs)} recommendations returned")
+        return recs
 
     except Exception as exc:
-        logger.error(
-            "compute_recommendations failed for item=%s: %s",
-            item_title,
-            exc,
-            exc_info=True,
-        )
-        raise self.retry(exc=exc)
+        logger.error("Worker: recommendation generation failed for user %s: %s", user_id, exc)
+        _fire_webhook(task_id, "FAILURE", str(exc))
+        raise
+
