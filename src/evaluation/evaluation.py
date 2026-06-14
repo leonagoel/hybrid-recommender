@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -32,7 +33,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
-
+logger = logging.getLogger(__name__)
 Mode = Literal["content", "collaborative", "sentiment", "hybrid", "all"]
 
 MetricsDict = dict[str, float]          # {"precision": 0.4, "recall": 0.38, "ndcg": 0.51}
@@ -126,13 +127,32 @@ def _hit_rate(recommended: list, relevant: set, k: int) -> float:
 
 def _catalog_coverage(all_recommendations: list[list], catalog_size: int) -> float:
     """Catalog coverage: fraction of unique items recommended."""
-    if not all_recommendations or catalog_size == 0:
+    # Guard Clause: Intercept cold-start or empty recommendation data sequences
+    if not all_recommendations:
+        logger.warning("Cold-start fallback triggered: 'all_recommendations' sequence is empty. Returning 0.0.")
         return 0.0
-    unique = set()
-    for recs in all_recommendations:
-        unique.update(recs)
-    return len(unique) / catalog_size
+        
+    # Guard Clause: Prevent division by zero
+    if catalog_size <= 0:
+        logger.warning(f"Cold-start fallback triggered: Invalid catalog_size ({catalog_size}). Returning 0.0.")
+        return 0.0
 
+    try:
+        unique = set()
+        for recs in all_recommendations:
+            # Fallback guard if a specific user slice has null or empty lists
+            if recs:
+                unique.update(recs)
+                
+        if not unique:
+            logger.warning("Cold-start fallback triggered: No unique recommendation elements extracted. Returning 0.0.")
+            return 0.0
+
+        return len(unique) / catalog_size
+
+    except Exception as e:
+        logger.warning(f"Unexpected cold-start computation anomaly intercepted: {str(e)}. Returning fallback 0.0.")
+        return 0.0
 
 def _intra_list_diversity(
     recommended: list[str], df: pd.DataFrame, tfidf_matrix
