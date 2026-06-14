@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from backend.main import app, _rate_limit_buckets, _apply_rate_limit
 
@@ -16,13 +17,18 @@ def test_xai_explanation_endpoint_integrity():
 
 def test_rate_limiter_dos_mitigation_speed():
     """Validates Issue #1292: System remains O(1) performance under heavy spoofing loads."""
+    request = SimpleNamespace(client=SimpleNamespace(host="192.168.1.1"))
+    response = SimpleNamespace(headers={})
+
     # Seed 5,000 rogue IP items into tracking cache
     for i in range(5000):
-        _rate_limit_buckets[f"10.0.1.{i}"] = {"tokens": 0.0, "last_updated": time.time()}
-        
+        _rate_limit_buckets[f"10.0.1.{i}"] = [time.time()]
+
     start = time.perf_counter()
-    allowed = _apply_rate_limit("192.168.1.1")
+    allowed = _apply_rate_limit(request, response, "search", "RATE_LIMIT_SEARCH_PER_MIN", 30)
     duration = time.perf_counter() - start
-    
-    assert allowed is True
+
+    assert allowed is None
+    assert response.headers["x-ratelimit-limit"] == "30"
+    assert response.headers["x-ratelimit-remaining"] == "29"
     assert duration < 0.002, f"DoS Vulnerability triggered! Hot path traversal loop took {duration}s"

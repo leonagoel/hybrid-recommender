@@ -189,6 +189,8 @@ _rate_limit_lock = Lock()
 MAX_RATE_LIMIT_IPS = 10000
 CLEANUP_THRESHOLD = 10000   # run stale-bucket cleanup every N requests
 _request_counter = 0
+RATE_LIMIT_BUCKET_TTL_SECONDS = 60
+RATE_LIMIT_CLEANUP_BATCH_SIZE = 32
 
 _cache_lock = Lock()
 
@@ -369,6 +371,20 @@ def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONRespo
     )
 
 
+def _prune_rate_limit_buckets(now: float, max_items: int = RATE_LIMIT_CLEANUP_BATCH_SIZE) -> None:
+    """Remove a bounded batch of expired rate-limit buckets."""
+
+    removed = 0
+    with _rate_limit_lock:
+        for bucket_key, timestamps in list(_rate_limit_buckets.items()):
+            if removed >= max_items:
+                break
+            if timestamps and now - timestamps[-1] < RATE_LIMIT_BUCKET_TTL_SECONDS:
+                break
+            _rate_limit_buckets.pop(bucket_key, None)
+            removed += 1
+
+
 def _apply_rate_limit(
     request: Request,
     response: Response,
@@ -383,23 +399,36 @@ def _apply_rate_limit(
 
     with _rate_limit_lock:
         timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+        timestamps[:] = [
+            timestamp
+            for timestamp in timestamps
+            if now - timestamp < RATE_LIMIT_BUCKET_TTL_SECONDS
+        ]
 
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        if timestamps:
+            _rate_limit_buckets.move_to_end(bucket_key)
+
+        reset_time = (
+            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
+            if timestamps
+            else RATE_LIMIT_BUCKET_TTL_SECONDS
+        )
         reset_time = max(0, reset_time)
 
         if len(timestamps) >= rate_limit:
             return _rate_limit_exceeded_response(rate_limit, reset_time)
 
         timestamps.append(now)
+        _rate_limit_buckets.move_to_end(bucket_key)
         remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = (
+            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
+            if timestamps
+            else RATE_LIMIT_BUCKET_TTL_SECONDS
+        )
         reset_time = max(0, reset_time)
 
-        # Garbage Collection: Remove empty buckets to prevent memory leak
-        empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
-        for k in empty_keys:
-            del _rate_limit_buckets[k]
+    _prune_rate_limit_buckets(now)
 
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
@@ -877,18 +906,36 @@ def _apply_rate_limit(
 
     with _rate_limit_lock:
         timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+        timestamps[:] = [
+            timestamp
+            for timestamp in timestamps
+            if now - timestamp < RATE_LIMIT_BUCKET_TTL_SECONDS
+        ]
 
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        if timestamps:
+            _rate_limit_buckets.move_to_end(bucket_key)
+
+        reset_time = (
+            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
+            if timestamps
+            else RATE_LIMIT_BUCKET_TTL_SECONDS
+        )
         reset_time = max(0, reset_time)
 
         if len(timestamps) >= rate_limit:
             return _rate_limit_exceeded_response(rate_limit, reset_time)
 
         timestamps.append(now)
+        _rate_limit_buckets.move_to_end(bucket_key)
         remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
+        reset_time = (
+            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
+            if timestamps
+            else RATE_LIMIT_BUCKET_TTL_SECONDS
+        )
         reset_time = max(0, reset_time)
+
+    _prune_rate_limit_buckets(now)
 
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
@@ -2596,27 +2643,19 @@ def get_categories():
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
     
-    @app.post("/api/interactions")
-    def log_interaction(data: InteractionCreate):
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
+    USER_INTERACTIONS.append({
+        "user_id": data.user_id,
+        "item_id": data.item_id,
+        "interaction_type": data.interaction_type,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
 
-        USER_INTERACTIONS.append({
-            "user_id": data.user_id,
-            "item_id": data.item_id,
-            "interaction_type": data.interaction_type,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
-
-        return {
-            "message": "Interaction logged successfully",
-            "interaction": USER_INTERACTIONS[-1]
-        }
+    return {
+        "message": "Interaction logged successfully",
+        "interaction": USER_INTERACTIONS[-1]
+    }
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
