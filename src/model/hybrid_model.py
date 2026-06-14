@@ -215,11 +215,6 @@ class HybridRecommender:
         if random.random() < self.epsilon:
             return random.randint(0, len(self.bandit_arms) - 1)
 
-
-    def select_bandit_arm(self):
-        import random
-        if random.random() < self.epsilon:
-            return random.randint(0, len(self.bandit_arms) - 1)
         best_arm = max(
             self.arm_rewards,
             key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
@@ -813,10 +808,14 @@ class HybridRecommender:
         df = df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-            global_avg = 3.0
+
+        global_avg = float(df['rating'].mean()) if 'rating' in df.columns and len(df) > 0 else 3.0
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
-            df['_bayesian'] = df.apply(lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1)
+            df['_bayesian'] = df.apply(
+                lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg),
+                axis=1
+            )
             df = df.sort_values(
                 ['_bayesian', 'review_count'],
                 ascending=[False, False],
