@@ -4,7 +4,12 @@ from backend.main import app
 client = TestClient(app)
 
 
-def test_health_endpoint():
+def test_health_endpoint(monkeypatch):
+    from backend import main
+    import src.data.db
+    monkeypatch.setattr(src.data.db, "get_supabase", lambda: type('MockSupabase', (), {})())
+    monkeypatch.setattr(main, "get_supabase", lambda: type('MockSupabase', (), {})())
+    
     response = client.get("/api/health")
 
     assert response.status_code == 200
@@ -12,8 +17,9 @@ def test_health_endpoint():
     data = response.json()
 
     assert data["status"] == "healthy"
-    assert "timestamp" in data
-    assert isinstance(data["model_loaded"], bool)
+    assert "database" in data
+    assert "redis" in data
+    assert "models_ready" in data
 
 
 def test_categories_endpoint_handles_failures_gracefully(monkeypatch):
