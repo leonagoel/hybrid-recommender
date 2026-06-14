@@ -21,7 +21,7 @@ class FakeHybridModel:
         self.last_target_catalog = None
         self.collab_model = FakeCollabModel()
 
-    def recommend(self, title, top_n=10, explain=False, target_catalog=None):
+    def recommend(self, title, top_n=10, explain=False, target_catalog=None, user_id=None):
         self.last_title = title
         self.last_target_catalog = target_catalog
         return [{"title": "Related Item", "hybrid_score": 0.91}]
@@ -57,6 +57,19 @@ def test_recommend_accepts_reserved_characters_in_query_title():
     assert payload["results"] == payload["recommendations"]
     assert hybrid.last_title == "AC/DC Greatest Hits? Deluxe + Café"
     main._clear_response_cache()
+
+
+def test_recommend_route_registry_is_unambiguous():
+    recommend_routes = [
+        route
+        for route in app.routes
+        if getattr(route, "path", None) in {"/api/recommend", "/api/recommend/paginated"}
+        and "GET" in getattr(route, "methods", set())
+    ]
+
+    paths = [route.path for route in recommend_routes]
+    assert paths.count("/api/recommend") == 1
+    assert paths.count("/api/recommend/paginated") == 1
 
 
 def test_user_recommendations_known_user():
