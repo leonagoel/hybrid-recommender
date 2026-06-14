@@ -296,7 +296,7 @@ def get_recommendations(self, user_id: str, top_n: int = 10) -> list[dict]:
         # Step 2 — update progress to 50 %
         self.update_state(state="PROGRESS", meta={"progress": 50, "step": "running_recommendations"})
         hybrid_model = models["hybrid"]
-        recs = hybrid_model.recommend(user_id, top_n=top_n)
+        recs = hybrid_model.recommend_for_user(user_id, top_n=top_n)
 
         # Step 3 — done; fire webhook
         self.update_state(state="PROGRESS", meta={"progress": 100, "step": "done"})
