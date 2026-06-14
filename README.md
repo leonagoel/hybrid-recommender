@@ -337,10 +337,17 @@ Add `-v` to also remove named volumes if you want a completely clean state.
 
 ## 06 — API Reference
 
-**Retrieve frontend configuration (Supabase URL + anon key):**
-```http
-GET /api/config
-```
+GET    /api/status                   →  System status + product count
+GET    /api/search?q=...&limit=20    →  Full-text search (PostgreSQL FTS)
+POST   /api/upload                   →  Upload CSV/JSON dataset
+POST   /api/build                    →  Train TF-IDF, SVD, VADER models
+GET    /api/recommend/{title}        →  Hybrid recommendations for an item
+GET    /api/items?page=1&per_page=50 →  Paginated product listing
+GET    /api/categories               →  All available categories
+GET    /api/weights                  →  Current α, β, γ blend weights
+PUT    /api/weights                  →  Update blend weights live
+GET    /api/purchases/{user_id}      →  User purchase history
+POST   /api/purchases                →  Record a purchase event
 
 **Check if the API server is running:**
 ```http
@@ -427,7 +434,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 ## 07 — Security
 
 ```text
-✓  No hardcoded credentials — config served via /api/config
+✓  No hardcoded credentials — Supabase public config is injected at render time
 ✓  .env excluded from git via .gitignore
 ✓  CORS restricted to explicit configured origins; wildcard origins are rejected
 ✓  Row-Level Security (RLS) on all Supabase tables
@@ -782,5 +789,4 @@ Run:
 python scripts/generate_kg_embeddings.py
 
 ---
-
 

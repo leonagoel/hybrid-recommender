@@ -70,9 +70,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv # type: ignore
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -1220,14 +1218,6 @@ def get_api_metrics():
 
 
 # ── Config ────────────────────────────────────────────────────────────
-@app.get("/api/config")
-def get_config():
-    return {
-        "supabase_url": os.environ.get("SUPABASE_URL", ""),
-        "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
-    }
-
-
 # ── Status ────────────────────────────────────────────────────────────
 @app.get("/api/status")
 def status():
@@ -3171,3 +3161,14 @@ async def reset_user_preferences(request: Request):
         logger.error(f"Error resetting preferences for user {validated_user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to reset user data.")
 
+    def _render_index_html() -> str:
+        index_path = os.path.join(frontend_dir, "index.html")
+        with open(index_path, "r", encoding="utf-8") as fh:
+            html = fh.read()
+
+        return html.replace("__SUPABASE_URL__", os.environ.get("SUPABASE_URL", "")) \
+            .replace("__SUPABASE_ANON_KEY__", os.environ.get("SUPABASE_ANON_KEY", ""))
+
+    @app.get("/")
+    def serve_frontend():
+        return HTMLResponse(_render_index_html())
