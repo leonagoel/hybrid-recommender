@@ -1,5 +1,7 @@
 # paste the entire fixed code here
 from __future__ import annotations
+from fastapi import FastAPI # type: ignore
+from backend.routers import recommend
 
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
@@ -13,33 +15,41 @@ import time
 import logging
 import math
 import secrets
-import random
-from urllib.parse import urlsplit
+
 import json
+from urllib.parse import urlsplit
 from redis import Redis
 from redis.exceptions import RedisError
+
+logger = logging.getLogger(__name__)
 
 try:
     import bleach
 except ModuleNotFoundError:
-    import html
     class bleach:
         @staticmethod
         def clean(value, strip=True):
             if not strip:
                 return str(value)
-            return html.escape(str(value))
+            return re.sub(r"<[^>]*>", "", str(value))
 
 from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone, timedelta
+
+from collections import defaultdict
+
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+_project_root = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, "src", "data"))
+sys.path.insert(0, os.path.join(_project_root, "src", "model"))
 
-from fastapi import (
+from fastapi import ( # type: ignore
     FastAPI,
+    APIRouter,
     Depends,
     Header,
     UploadFile,
@@ -51,24 +61,33 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.middleware.cors import CORSMiddleware # type: ignore
+from fastapi.staticfiles import StaticFiles # type: ignore
+from fastapi.responses import FileResponse, JSONResponse # type: ignore
+from pydantic import BaseModel # type: ignore
+from typing import Dict, List, Optional # type: ignore
+from pydantic import BaseModel, ConfigDict, Field # type: ignore
+from typing import Any, Optional
+from dotenv import load_dotenv # type: ignore
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Dict, List, Optional, Any
+from typing import Any, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from db import get_supabase, get_supabase_admin
+from backend.auth import _require_admin_access
 logging.basicConfig(
     level=logging.INFO,
     format="[%(levelname)s] %(asctime)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-from celery.result import AsyncResult
+from celery.result import AsyncResult # type: ignore
 from celery_app import celery_app
-from tasks import compute_recommendations
 
 
 from src.data.db import get_supabase, get_supabase_admin
@@ -85,7 +104,19 @@ from src.api.response_utils import success_response, error_response
 from functools import lru_cache
 
 from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
+from data_adapter import adapt_data, read_file
+from nlp_engine import batch_analyze, aggregate_sentiment_by_item
+from content_model import ContentRecommender
+from collaborative_model import CollaborativeRecommender
+from hybrid_model import HybridRecommender
+from federated_learning import train_federated_collaborative_model
+from issue_triage import triage_issue
 
+# ── App ──────────────────────────────────────────────────────────────
+app = FastAPI(title="Hybrid Recommender API", version="3.0")
+
+# Register routers
+app.include_router(recommend.router, prefix="/api")
 
 async def csrf_header_dep(
     x_csrf_token: str = Header(
@@ -108,10 +139,10 @@ def download_nltk_assets():
     try:
         SentimentIntensityAnalyzer()
         logger.info("NLTK VADER lexicon verified successfully.")
-    except LookupError:
-        logger.info("VADER lexicon missing. Downloading safely at startup...")
-        nltk.download('vader_lexicon', quiet=True)
-        logger.info("NLTK VADER lexicon downloaded successfully.")
+    except Exception as e:
+        logger.error(f"VADER framework load crash encountered. Triggering clean degraded fallback mode: {e}")
+        _model_degraded = True
+        _model_degraded_reason = f"NLTK VADER initialization failed: {str(e)}"
 
 
 RESPONSE_TIME_HEADER = "X-Response-Time-ms"
@@ -120,16 +151,19 @@ CACHE_TTL_SECONDS = 300
 CACHE_CONTROL_VALUE = f"public, max-age={CACHE_TTL_SECONDS}"
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
 MAX_SEARCH_QUERY_LENGTH = 120
+MOCK_PRODUCTS = []
 _response_cache: dict = {}
 _cache_hits = 0
 _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 
-# ── FIX #1292: AMORTIZED RATE LIMIT METRICS GLOBALS ──────────────────
-_rate_limit_buckets: dict = {}
+# ── FIX #1292: O(1) LRU RATE LIMIT METRICS GLOBALS ──────────────────
+from collections import OrderedDict
+_rate_limit_buckets = OrderedDict()
 _rate_limit_lock = Lock()
+MAX_RATE_LIMIT_IPS = 10000
+CLEANUP_THRESHOLD = 10000   # run stale-bucket cleanup every N requests
 _request_counter = 0
-CLEANUP_THRESHOLD = 10000  # Defensive boundary check to protect physical memory leak
 
 _redis_client: Redis | None = None
 
@@ -170,28 +204,13 @@ _cache_lock = Lock()
 _model_lock = Lock()
 
 def _get_slow_response_threshold_ms() -> float:
-    """Retrieve the duration threshold used to classify slow API responses.
-
-    Reads from the RESPONSE_TIME_SLOW_MS environment variable, falling back 
-    to a default threshold if the variable is missing or invalid.
-
-    Returns:
-        float: Threshold duration measured in milliseconds.
-    """
     try:
         return float(os.environ.get("RESPONSE_TIME_SLOW_MS", DEFAULT_SLOW_RESPONSE_THRESHOLD_MS))
     except ValueError:
         return DEFAULT_SLOW_RESPONSE_THRESHOLD_MS
 
+
 def _cache_key(*parts: Any) -> str:
-    """Generate a consistent, lowercased cache string key from input segments.
-
-    Args:
-        *parts (Any): Variable length argument list of components to join.
-
-    Returns:
-        str: A colon-separated, lowercase cache key string with trimmed whitespace.
-    """
     return ":".join(str(part).strip().lower() for part in parts)
 
 def _recommendation_cache_key(
@@ -222,17 +241,18 @@ def _get_cached_response(key: str):
         try:
             cached = _redis_client.get(key)
             if cached is not None:
+                _cache_hits += 1
                 return json.loads(cached)
         except (RedisError, json.JSONDecodeError):
             pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
+
         if not cached:
             _cache_misses += 1
             return None
-        expires_at, value = cached
-        return value
+        cached = _response_cache.get(key)
 
 def _set_cached_response(key: str, value: Any) -> None:
     try:
@@ -755,14 +775,10 @@ def health_check():
         result["status"] = "degraded"
 
     try:
-        if models.get("ready"):
-            result["components"]["model"] = {"status": "ready", "details": "models loaded"}
-        else:
-            result["components"]["model"] = {"status": "not_ready", "details": "models not built"}
-            result["status"] = "degraded"
-    except Exception as e:
-        result["components"]["model"] = {"status": "error", "details": str(e)}
-        result["status"] = "degraded"
+        with _cache_lock:
+            _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    except (RedisError, TypeError):
+        pass
 
     try:
         redis_url = os.environ.get("REDIS_URL", "")
@@ -779,21 +795,25 @@ def health_check():
         result["components"]["cache"] = {"status": "error", "details": str(e)}
         result["status"] = "degraded"
 
-    return result
 
 @app.get("/api/version")
 def get_version():
     return {
-        "version": app.version,
-        "service": app.title,
-        "status": "running",
+        "cache_ttl_seconds": CACHE_TTL_SECONDS,
+        "hits": int(_cache_hits),
+        "misses": int(_cache_misses),
+        "current_items": len(_response_cache),
     }
 
 
-@app.get("/api/metrics")
-def get_api_metrics():
-    return get_response_metrics_snapshot()
-
+def _normalize_search_query(query: str) -> str:
+    normalized = " ".join((query or "").split())
+    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.",
+        )
+    return normalized
 
 @app.get("/api/config")
 def get_config():
@@ -802,6 +822,14 @@ def get_config():
         "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
     }
 
+def _escape_like_pattern(value: str) -> str:
+    """Escape special LIKE metacharacters to prevent pattern injection."""
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
 
 @app.get("/api/status")
 def status():
@@ -811,6 +839,7 @@ def status():
         "message": "Hybrid Recommender API running",
     }
 
+_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
 
 @app.get("/api/dashboard")
 def dashboard(request: Request):
@@ -822,106 +851,57 @@ def dashboard(request: Request):
         logger.warning("Dashboard: product count failed: %s", e)
         product_count = 0
 
+def _validate_user_id(user_id: str) -> str:
+    """Allowlist-validate user_id to block injection via path parameters."""
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id format.")
+    return user_id
+
+
+def _set_cache_headers(response: Response, status: str) -> None:
+    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
+    response.headers["X-Cache"] = status
+
+
+def _get_rate_limit(limit_env: str, default_limit: int) -> int:
     try:
-        interaction_count = sb.table('purchases').select('id', count='exact').limit(0).execute().count or 0
-    except Exception as e:
-        logger.warning("Dashboard: interaction count failed: %s", e)
-        interaction_count = 0
+        limit = int(os.environ.get(limit_env, str(default_limit)))
+    except ValueError:
+        return default_limit
+    return max(1, limit)
 
-    total_users = 0
-    purchase_counts = Counter()
 
-    try:
-        user_result = sb.rpc('get_total_users').execute()
-        total_users = user_result.data or 0
-
-        top_products_result = sb.rpc('get_top_product_counts').execute()
-        purchase_counts = Counter({
-            row['product_id']: row['interaction_count']
-            for row in (top_products_result.data or [])
-        })
-    except Exception as e:
-        logger.warning("Dashboard error: %s", e)
-
-    avg_recommendation_score = 0.0
-    avg_sentiment_score = 0.0
-    try:
-        prod_stats = sb.table('products').select('rating, avg_sentiment').limit(50000).execute().data or []
-        ratings = [float(p['rating']) for p in prod_stats if p.get('rating') not in (None, 0)]
-        sentiments = [float(p['avg_sentiment']) for p in prod_stats if p.get('avg_sentiment') is not None]
-        if ratings:
-            avg_recommendation_score = round(sum(ratings) / len(ratings), 4)
-        if sentiments:
-            avg_sentiment_score = round(sum(sentiments) / len(sentiments), 4)
-    except Exception as e:
-        logger.warning("Dashboard: averages query failed: %s", e)
-
-    top_products = []
-    try:
-        if purchase_counts:
-            top_ids = [pid for pid, _ in purchase_counts.most_common(5)]
-            prod_result = sb.table('products').select('id, title, category, rating').in_('id', top_ids).execute().data or []
-            prod_map = {p['id']: p for p in prod_result}
-            for pid in top_ids:
-                p = prod_map.get(pid)
-                if p:
-                    top_products.append({
-                        'id': p['id'], 'title': p.get('title', ''),
-                        'category': p.get('category', ''),
-                        'rating': round(float(p.get('rating', 0) or 0), 2),
-                        'interactions': purchase_counts[pid],
-                    })
-        if not top_products:
-            fallback = sb.table('products').select('id, title, category, rating').order('rating', desc=True).limit(5).execute().data or []
-            for p in fallback:
-                top_products.append({
-                    'id': p['id'], 'title': p.get('title', ''),
-                    'category': p.get('category', ''),
-                    'rating': round(float(p.get('rating', 0) or 0), 2),
-                    'interactions': 0,
-                })
-    except Exception as e:
-        logger.warning("Dashboard: top products query failed: %s", e)
-
-    return {
-        "total_products": product_count,
-        "total_users": total_users,
-        "total_interactions": interaction_count,
-        "avg_recommendation_score": avg_recommendation_score,
-        "avg_sentiment_score": avg_sentiment_score,
-        "top_5_recommended_products": top_products,
-        "model_last_trained": models.get("last_trained_at"),
-    }
+def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "Rate limit exceeded",
+            "message": "Too many requests. Please try again later.",
+        },
+        headers={
+            "x-ratelimit-limit": str(rate_limit),
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": str(reset_time),
+        },
+    )
 
 
 @app.get("/api/search")
 def search_items(
     request: Request,
     response: Response,
-    q: str = "",
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0, le=10000),
-    sort: str = Query(
-        "relevance",
-        pattern="^(relevance|price-low|price-high|rating)$",
-    ),
-):
-    query = _normalize_search_query(q)
-    rate_limited = _apply_rate_limit(
-        request,
-        response,
-        scope="search",
-        limit_env="RATE_LIMIT_SEARCH_PER_MIN",
-        default_limit=60,
-    )
-    if rate_limited is not None:
-        return rate_limited
+    scope: str,
+    limit_env: str,
+    default_limit: int,
+) -> JSONResponse | None:
+    rate_limit = _get_rate_limit(limit_env, default_limit)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    bucket_key = (scope, client_ip)
+    now = time.time()
 
-    cache_key = _cache_key("search", query, limit, offset, sort)
-    cached = _get_cached_response(cache_key)
-    if cached is not None:
-        _set_cache_headers(response, "HIT")
-        return cached
+    with _rate_limit_lock:
+        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
+        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
 
     is_fuzzy_fallback = False
     products = []
@@ -993,8 +973,13 @@ def search_items(
                 or query_lower in str(p.get('category', '')).lower()
             ]
 
-    for p in products:
-        p['rank'] = 0.0
+def _extract_bearer_token(value: str | None) -> str:
+    if not value:
+        return ""
+    scheme, _, token = value.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
 
     def _product_price(product):
         metadata = product.get('metadata') or {}
