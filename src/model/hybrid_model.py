@@ -554,37 +554,6 @@ class HybridRecommender:
             avg_rating = float(self._rating_map.get(item["title"], 0.0) or 0.0)
             category = self._category_map.get(item["title"], "")
 
-            # Popularity as a proper fourth component weighted by delta.
-            # Weights a, b, g are re-normalized here to leave room for delta,
-            # guaranteeing hybrid_score in [0, 1].
-            popularity = self._popularity_map.get(item['title'], 0.5)
-            weight_sum = a + b + g + self.delta
-            if weight_sum <= 0:
-                weight_sum = 1.0
-            hybrid = (
-                (a * content_scores[i] +
-                 b * collab_scores[i] +
-                 g * sentiment_scores[i] +
-                 self.delta * popularity) / weight_sum
-            )
-            popularity_bonus = 0.05 * popularity
-            
-            # Enforce strict upper bound limit check
-            hybrid = min(1.0, hybrid_base + popularity_bonus)
-
-            # Lookup info from content model's df
-            row_data = self.content_model.df[
-                self.content_model.df['title'] == item['title']
-            ]
-            avg_rating = self._rating_map.get(item['title'], 0.0)
-            category = self._category_map.get(item['title'], '')
-            description = ''
-            top_reviews = []
-            if len(row_data) > 0:
-                description = str(row_data.iloc[0].get('description', ''))[:200]
-                tp = row_data.iloc[0].get('top_reviews', [])
-                top_reviews = tp if isinstance(tp, list) else []
-
             result = {
                 'title': item['title'],
                 'content_score': round(content_scores[i], 4),
