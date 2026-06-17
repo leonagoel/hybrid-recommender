@@ -746,6 +746,25 @@ Thanks to all the amazing people who contribute to this project ❤️
 
 ### Contributor Grid
 
+
+---
+
+## ⚙️ Setup & Installation
+
+Follow these instructions to configure and deploy the project environment on your local system.
+
+### Prerequisites
+* **Python 3.10 or higher**
+* **pip** (Python package utility)
+* **virtualenv** development package (Highly recommended)
+
+### Standard Installation
+
+1. **Clone the project files:**
+```bash
+   git clone [https://github.com/leonagoel/hybrid-recommender.git](https://github.com/leonagoel/hybrid-recommender.git)
+   cd hybrid-recommender
+
 <a href="https://github.com/leonagoel/hybrid-recommender/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=leonagoel/hybrid-recommender" alt="Contributors" />
 </a>
@@ -783,4 +802,43 @@ python scripts/generate_kg_embeddings.py
 
 ---
 
+2. Establish and load your isolated virtual environment:
 
+Linux/macOS:
+     python3 -m venv venv
+     source venv/bin/activate
+     ```
+   * **Windows:**
+```bash
+     python -m venv venv
+     .\venv\Scripts\activate
+     ```
+
+3. **Install the environment dependencies:**
+```bash
+   pip install -r requirements.txt
+
+4. Initialize backend services:
+   python main.py
+
+🤝 Code of Conduct
+Our Pledge
+We as members, contributors, and leaders pledge to make participation in our community a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, caste, color, religion, or sexual identity and orientation.
+
+Our Standards
+- Examples of behavior that contributes to a positive environment include:
+- Demonstrating empathy and kindness toward other people
+- Being respectful of differing opinions, viewpoints, and experiences
+- Giving and gracefully accepting constructive feedback
+- Accepting responsibility and apologizing to those affected by our mistakes
+Examples of unacceptable behavior include:
+- The use of sexualized language or imagery, and unwelcome sexual attention or advances
+- Trolling, insulting or derogatory comments, and personal or political attacks
+- Public or private harassment
+- Publishing others' private information without explicit permission
+
+Enforcement Responsibilities
+Community leaders are responsible for clarifying and enforcing our standards of acceptable behavior and will take appropriate, fair, and corrective action in response to any behavior that they deem inappropriate, threatening, offensive, or harmful.
+
+Reporting
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported by contacting the project management team. All complaints will be reviewed and investigated promptly and fairly.
