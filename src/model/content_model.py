@@ -69,6 +69,26 @@ class ContentRecommender:
             t.lower(): i for i, t in enumerate(self.df['title'].astype(str))
         }
 
+        self._ann_index = None
+        self._ann_enabled = False
+        if hnswlib is not None:
+            try:
+                n_items, dim = self.matrix.shape
+                # Dense conversion is O(n_items * dim) memory; skip for large catalogs.
+                if n_items > 0 and dim > 0 and n_items * dim <= 50_000_000:
+                    dense = np.asarray(self.matrix.todense(), dtype=np.float32)
+                    norms = np.linalg.norm(dense, axis=1, keepdims=True)
+                    norms[norms == 0] = 1.0
+                    dense /= norms
+                    index = hnswlib.Index(space='cosine', dim=dim)
+                    index.init_index(max_elements=n_items, ef_construction=200, M=16)
+                    index.add_items(dense, list(range(n_items)))
+                    index.set_ef(50)
+                    self._ann_index = index
+                    self._ann_enabled = True
+            except Exception:
+                self._ann_enabled = False
+
     def recommend(self, title, top_n=10, target_catalog=None):
         """
         Get content-based recommendations for a given item title.
