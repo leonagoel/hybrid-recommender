@@ -121,7 +121,7 @@ Review text analyzed for compound polarity ∈ [-1, 1]. Per-item aggregation →
 │ Database        │ Supabase (PostgreSQL), Row-Level Security       │
 │ Search          │ PostgreSQL FTS (GIN indexes, ts_rank)          │
 │ Auth            │ Supabase Auth (anonymous + email/password)      │
-│ ML — Content    │ scikit-learn: TF-IDF Vectorizer, Cosine Sim    │
+│ ML — Content    │ scikit-learn: TF-IDF Vectorizer, Cosine Similarity │
 │ ML — Collab     │ scikit-learn: TruncatedSVD, SciPy sparse       │
 │ NLP             │ NLTK VADER SentimentIntensityAnalyzer           │
 │ Data            │ Pandas, NumPy                                   │
