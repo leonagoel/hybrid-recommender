@@ -134,6 +134,72 @@ def _catalog_coverage(all_recommendations: list[list], catalog_size: int) -> flo
     return len(unique) / catalog_size
 
 
+def _intra_list_diversity(rec_titles: list, item_df: pd.DataFrame, tfidf_matrix) -> float:
+    """Average pairwise cosine distance within a recommendation list (1 - avg_similarity)."""
+    if not rec_titles or tfidf_matrix is None or len(rec_titles) < 2:
+        return 0.0
+    from sklearn.metrics.pairwise import cosine_similarity
+    title_to_idx = {str(t): i for i, t in enumerate(item_df['title'].astype(str))}
+    indices = [title_to_idx[t] for t in rec_titles if t in title_to_idx]
+    if len(indices) < 2:
+        return 0.0
+    vecs = tfidf_matrix[indices]
+    sim_matrix = cosine_similarity(vecs)
+    n = len(indices)
+    total_sim = float(sim_matrix.sum()) - n  # subtract diagonal (self-similarity = 1)
+    pairs = n * (n - 1)
+    return max(0.0, 1.0 - (total_sim / pairs)) if pairs > 0 else 0.0
+
+
+def _build_user_test_data(
+    interaction_df: pd.DataFrame,
+    min_interactions: int = 3,
+    test_fraction: float = 0.2,
+    random_seed: int = 42,
+) -> tuple:
+    """
+    Build user-personalized evaluation pairs by splitting each user's history.
+
+    For each user with >= min_interactions, splits their history into:
+    - train items: kept in the returned DataFrame for model training
+    - test items: held-out set used to evaluate recommendations
+
+    Cold-start users (< min_interactions) are included in train_df but
+    excluded from user_test_pairs.
+
+    Returns:
+        train_df:         interaction_df restricted to training rows
+        user_test_pairs:  list of (user_id, train_items: set, test_items: set)
+    """
+    if interaction_df.empty:
+        return interaction_df.iloc[:0].copy(), []
+
+    rng = np.random.default_rng(random_seed)
+    user_test_pairs: list[tuple] = []
+    train_indices: list = []
+
+    for user_id, group in interaction_df.groupby('user_id'):
+        items = group['title'].tolist()
+        if len(items) < min_interactions:
+            train_indices.extend(group.index.tolist())
+            continue
+
+        perm = rng.permutation(len(items))
+        items_shuffled = [items[i] for i in perm]
+        n_test = max(1, int(len(items_shuffled) * test_fraction))
+        test_items = set(items_shuffled[:n_test])
+        train_items = set(items_shuffled[n_test:])
+
+        train_rows = group[group['title'].isin(train_items)]
+        train_indices.extend(train_rows.index.tolist())
+
+        if test_items:
+            user_test_pairs.append((user_id, train_items, test_items))
+
+    train_df = interaction_df.loc[train_indices].copy() if train_indices else interaction_df.iloc[:0].copy()
+    return train_df, user_test_pairs
+
+
 def _load_or_build_svd(df: pd.DataFrame) -> np.ndarray:
     """Helper to mock or build an SVD matrix for collaborative filtering."""
     return np.random.default_rng(42).random((len(df), 10))
@@ -244,20 +310,78 @@ def run_evaluation(
     test_size: float = 0.2,
     random_seed: int = 42,
 ) -> ResultsDict:
-    """Run core precision, recall, and tracking computations."""
-    # Dummy placeholder grouping for compilation safety
-    user_groups = [] 
-    test_pairs = []
+    """
+    Compute user-personalized evaluation metrics.
 
-    for user_id, group in user_groups:
-        # User aggregation logic processing framework
-        processed_group = group
-        test_pairs.append((user_id, processed_group))
+    Recommendations are generated via CollaborativeRecommender.predict_for_user()
+    so that Precision@K, Recall@K, MAP, and NDCG measure genuine user
+    personalization — not item-to-item similarity.
 
-    # --- BUG FIX: Clean outdent placement outside the loop structure ---
-    if not test_pairs:
-        print("Not enough data for evaluation.")
+    Requires an interaction CSV (interactions.csv, ratings.csv, or
+    user_interactions.csv) alongside the item catalogue with columns:
+    user_id, title, rating.
+    """
+    from src.model.collaborative_model import CollaborativeRecommender
+
+    path = data_path or os.getenv("DATA_PATH", "data/products.csv")
+
+    data_dir = os.path.dirname(os.path.abspath(path)) if path else "."
+    interaction_candidates = [
+        os.path.join(data_dir, "interactions.csv"),
+        os.path.join(data_dir, "ratings.csv"),
+        os.path.join(data_dir, "user_interactions.csv"),
+    ]
+    interaction_path = next((p for p in interaction_candidates if os.path.exists(p)), None)
+
+    if interaction_path is None:
+        print("No interaction data found; cannot compute user-personalized metrics.")
         return {}
 
-    print(f"Total interactions processed: {len(test_pairs)}")
-    return {"status": "success", "processed_records": len(test_pairs)}
+    interaction_df = pd.read_csv(interaction_path)
+    required = {"user_id", "title", "rating"}
+    missing = required - set(interaction_df.columns)
+    if missing:
+        print(f"Interaction file missing required columns: {missing}")
+        return {}
+
+    interaction_df = interaction_df.dropna(subset=["user_id", "title"])
+
+    train_df, user_test_pairs = _build_user_test_data(
+        interaction_df, test_fraction=test_size, random_seed=random_seed
+    )
+
+    if not user_test_pairs:
+        print("Not enough user interaction data for evaluation.")
+        return {}
+
+    print(f"Evaluating on {len(user_test_pairs)} users (K={k})...")
+
+    collab_model = CollaborativeRecommender(train_df)
+
+    precisions: List[float] = []
+    recalls: List[float] = []
+    ndcgs: List[float] = []
+    maps: List[float] = []
+
+    for user_id, _train_items, test_items in user_test_pairs:
+        recs = collab_model.predict_for_user(user_id, top_n=k)
+        rec_titles = [r["title"] for r in recs]
+        precisions.append(_precision_at_k(rec_titles, test_items, k))
+        recalls.append(_recall_at_k(rec_titles, test_items, k))
+        ndcgs.append(_ndcg_at_k(rec_titles, test_items, k))
+        maps.append(average_precision_at_k(rec_titles, test_items, k))
+
+    metrics: MetricsDict = {
+        "precision": float(np.mean(precisions)),
+        "recall":    float(np.mean(recalls)),
+        "ndcg":      float(np.mean(ndcgs)),
+        "map":       float(np.mean(maps)),
+    }
+
+    print(f"  Precision@{k}: {metrics['precision']:.4f}")
+    print(f"  Recall@{k}:    {metrics['recall']:.4f}")
+    print(f"  NDCG@{k}:      {metrics['ndcg']:.4f}")
+    print(f"  MAP@{k}:       {metrics['map']:.4f}")
+    print(f"  Users evaluated: {len(user_test_pairs)}")
+
+    return {"collaborative": metrics}
