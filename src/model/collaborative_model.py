@@ -107,6 +107,12 @@ class CollaborativeRecommender:
         if 'catalog' in self.df.columns:
             self._catalog_map = dict(zip(self.df['title'], self.df['catalog']))
 
+        # Cleanup memory-heavy interaction matrix since factorization is done
+        if hasattr(self, 'user_item_sparse'):
+            del self.user_item_sparse
+        import gc
+        gc.collect()
+
         # Online SGD learning rate — used by online_update() (Issue #1596)
         self._lr = 0.01
         self._reg = 0.02

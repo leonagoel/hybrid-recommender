@@ -115,6 +115,45 @@ from issue_triage import triage_issue
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
+from src.evaluation.evaluation import run_evaluation
+
+EVALUATION_HISTORY = deque(maxlen=20)
+
+@app.get("/api/evaluate")
+async def evaluate_models(
+    k: int = 10,
+    mode: str = "all",
+    alpha: float = 0.4,
+    beta: float = 0.35,
+    gamma: float = 0.25,
+):
+    try:
+        results = run_evaluation(
+            k=k,
+            mode=mode,
+            weights={"alpha": alpha, "beta": beta, "gamma": gamma}
+        )
+        
+        # Save to history
+        run_record = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "k": k,
+            "mode": mode,
+            "weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
+            "results": results,
+        }
+        EVALUATION_HISTORY.appendleft(run_record)
+        
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Evaluation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/evaluate/history")
+async def evaluate_history(limit: int = 5):
+    history = list(EVALUATION_HISTORY)[:limit]
+    return {"runs": history}
+
 # Register routers
 app.include_router(recommend.router, prefix="/api")
 
@@ -1318,51 +1357,6 @@ def search_items(
         for p in products:
             if 'rank' not in p or p['rank'] is None:
                 p['rank'] = 0.0
-
-
-    # Format response
-    results = []
-    
-    for p in products:
-    
-        raw_sentiment = p.get('avg_sentiment', 0.0)
-        reviews = p.get('reviews', [])
-    
-        # Newly added products may still have the default
-        # sentiment value before the NLP batch pipeline runs.
-        # Recompute dynamically so the UI never shows misleading 0.0.
-        if raw_sentiment == 0.0 and reviews:
-            try:
-                from nlp_engine import compute_product_sentiment
-    
-                computed_sentiment = compute_product_sentiment(reviews)
-    
-                sentiment_value = (
-                    computed_sentiment
-                    if computed_sentiment is not None
-                    else "N/A"
-                )
-    
-            except Exception:
-                sentiment_value = "N/A"
-    
-        else:
-            sentiment_value = (
-                raw_sentiment
-                if raw_sentiment != 0.0
-                else "N/A"
-            )
-    
-        results.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''),
-            'rating': p.get('rating', 0.0),
-            'avg_sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0),
-        })
     
     
     def _product_price(product):
@@ -1393,15 +1387,10 @@ def search_items(
             key=lambda p: float(p.get('rating') or 0),
             reverse=True
         )
-    
-    
     results = []
-    
     for p in products:
-    
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
@@ -1417,17 +1406,22 @@ def search_items(
             except Exception:
                 sentiment_value = "N/A"
         else:
-            sentiment_value = raw_sentiment
-  
+            sentiment_value = (
+                raw_sentiment
+                if raw_sentiment != 0.0
+                else "N/A"
+            )
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title'),
-            'description': p.get('description'),
+            'description': str(p.get('description',''))[:200],
             'category': p.get('category'),
             'price': _product_price(p),
             'rating': float(p.get('rating') or 0),
-            'sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0)
+            'avg_sentiment': sentiment_value,
+            'review_count': p.get('review_count', 0),
+            'rank': p.get('rank', 0.0)
         })
   
     final_output = {
@@ -2556,33 +2550,11 @@ def log_interaction(data: InteractionCreate):
         "interaction_type": data.interaction_type,
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
+
     return {
         "message": "Interaction logged successfully",
         "interaction": USER_INTERACTIONS[-1]
     }
-
-
-@app.post("/api/register")
-def register_and_merge_history(
-    data: MergeHistoryRequest,
-    _csrf: None = Depends(csrf_header_dep),
-):
-    sb = get_supabase()
-    try:
-        # Update purchases in database
-        result = sb.table('purchases').update({'user_id': data.user_id}).eq('user_id', data.guest_id).execute()
-        
-        # Also update in-memory USER_INTERACTIONS list
-        for interaction in USER_INTERACTIONS:
-            if interaction.get("user_id") == data.guest_id:
-                interaction["user_id"] = data.user_id
-                
-        _clear_response_cache()
-        return {"status": "success", "message": "Guest history merged successfully", "updated_count": len(result.data or [])}
-    except Exception as e:
-        logger.error("Failed to merge guest history: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
@@ -2613,6 +2585,25 @@ def create_purchase(
         'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
     }).execute()
     _clear_response_cache()
+
+    # Issue #1596: Perform micro-update of latent vectors in memory
+    try:
+        if "collab" in models and models["collab"]:
+            collab_model = models["collab"]
+            item_df = models.get("item_df")
+            if item_df is not None:
+                matched = item_df[item_df['id'] == data.product_id]
+                if not matched.empty:
+                    title = matched.iloc[0]['title']
+                    collab_model.online_update(
+                        user_id=data.user_id,
+                        title=title,
+                        rating=data.rating
+                    )
+                    logger.info("Micro-updated latent vectors for user %s, item %s", data.user_id, title)
+    except Exception as e:
+        logger.warning("Failed to perform online micro-update: %s", e)
+
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 
@@ -2948,7 +2939,7 @@ async def reset_user_preferences(request: Request):
         _clear_response_cache()
 
 
-        global global_redis_client
+        
       
         if _redis_client is not None:
             try:
