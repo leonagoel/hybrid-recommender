@@ -121,7 +121,7 @@ EVALUATION_HISTORY = deque(maxlen=20)
 
 @app.get("/api/evaluate")
 async def evaluate_models(
-    k: int = 10,
+    k: int = Query(10, ge=1, le=100),
     mode: str = "all",
     alpha: float = 0.4,
     beta: float = 0.35,
