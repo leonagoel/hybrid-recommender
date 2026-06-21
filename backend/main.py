@@ -189,6 +189,7 @@ CLEANUP_THRESHOLD = 10000   # run stale-bucket cleanup every N requests
 _request_counter = 0
 
 _cache_lock = Lock()
+_model_lock = Lock()
 
 # ── Redis client ──────────────────────────────────────────────────────
 _redis_client = None
@@ -252,6 +253,28 @@ def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
+def _recommendation_cache_key(
+    title: str,
+    top_n: int = 10,
+    explain: bool = False,
+    user_id: str = "",
+    target_catalog: str = "",
+    model_version: str = "",
+    strategy: str = "",
+) -> str:
+    """Single authoritative cache key for recommendation responses."""
+    return _cache_key(
+        "recommend",
+        title,
+        top_n,
+        explain,
+        user_id or "",
+        target_catalog or "",
+        model_version or "",
+        strategy or "",
+    )
+
+
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
 
@@ -285,30 +308,6 @@ def _get_cached_response(key: str):
         _cache_hits += 1
         return value
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ──
-def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        with _cache_lock:
-            _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
-    except (RedisError, TypeError):
-        pass
-
-def _clear_response_cache() -> None:
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
-
-
-@app.get("/api/cache_metrics")
-def get_cache_metrics():
-    """Expose simple cache hit/miss metrics and configured TTL."""
-    return {
-        "cache_ttl_seconds": CACHE_TTL_SECONDS,
-        "hits": int(_cache_hits),
-        "misses": int(_cache_misses),
-        "current_items": len(_response_cache),
-    }
 
 
 def _normalize_search_query(query: str) -> str:
@@ -734,8 +733,6 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
-    return result
-
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
     """Expose simple cache hit/miss metrics and configured TTL."""
@@ -829,7 +826,7 @@ def _precompute_recommendation_cache(
     item_df = models["item_df"]
 
     for title in item_df["title"].dropna().astype(str).unique():
-        cache_key = _cache_key("recommend", title, top_n, explain, "")
+        cache_key = _recommendation_cache_key(title, top_n, explain)
 
         recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
 
@@ -1396,88 +1393,6 @@ def search_items(
     return final_output
 
 
-# ── Feature: Paginated Recommendations ───────────────────────────────
-@app.get("/api/recommend")
-async def recommend_item(
-    title: str = Query(..., min_length=1, description="Item title to base recommendations on"),
-    limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
-    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
-    user_id: str = Query(default="", description="Optional user ID for personalised scoring"),
-):
-    """
-    Returns paginated hybrid recommendations for the given item title.
-    Supports limit/offset pagination with a pagination metadata block.
-    """
-    try:
-        all_results: list[dict] = []
-
-        # Attempt to use the hybrid model via Celery task
-        try:
-            from src.model.hybrid_model import HybridRecommender
-            from src.model.content_model import ContentRecommender
-            from src.model.collaborative_model import CollaborativeRecommender
-
-            dm = getattr(sys.modules.get("__main__"), "_dataset_manager", None)
-            if dm is None:
-                from src.data.dataset_manager import DatasetManager
-                dm = DatasetManager()
-            item_df = getattr(dm, "_item_df", None) or getattr(dm, "item_df", None)
-            interaction_df = getattr(dm, "_interaction_df", None) or getattr(dm, "interaction_df", None)
-
-            if item_df is not None and not item_df.empty:
-                content_model = ContentRecommender(item_df)
-                
-                import os
-                from src.model.neural_collaborative_model import NeuralCollaborativeRecommender
-                use_ncf = os.getenv("USE_NCF", "true").lower() == "true"
-                
-                if interaction_df is not None and not interaction_df.empty:
-                    if use_ncf:
-                        collab_model = NeuralCollaborativeRecommender(interaction_df)
-                    else:
-                        collab_model = CollaborativeRecommender(interaction_df)
-                else:
-                    collab_model = None
-                
-                hybrid = HybridRecommender(content_model, collab_model, item_df)
-                all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
-        except Exception:
-            logger.warning("Hybrid model unavailable, using fallback recommendations")
-
-            # Fallback: return mock products sorted by title similarity
-            if not all_results:
-                query = title.lower()
-                scored = []
-                for p in MOCK_PRODUCTS:
-                    score = sum(1 for w in query.split() if w in p["title"].lower())
-                    if score > 0 or query in p["category"].lower():
-                        scored.append({**p, "hybrid_score": score, "content_score": score, "collab_score": 0})
-                scored.sort(key=lambda x: x["hybrid_score"], reverse=True)
-                all_results = scored if scored else [{
-                    "title": p["title"],
-                    "rating": p["rating"],
-                    "hybrid_score": 0.5,
-                    "content_score": 0.3,
-                    "collab_score": 0.2,
-                    "category": p["category"],
-                    "review_count": p.get("review_count", 0),
-                } for p in MOCK_PRODUCTS[:3]]
-
-            total = len(all_results)
-            paginated = all_results[offset:offset + limit]
-
-            return {
-                "recommendations": paginated,
-                "pagination": {
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                    "next_offset": offset + limit if offset + limit < total else None,
-                    "has_more": (offset + limit) < total,
-                },
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/recommendations/{item_id}/explanation")
@@ -1945,7 +1860,9 @@ def get_recommendations(
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
-    top_n: int = 10,
+    top_n: Optional[int] = Query(None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     explain: bool = Query(False),
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
@@ -1985,10 +1902,12 @@ def get_recommendations(
 
         selected_models = MODEL_REGISTRY[model_version]
 
-    cache_key = _cache_key(
-        "recommend",
+    effective_limit = top_n if top_n is not None else limit
+    effective_offset = offset
+
+    cache_key = _recommendation_cache_key(
         query_title,
-        top_n,
+        effective_limit,
         explain,
         user_id or "",
         target_catalog or "",
@@ -2011,21 +1930,21 @@ def get_recommendations(
 
     recs = hybrid_model.recommend(
         query_title,
-        top_n=top_n,
+        top_n=effective_limit + effective_offset,
         explain=explain,
         target_catalog=target_catalog
     )
 
     # Popularity fallback (existing behaviour)
     if not recs and strategy == "popularity" and models["collab"]:
-        recs = models["collab"]._popularity_fallback(top_n)
+        recs = models["collab"]._popularity_fallback(effective_limit + effective_offset)
 
     # Cold-start fallback: blend content similarity with popularity/rating
     if not recs and strategy == "cold":
         combined_text = query_title
         cold_recs = cold_start_recommendation(
             combined_text,
-            top_n=top_n,
+            top_n=effective_limit + effective_offset,
             target_catalog=target_catalog
         )
         if cold_recs:
@@ -2045,17 +1964,27 @@ def get_recommendations(
     if user_id and models.get("collab") is not None:
         has_history = user_id in models["collab"]._user_to_idx
 
+    total_found = len(recs)
+    paginated_recs = recs[effective_offset : effective_offset + effective_limit]
+
     payload = {
         "query": query_title,
         "query_item": query_title,
-        "count": len(recs),
-        "results": recs,
-        "recommendations": recs,
-        "weights": active_hybrid.get_weights(),
+        "count": len(paginated_recs),
+        "results": paginated_recs,
+        "recommendations": paginated_recs,
+        "weights": hybrid_model.get_weights(),
         "explain": explain,
         "target_catalog": target_catalog,
         "model_version": model_version or ACTIVE_MODEL_VERSION,
         "has_history": has_history,
+        "pagination": {
+            "total": total_found,
+            "limit": effective_limit,
+            "offset": effective_offset,
+            "next_offset": effective_offset + effective_limit if effective_offset + effective_limit < total_found else None,
+            "has_more": (effective_offset + len(paginated_recs)) < total_found,
+        }
     }
 
     if (
@@ -2121,7 +2050,9 @@ def get_recommendations_alias(
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
-    top_n: int = 10,
+    top_n: Optional[int] = Query(None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     explain: bool = Query(False),
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
@@ -2135,6 +2066,8 @@ def get_recommendations_alias(
         item_title=item_title,
         title=title,
         top_n=top_n,
+        limit=limit,
+        offset=offset,
         explain=explain,
         user_id=user_id,
         target_catalog=target_catalog,
@@ -2190,7 +2123,8 @@ def recommend_cold_start(
 
 
 @app.get("/api/user_recommend")
-def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
+@app.get("/api/recommend/user/{user_id}")
+def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), explain: bool = Query(False)):
     """Get hybrid recommendations for a user."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
