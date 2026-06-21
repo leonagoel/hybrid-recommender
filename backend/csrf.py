@@ -213,17 +213,28 @@ class CSRFMiddleware:
             return
 
         # 2.5 Issue #1597 — Validate Origin / Referer header against ALLOWED_ORIGINS.
-        # Only enforced when CSRF_ALLOWED_ORIGINS is explicitly configured; when the
-        # list is empty the check is skipped to preserve backward compatibility.
-        if ALLOWED_ORIGINS:
-            origin: str = (
-                request.headers.get("origin", "")
-                or request.headers.get("referer", "")
+        origin_header = request.headers.get("origin", "")
+        referer_header = request.headers.get("referer", "")
+        
+        origin: str = origin_header or referer_header
+        
+        # In strict checking, we must have an Origin or Referer for mutating requests.
+        if not origin:
+            # For TestClient compatibility, if TESTING is true and no origin is provided, we can mock it
+            # But here we enforce it strictly. TestClient should provide Origin header.
+            logger.warning("CSRF validation failed (Origin and Referer missing)")
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF validation failed: Origin and Referer missing."},
             )
-            # Strip path from Referer so we compare scheme+host only.
-            from urllib.parse import urlparse
-            parsed_origin = urlparse(origin)
-            origin_base = f"{parsed_origin.scheme}://{parsed_origin.netloc}".rstrip("/")
+            await response(scope, receive, send)
+            return
+
+        from urllib.parse import urlparse
+        parsed_origin = urlparse(origin)
+        origin_base = f"{parsed_origin.scheme}://{parsed_origin.netloc}".rstrip("/")
+
+        if ALLOWED_ORIGINS:
             if origin_base not in ALLOWED_ORIGINS:
                 logger.warning(
                     "CSRF validation failed (origin not allowed) path=%s origin=%s",
@@ -233,6 +244,19 @@ class CSRFMiddleware:
                 response = JSONResponse(
                     status_code=403,
                     content={"detail": "CSRF validation failed: origin not allowed."},
+                )
+                await response(scope, receive, send)
+                return
+        else:
+            host = request.headers.get("host", "")
+            if not host or parsed_origin.netloc != host:
+                logger.warning(
+                    "CSRF validation failed (cross-origin mismatch) origin=%s host=%s",
+                    parsed_origin.netloc, host
+                )
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF validation failed: cross-origin mismatch."},
                 )
                 await response(scope, receive, send)
                 return

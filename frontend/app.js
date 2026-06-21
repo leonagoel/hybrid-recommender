@@ -48,7 +48,12 @@ function initThemeToggle() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', initThemeToggle);
+document.addEventListener('DOMContentLoaded', () => {
+    initThemeToggle();
+    if (typeof initBenchmarkingDashboard === 'function') {
+        initBenchmarkingDashboard();
+    }
+});
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({

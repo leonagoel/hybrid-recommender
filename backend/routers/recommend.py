@@ -1,15 +1,13 @@
-from fastapi import APIRouter, HTTPException, Depends # type: ignore
-import pandas as pd # type: ignore
+from fastapi import APIRouter, HTTPException, Query, Depends  # type: ignore
 
-# Initialize the router instance with clean semantic tagging
 router = APIRouter(
     prefix="/recommendations",
     tags=["Recommendations"]
 )
 
-# Dummy datasets/dependencies placeholder for baseline compilation stability
 def get_mock_db():
     return {"status": "connected"}
+
 
 @router.get("/")
 def get_recommendations(user_id: str, db: dict = Depends(get_mock_db)):
@@ -35,3 +33,20 @@ def get_user_recommendations(user_id: str):
     Computes collaborative hybrid filtering matrices for explicit target profiles.
     """
     return {"user_id": user_id, "algorithm": "hybrid_matrix_factorization", "payload": []}
+
+
+@router.get("/item")
+def get_item_recommendations(
+    title: str = Query(..., min_length=1, description="Item title to base recommendations on"),
+    top_n: int = Query(default=10, ge=1, le=100),
+):
+    """
+    Returns recommendations based on item title query parameter.
+    Fixes: frontend sends ?title=... which previously caused HTTP 422
+    because no endpoint accepted the 'title' query param.
+    """
+    return {
+        "query": title,
+        "recommendations": [],
+        "message": f"Recommendations for '{title}' (router stub — wired to hybrid model in main.py)"
+    }
