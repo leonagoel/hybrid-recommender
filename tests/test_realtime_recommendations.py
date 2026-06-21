@@ -118,11 +118,16 @@ def test_recommendations_websocket_rejects_unsupported_event(realtime_client):
 
 def post_with_csrf(client, url, payload):
     token = "a" * 64
+    origin = "http://testserver"
     client.cookies.set("csrftoken", token)
     return client.post(
         url,
         json=payload,
-        headers={"X-CSRF-Token": token},
+        headers={
+            "X-CSRF-Token": token,
+            "Origin": origin,
+            "Referer": f"{origin}/",
+        },
     )
 
 
