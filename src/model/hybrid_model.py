@@ -54,30 +54,20 @@ def bayesian_rating(
 
 
 class HybridRecommender:
-    def __init__(self, content_model, collab_model=None, item_df=None,
-                 alpha=0.4, beta=0.35, gamma=0.25,
-                 normalization='minmax', weight_matrix=None,
-                 use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
-                 causal_config=None, model_kwargs=None,
-                 kg_model=None, delta=0.05):
-        """
-        content_model:        ContentRecommender instance
-        collab_model:         CollaborativeRecommender instance (optional)
-        item_df:              DataFrame with 'avg_sentiment', 'rating', 'review_count' columns
-        alpha:                weight for content-based score
-        beta:                 weight for collaborative score
-        gamma:                weight for sentiment score
-        use_causal_debiasing: Enable IPS-based causal debiasing on the final hybrid score.
-                              When True, a CausalDebiaser is built from item_df and applied
-                              after the weighted blend, before final ranking.
-        causal_lambda:        Blend factor λ for causal correction (0.0–1.0).
-                              0.0 = no debiasing, 1.0 = full IPS reweighting. Default 0.5.
-        causal_clip:          Max IPS weight cap to prevent variance explosion. Default 5.0.
-        causal_config:        Optional CausalConfig instance. When provided, takes precedence
-                              over use_causal_debiasing / causal_lambda / causal_clip.
-                              Use this for structured configuration management.
-        """
-    """Hybrid recommender combining content + collaborative + sentiment."""
+    """
+    Hybrid recommender combining content + collaborative + sentiment.
+    
+    content_model:        ContentRecommender instance
+    collab_model:         CollaborativeRecommender instance (optional)
+    item_df:              DataFrame with 'avg_sentiment', 'rating', 'review_count' columns
+    alpha:                weight for content-based score
+    beta:                 weight for collaborative score
+    gamma:                weight for sentiment score
+    use_causal_debiasing: Enable IPS-based causal debiasing on the final hybrid score.
+    causal_lambda:        Blend factor λ for causal correction (0.0–1.0).
+    causal_clip:          Max IPS weight cap to prevent variance explosion. Default 5.0.
+    causal_config:        Optional CausalConfig instance.
+    """
 
     def __init__(
         self,
@@ -200,7 +190,15 @@ class HybridRecommender:
 
     # ------------------------- weight API -------------------------
     def set_weights(self, alpha: float, beta: float, gamma: float, delta: float = 0.05):
-        """Update the scoring weights. Normalized to sum to 1."""
+        """Update the scoring weights. Normalized to sum to 1.
+
+        Args:
+            alpha: weight for content_score
+            beta:  weight for collab_score
+            gamma: weight for sentiment_score
+            delta: weight for popularity (default 0.05). All four weights are
+                   normalized to sum to 1.0, guaranteeing hybrid_score in [0, 1].
+        """
         if any(math.isnan(float(w)) for w in (alpha, beta, gamma, delta)):
             raise ValueError("Weights must be finite numbers")
         if any(float(w) < 0 for w in (alpha, beta, gamma, delta)):
@@ -226,7 +224,6 @@ class HybridRecommender:
 
         if random.random() < self.epsilon:
             return random.randint(0, len(self.bandit_arms) - 1)
-
         best_arm = max(
             self.arm_rewards,
             key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
@@ -681,43 +678,15 @@ class HybridRecommender:
         gamma,
         raw_item,
     ):
-        content_terms = []
-        if hasattr(self.content_model, 'explain_similarity'):
-            content_terms = self.content_model.explain_similarity(source_title, candidate_title)
-
         weighted_components = {
             'content': round(alpha * content_score, 4),
             'collaborative': round(beta * collab_score, 4),
             'sentiment': round(gamma * sentiment_score, 4),
-            'popularity_bonus': round(self.delta * popularity, 4),
+            'popularity': round(getattr(self, 'delta', 0.05) * popularity, 4),
         }
         strongest = max(weighted_components, key=weighted_components.get)
-
-        return {
-            'source_item': source_title,
-            'candidate_item': candidate_title,
-            'active_weights': {
-                'alpha': round(alpha, 4),
-                'beta': round(beta, 4),
-                'gamma': round(gamma, 4),
-            },
-            'component_scores': {
-                'content': round(content_score, 4),
-                'collaborative': round(collab_score, 4),
-                'sentiment': round(sentiment_score, 4),
-                'raw_content': round(raw_item['raw_content'], 4),
-                'raw_collaborative': round(raw_item['raw_collab'], 4),
-                'raw_sentiment': round(raw_item['raw_sentiment'], 4),
-            },
-            'weighted_components': weighted_components,
-            'top_content_terms': content_terms,
-            'signals': {
-                'strongest_component': strongest,
-                'collaborative_match': raw_item['raw_collab'] > 0,
-                'sentiment_polarity': self._sentiment_label(raw_item['raw_sentiment']),
-                'popularity': round(popularity, 4),
-            },
-        }
+        
+        return f"Recommended primarily due to {strongest} match (score: {weighted_components[strongest]:.2f})."
 
     @staticmethod
     def _sentiment_label(score):
@@ -849,12 +818,13 @@ class HybridRecommender:
         df = df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'] != exclude_title]
-            global_avg = 3.0
+
+        global_avg = float(df['rating'].mean()) if 'rating' in df.columns and len(df) > 0 else 3.0
         # Sort by Bayesian rating
         if 'rating' in df.columns and 'review_count' in df.columns:
-            df['_bayesian'] = df.apply(lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1)
             df['_bayesian'] = df.apply(
-                lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg), axis=1
+                lambda r: bayesian_rating(r['rating'], r.get('review_count', 0), global_avg),
+                axis=1
             )
             df = df.sort_values(
                 ['_bayesian', 'review_count'],

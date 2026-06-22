@@ -155,6 +155,13 @@ class TestContentRecommender:
         assert explanation[0]['term'] == 'semantic_similarity'
         assert 0.0 <= explanation[0]['score'] <= 1.0
 
+    def test_explain_similarity_case_insensitivity(self, content_model):
+        explanation_mixed = content_model.explain_similarity('Harry Potter', 'Lord of the Rings')
+        explanation_lower = content_model.explain_similarity('harry potter', 'lord of the rings')
+        explanation_upper = content_model.explain_similarity('HARRY POTTER', 'LORD OF THE RINGS')
+        assert explanation_mixed == explanation_lower == explanation_upper
+        assert len(explanation_mixed) > 0
+
     def test_explain_similarity_invalid_source(self, content_model):
         explanation = content_model.explain_similarity('Nonexistent', 'Lord of the Rings')
         assert explanation == []

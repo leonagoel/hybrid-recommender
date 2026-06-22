@@ -134,11 +134,16 @@ with st.sidebar:
     )
     tfidf_stop_words = st.selectbox(
         "Stop Words",
-        options=["english", "none"],
+        options=["english", "custom", "none"],
         index=0,
-        help="Language for built-in stop-word list, or 'none' to keep all words.",
+        help="Language for built-in stop-word list, custom list, or 'none' to keep all words.",
     )
-    tfidf_stop_words_val = None if tfidf_stop_words == "none" else tfidf_stop_words
+    
+    if tfidf_stop_words == "custom":
+        custom_words = st.text_input("Comma-separated custom stop words", "the, and, or")
+        tfidf_stop_words_val = [w.strip() for w in custom_words.split(",") if w.strip()]
+    else:
+        tfidf_stop_words_val = None if tfidf_stop_words == "none" else tfidf_stop_words
 
     st.subheader("⚖️ Hybrid Weights")
     st.caption("Weights are auto-normalised to sum to 1 by the model.")
@@ -286,6 +291,8 @@ else:
                     st.success("✅ Content model and Collaborative model trained. Hybrid mode active.")
                 else:
                     st.success("✅ Content model trained. Collaborative model skipped (dataset needs more than one unique user).")
+
+                st.info(f"🔤 TF-IDF Vectorizer built with {content_model.matrix.shape[1]:,} features.")
 
                 # Show causal diagnostics immediately after build
                 if enable_causal and hybrid_model._debiaser is not None:

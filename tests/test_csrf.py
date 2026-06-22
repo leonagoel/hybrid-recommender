@@ -168,7 +168,7 @@ def test_mutating_request_without_cookie_returns_403(client, method, path, body)
     # Guarantee no cookie is present — fresh client already has none,
     # but be explicit for clarity.
     client.cookies.clear()
-    response = client.request(method, path, json=body)
+    response = client.request(method, path, json=body, headers={"Origin": "http://testserver"})
     assert response.status_code == 403
     assert "CSRF" in response.json()["detail"]
 
@@ -189,7 +189,7 @@ def test_mutating_request_without_header_returns_403(client, method, path, body)
     token = generate_csrf_token()
     _inject_csrf_cookie(client, token)
     # Deliberately omit the X-CSRF-Token header
-    response = client.request(method, path, json=body)
+    response = client.request(method, path, json=body, headers={"Origin": "http://testserver"})
     assert response.status_code == 403
     assert "CSRF" in response.json()["detail"]
 
@@ -213,7 +213,7 @@ def test_mutating_request_with_mismatched_tokens_returns_403(client, method, pat
     _inject_csrf_cookie(client, cookie_token)
     response = client.request(
         method, path, json=body,
-        headers={CSRF_HEADER_NAME: wrong_header},
+        headers={"Origin": "http://testserver", CSRF_HEADER_NAME: wrong_header},
     )
     assert response.status_code == 403
     assert "CSRF" in response.json()["detail"]
@@ -236,7 +236,7 @@ def test_mutating_request_with_invalid_token_length_returns_403(client, method, 
     _inject_csrf_cookie(client, short_token)
     response = client.request(
         method, path, json=body,
-        headers={CSRF_HEADER_NAME: short_token},
+        headers={"Origin": "http://testserver", CSRF_HEADER_NAME: short_token},
     )
     assert response.status_code == 403
     assert "CSRF" in response.json()["detail"]
@@ -253,7 +253,7 @@ def test_mutating_request_with_non_hex_tokens_returns_403(client, method, path, 
     _inject_csrf_cookie(client, invalid_hex_token)
     response = client.request(
         method, path, json=body,
-        headers={CSRF_HEADER_NAME: invalid_hex_token},
+        headers={"Origin": "http://testserver", CSRF_HEADER_NAME: invalid_hex_token},
     )
     assert response.status_code == 403
     assert "CSRF" in response.json()["detail"]
@@ -270,7 +270,7 @@ def test_post_feedback_with_valid_csrf_passes(client):
     _inject_csrf_cookie(client, token)
     response = client.post(
         "/api/feedback",
-        headers={CSRF_HEADER_NAME: token},
+        headers={"Origin": "http://testserver", CSRF_HEADER_NAME: token},
         json={"user_id": "u1", "item": "Book A", "feedback": "great"},
     )
     # 200 = route handler ran; anything other than 403 means CSRF passed
@@ -287,7 +287,7 @@ def test_put_weights_with_valid_csrf_passes_csrf_check(client):
     _inject_csrf_cookie(client, token)
     response = client.put(
         "/api/weights",
-        headers={CSRF_HEADER_NAME: token},
+        headers={"Origin": "http://testserver", CSRF_HEADER_NAME: token},
         json={"alpha": 0.4, "beta": 0.35, "gamma": 0.25},
     )
     assert response.status_code != 403
@@ -302,7 +302,7 @@ def test_post_build_with_valid_csrf_passes_csrf_check(client):
     _inject_csrf_cookie(client, token)
     response = client.post(
         "/api/build",
-        headers={CSRF_HEADER_NAME: token},
+        headers={"Origin": "http://testserver", CSRF_HEADER_NAME: token},
         json={},
     )
     assert response.status_code != 403
@@ -317,10 +317,32 @@ def test_post_purchases_with_valid_csrf_passes_csrf_check(client):
     _inject_csrf_cookie(client, token)
     response = client.post(
         "/api/purchases",
-        headers={CSRF_HEADER_NAME: token},
+        headers={"Origin": "http://testserver", CSRF_HEADER_NAME: token},
         json={"user_id": "test-user", "product_id": 1, "rating": 4.0, "review_text": ""},
     )
     assert response.status_code != 403
+
+def test_missing_origin_referer_returns_403(client):
+    token = generate_csrf_token()
+    _inject_csrf_cookie(client, token)
+    response = client.post(
+        "/api/feedback",
+        headers={CSRF_HEADER_NAME: token}, # Missing Origin
+        json={"user_id": "u1", "item": "Book A", "feedback": "great"},
+    )
+    assert response.status_code == 403
+    assert "Origin and Referer missing" in response.json()["detail"]
+
+def test_mismatched_origin_returns_403(client):
+    token = generate_csrf_token()
+    _inject_csrf_cookie(client, token)
+    response = client.post(
+        "/api/feedback",
+        headers={"Origin": "http://evil-origin.com", CSRF_HEADER_NAME: token},
+        json={"user_id": "u1", "item": "Book A", "feedback": "great"},
+    )
+    assert response.status_code == 403
+    assert "cross-origin mismatch" in response.json()["detail"]
 
 
 # ── set_csrf_cookie helper ────────────────────────────────────────────────────

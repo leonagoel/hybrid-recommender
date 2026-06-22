@@ -107,6 +107,45 @@ from issue_triage import triage_issue
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
 
+from src.evaluation.evaluation import run_evaluation
+
+EVALUATION_HISTORY = deque(maxlen=20)
+
+@app.get("/api/evaluate")
+async def evaluate_models(
+    k: int = 10,
+    mode: str = "all",
+    alpha: float = 0.4,
+    beta: float = 0.35,
+    gamma: float = 0.25,
+):
+    try:
+        results = run_evaluation(
+            k=k,
+            mode=mode,
+            weights={"alpha": alpha, "beta": beta, "gamma": gamma}
+        )
+        
+        # Save to history
+        run_record = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "k": k,
+            "mode": mode,
+            "weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
+            "results": results,
+        }
+        EVALUATION_HISTORY.appendleft(run_record)
+        
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Evaluation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/evaluate/history")
+async def evaluate_history(limit: int = 5):
+    history = list(EVALUATION_HISTORY)[:limit]
+    return {"runs": history}
+
 # Register routers
 app.include_router(recommend.router, prefix="/api")
 
@@ -181,6 +220,7 @@ CLEANUP_THRESHOLD = 10000   # run stale-bucket cleanup every N requests
 _request_counter = 0
 
 _cache_lock = Lock()
+_model_lock = Lock()
 
 # ── Redis client ──────────────────────────────────────────────────────
 _redis_client = None
@@ -244,6 +284,28 @@ def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
+def _recommendation_cache_key(
+    title: str,
+    top_n: int = 10,
+    explain: bool = False,
+    user_id: str = "",
+    target_catalog: str = "",
+    model_version: str = "",
+    strategy: str = "",
+) -> str:
+    """Single authoritative cache key for recommendation responses."""
+    return _cache_key(
+        "recommend",
+        title,
+        top_n,
+        explain,
+        user_id or "",
+        target_catalog or "",
+        model_version or "",
+        strategy or "",
+    )
+
+
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
 
@@ -277,30 +339,6 @@ def _get_cached_response(key: str):
         _cache_hits += 1
         return value
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ──
-def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        with _cache_lock:
-            _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
-    except (RedisError, TypeError):
-        pass
-
-def _clear_response_cache() -> None:
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
-
-
-@app.get("/api/cache_metrics")
-def get_cache_metrics():
-    """Expose simple cache hit/miss metrics and configured TTL."""
-    return {
-        "cache_ttl_seconds": CACHE_TTL_SECONDS,
-        "hits": int(_cache_hits),
-        "misses": int(_cache_misses),
-        "current_items": len(_response_cache),
-    }
 
 
 def _normalize_search_query(query: str) -> str:
@@ -726,8 +764,6 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
-    return result
-
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
     """Expose simple cache hit/miss metrics and configured TTL."""
@@ -821,7 +857,7 @@ def _precompute_recommendation_cache(
     item_df = models["item_df"]
 
     for title in item_df["title"].dropna().astype(str).unique():
-        cache_key = _cache_key("recommend", title, top_n, explain, "")
+        cache_key = _recommendation_cache_key(title, top_n, explain)
 
         recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
 
@@ -1310,51 +1346,6 @@ def search_items(
         for p in products:
             if 'rank' not in p or p['rank'] is None:
                 p['rank'] = 0.0
-
-
-    # Format response
-    results = []
-    
-    for p in products:
-    
-        raw_sentiment = p.get('avg_sentiment', 0.0)
-        reviews = p.get('reviews', [])
-    
-        # Newly added products may still have the default
-        # sentiment value before the NLP batch pipeline runs.
-        # Recompute dynamically so the UI never shows misleading 0.0.
-        if raw_sentiment == 0.0 and reviews:
-            try:
-                from nlp_engine import compute_product_sentiment
-    
-                computed_sentiment = compute_product_sentiment(reviews)
-    
-                sentiment_value = (
-                    computed_sentiment
-                    if computed_sentiment is not None
-                    else "N/A"
-                )
-    
-            except Exception:
-                sentiment_value = "N/A"
-    
-        else:
-            sentiment_value = (
-                raw_sentiment
-                if raw_sentiment != 0.0
-                else "N/A"
-            )
-    
-        results.append({
-            'id': p.get('id'),
-            'title': p.get('title', ''),
-            'description': str(p.get('description', ''))[:200],
-            'category': p.get('category', ''),
-            'rating': p.get('rating', 0.0),
-            'avg_sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0),
-        })
     
     
     def _product_price(product):
@@ -1385,15 +1376,10 @@ def search_items(
             key=lambda p: float(p.get('rating') or 0),
             reverse=True
         )
-    
-    
     results = []
-    
     for p in products:
-    
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
-    
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
@@ -1409,17 +1395,22 @@ def search_items(
             except Exception:
                 sentiment_value = "N/A"
         else:
-            sentiment_value = raw_sentiment
-  
+            sentiment_value = (
+                raw_sentiment
+                if raw_sentiment != 0.0
+                else "N/A"
+            )
+
         results.append({
             'id': p.get('id'),
             'title': p.get('title'),
-            'description': p.get('description'),
+            'description': str(p.get('description',''))[:200],
             'category': p.get('category'),
             'price': _product_price(p),
             'rating': float(p.get('rating') or 0),
-            'sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0)
+            'avg_sentiment': sentiment_value,
+            'review_count': p.get('review_count', 0),
+            'rank': p.get('rank', 0.0)
         })
   
     final_output = {
@@ -1434,7 +1425,7 @@ def search_items(
 
 
 # ── Feature: Paginated Recommendations ───────────────────────────────
-@app.get("/api/recommend")
+@app.get("/api/recommend/paginated")
 async def recommend_item(
     title: str = Query(..., min_length=1, description="Item title to base recommendations on"),
     limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
@@ -1982,7 +1973,9 @@ def get_recommendations(
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
-    top_n: int = 10,
+    top_n: Optional[int] = Query(None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     explain: bool = Query(False),
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
@@ -2023,10 +2016,12 @@ def get_recommendations(
 
         selected_models = MODEL_REGISTRY[model_version]
 
-    cache_key = _cache_key(
-        "recommend",
+    effective_limit = top_n if top_n is not None else limit
+    effective_offset = offset
+
+    cache_key = _recommendation_cache_key(
         query_title,
-        top_n,
+        effective_limit,
         explain,
         user_id or "",
         target_catalog or "",
@@ -2049,21 +2044,21 @@ def get_recommendations(
 
     recs = hybrid_model.recommend(
         query_title,
-        top_n=top_n,
+        top_n=effective_limit + effective_offset,
         explain=explain,
         target_catalog=target_catalog
     )
 
     # Popularity fallback (existing behaviour)
     if not recs and strategy == "popularity" and models["collab"]:
-        recs = models["collab"]._popularity_fallback(top_n)
+        recs = models["collab"]._popularity_fallback(effective_limit + effective_offset)
 
     # Cold-start fallback: blend content similarity with popularity/rating
     if not recs and strategy == "cold":
         combined_text = query_title
         cold_recs = cold_start_recommendation(
             combined_text,
-            top_n=top_n,
+            top_n=effective_limit + effective_offset,
             target_catalog=target_catalog
         )
         if cold_recs:
@@ -2083,17 +2078,27 @@ def get_recommendations(
     if user_id and models.get("collab") is not None:
         has_history = user_id in models["collab"]._user_to_idx
 
+    total_found = len(recs)
+    paginated_recs = recs[effective_offset : effective_offset + effective_limit]
+
     payload = {
         "query": query_title,
         "query_item": query_title,
-        "count": len(recs),
-        "results": recs,
-        "recommendations": recs,
-        "weights": active_hybrid.get_weights(),
+        "count": len(paginated_recs),
+        "results": paginated_recs,
+        "recommendations": paginated_recs,
+        "weights": hybrid_model.get_weights(),
         "explain": explain,
         "target_catalog": target_catalog,
         "model_version": model_version or ACTIVE_MODEL_VERSION,
         "has_history": has_history,
+        "pagination": {
+            "total": total_found,
+            "limit": effective_limit,
+            "offset": effective_offset,
+            "next_offset": effective_offset + effective_limit if effective_offset + effective_limit < total_found else None,
+            "has_more": (effective_offset + len(paginated_recs)) < total_found,
+        }
     }
 
     if (
@@ -2159,7 +2164,9 @@ def get_recommendations_alias(
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
-    top_n: int = 10,
+    top_n: Optional[int] = Query(None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     explain: bool = Query(False),
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
@@ -2173,6 +2180,8 @@ def get_recommendations_alias(
         item_title=item_title,
         title=title,
         top_n=top_n,
+        limit=limit,
+        offset=offset,
         explain=explain,
         user_id=user_id,
         target_catalog=target_catalog,
@@ -2228,7 +2237,8 @@ def recommend_cold_start(
 
 
 @app.get("/api/user_recommend")
-def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
+@app.get("/api/recommend/user/{user_id}")
+def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), explain: bool = Query(False)):
     """Get hybrid recommendations for a user."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
@@ -2538,6 +2548,8 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
+
+
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
     USER_INTERACTIONS.append({
@@ -2546,6 +2558,7 @@ def log_interaction(data: InteractionCreate):
         "interaction_type": data.interaction_type,
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
+
     return {
         "message": "Interaction logged successfully",
         "interaction": USER_INTERACTIONS[-1]
@@ -2604,6 +2617,25 @@ def create_purchase(
         'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
     }).execute()
     _clear_response_cache()
+
+    # Issue #1596: Perform micro-update of latent vectors in memory
+    try:
+        if "collab" in models and models["collab"]:
+            collab_model = models["collab"]
+            item_df = models.get("item_df")
+            if item_df is not None:
+                matched = item_df[item_df['id'] == data.product_id]
+                if not matched.empty:
+                    title = matched.iloc[0]['title']
+                    collab_model.online_update(
+                        user_id=data.user_id,
+                        title=title,
+                        rating=data.rating
+                    )
+                    logger.info("Micro-updated latent vectors for user %s, item %s", data.user_id, title)
+    except Exception as e:
+        logger.warning("Failed to perform online micro-update: %s", e)
+
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 
@@ -2937,6 +2969,7 @@ async def reset_user_preferences(request: Request):
         
         # 3. Wipe out the internal memory cache
         _clear_response_cache()
+
 
 
         if _redis_client is not None:

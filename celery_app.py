@@ -41,6 +41,15 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+# Issue #1596: Schedule full SVD reconstruction to run as a cron job during off-peak hours
+from celery.schedules import crontab
+celery_app.conf.beat_schedule = {
+    "rebuild-models-nightly": {
+        "task": "tasks.rebuild_models_task",
+        "schedule": crontab(hour=3, minute=0),
+    },
+}
 celery_app.conf.worker_max_tasks_per_child = 5
 
 def dispatch_task_safely(task, *args, **kwargs):
@@ -66,4 +75,4 @@ def dispatch_task_safely(task, *args, **kwargs):
         )
         # .apply() tells Celery to run the function right now on the main execution thread
         return task.apply(args=args, kwargs=kwargs)
-celery_app.conf.worker_max_tasks_per_child = 5
+
