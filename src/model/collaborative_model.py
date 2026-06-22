@@ -12,9 +12,8 @@ Improvements:
 """
 __all__ = ["CollaborativeRecommender"]
 
-from typing import Optional, List, Dict, Any
-import logging
 from typing import Any, Dict, List, Optional, Union
+import logging
 
 import numpy as np
 import pandas as pd

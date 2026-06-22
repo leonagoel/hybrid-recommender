@@ -22,15 +22,7 @@ from redis.exceptions import RedisError
 
 logger = logging.getLogger(__name__)
 
-try:
-    import bleach
-except ModuleNotFoundError:
-    class bleach:
-        @staticmethod
-        def clean(value, strip=True):
-            if not strip:
-                return str(value)
-            return re.sub(r"<[^>]*>", "", str(value))
+import bleach
 
 from collections import deque, Counter
 from threading import Lock
@@ -2004,6 +1996,7 @@ def get_recommendations(
     if not query_title:
         raise HTTPException(422, "Query parameter 'title' is required.")
 
+    cache_key = _cache_key("recommend", query_title, top_n, explain, target_catalog, model_version, user_id)
     # ----- EDGE CASES SAFE CHECK -----
     # Agar model ready nahi hai ya database bilkul khali hai
     if not models or "ready" not in models or not models["ready"]:
@@ -2571,6 +2564,30 @@ def log_interaction(data: InteractionCreate):
         "interaction": USER_INTERACTIONS[-1]
     }
 
+
+@app.post("/api/register")
+def register_and_merge_history(
+    data: MergeHistoryRequest,
+    _csrf: None = Depends(csrf_header_dep),
+):
+    sb = get_supabase()
+    try:
+        # Update purchases in database
+        result = sb.table('purchases').update({'user_id': data.user_id}).eq('user_id', data.guest_id).execute()
+        
+        # Also update in-memory USER_INTERACTIONS list
+        for interaction in USER_INTERACTIONS:
+            if interaction.get("user_id") == data.guest_id:
+                interaction["user_id"] = data.user_id
+                
+        _clear_response_cache()
+        return {"status": "success", "message": "Guest history merged successfully", "updated_count": len(result.data or [])}
+    except Exception as e:
+        logger.error("Failed to merge guest history: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
 def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
@@ -2954,8 +2971,7 @@ async def reset_user_preferences(request: Request):
         _clear_response_cache()
 
 
-        
-      
+
         if _redis_client is not None:
             try:
                 # Find keys matching this user's recommendation cache pattern

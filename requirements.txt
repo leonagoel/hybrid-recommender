@@ -22,3 +22,4 @@ sentence-transformers>=2.2.2
 
 # Pre-commit hooks
 pre-commit>=3.7
+bleach>=6.0.0

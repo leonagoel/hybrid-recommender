@@ -28,6 +28,7 @@ import logging
 import math
 from collections import Counter
 from typing import Any, Optional
+from src.model.recommendation_history import history_tracker
 
 import numpy as np
 
@@ -103,6 +104,15 @@ class HybridRecommender:
         self.delta = float(delta)
 
         self.model_kwargs = model_kwargs or {}
+        self.epsilon = self.model_kwargs.get("epsilon", 0.0)
+        self.bandit_arms = self.model_kwargs.get("bandit_arms", [
+            (self.alpha, self.beta, self.gamma),
+            (0.8, 0.1, 0.1),
+            (0.1, 0.8, 0.1),
+            (0.4, 0.4, 0.2)
+        ])
+        self.arm_counts = {i: 0 for i in range(len(self.bandit_arms))}
+        self.arm_rewards = {i: 0.0 for i in range(len(self.bandit_arms))}
 
         # Fairness controls
         self.fairness_enabled = False
@@ -179,37 +189,7 @@ class HybridRecommender:
                             self._popularity_map[title] = rc / float(max_reviews)
 
     # ------------------------- weight API -------------------------
-    def set_weights(self, alpha: float, beta: float, gamma: float):
-        """Update the scoring weights. Normalized to sum to 1."""
-        for w in (alpha, beta, gamma):
-            if math.isnan(float(w)):
-                raise ValueError("Weights must be finite numbers")
-        if any(w < 0 for w in (alpha, beta, gamma)):
-            raise ValueError("Weights must be non-negative")
-        total = float(alpha + beta + gamma)
-        if total <= 0:
-            total = 1.0
-        self.alpha = float(alpha) / total
-        self.beta = float(beta) / total
-        self.gamma = float(gamma) / total
-
-    def get_weights(self):
-        return {
-            'alpha': self.alpha,
-            'beta': self.beta,
-            'gamma': self.gamma,
-            'delta': self.delta,
-        }
-
-
-    def select_bandit_arm(self):
-        import random
-
-        if random.random() < self.epsilon:
-            return random.randint(0, len(self.bandit_arms) - 1)
-
-
-    def set_weights(self, alpha, beta, gamma, delta=0.05):
+    def set_weights(self, alpha: float, beta: float, gamma: float, delta: float = 0.05):
         """Update the scoring weights. Normalized to sum to 1.
 
         Args:
@@ -219,28 +199,31 @@ class HybridRecommender:
             delta: weight for popularity (default 0.05). All four weights are
                    normalized to sum to 1.0, guaranteeing hybrid_score in [0, 1].
         """
-        if any(math.isnan(w) for w in [alpha, beta, gamma, delta]):
+        if any(math.isnan(float(w)) for w in (alpha, beta, gamma, delta)):
             raise ValueError("Weights must be finite numbers")
-        if any(w < 0 for w in [alpha, beta, gamma, delta]):
+        if any(float(w) < 0 for w in (alpha, beta, gamma, delta)):
             raise ValueError("Weights must be non-negative")
-        total = alpha + beta + gamma + delta
-        if total == 0:
-            total = 1
-        self.alpha = alpha / total
-        self.beta = beta / total
-        self.gamma = gamma / total
-        self.delta = delta / total
+        total = float(alpha + beta + gamma + delta)
+        if total <= 0:
+            total = 1.0
+        self.alpha = float(alpha) / total
+        self.beta = float(beta) / total
+        self.gamma = float(gamma) / total
+        self.delta = float(delta) / total
 
     def get_weights(self):
-        return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
-
+        return {
+            'alpha': self.alpha,
+            'beta': self.beta,
+            'gamma': self.gamma,
+            'delta': self.delta,
+        }
 
     def select_bandit_arm(self):
         import random
 
         if random.random() < self.epsilon:
             return random.randint(0, len(self.bandit_arms) - 1)
-
         best_arm = max(
             self.arm_rewards,
             key=lambda x: self.arm_rewards[x] / max(self.arm_counts[x], 1)
@@ -504,9 +487,10 @@ class HybridRecommender:
 
             a, b, g, d = self._get_active_weights(
                 a, b, g, getattr(self, 'delta', 0.0),
+                candidate_titles=[it["title"] for it in items],
                 user_id=user_id,
             )
-            d = self.delta if self.kg_model else 0.0
+            d = getattr(self, 'delta', 0.0) if self.kg_model else 0.0
 
         # 4) compute hybrid scores
         results: list[dict[str, Any]] = []
