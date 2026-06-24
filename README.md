@@ -273,7 +273,7 @@ POST /api/recommend  →  { "task_id": "abc123", "status": "PENDING" }
 GET  /api/task/abc123  →  { "status": "SUCCESS", "result": { ... } }
 ```
 
-### Alternative — Streamlit UI *(no Supabase required)*
+### Streamlit UI *(no Supabase required)*
 
 ```bash
 streamlit run app.py
@@ -782,5 +782,3 @@ Run:
 python scripts/generate_kg_embeddings.py
 
 ---
-
-

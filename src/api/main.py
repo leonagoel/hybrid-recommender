@@ -146,13 +146,7 @@ def get_recommendations(req: RecommendationRequest):
             _item_df,
             causal_config=causal_cfg,
         )
-
-        recs = model.recommend(
-            title=req.query,
-            user_id=req.user_id,
-            top_n=req.top_n,
-        )
-
+        recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
         return {
             "recommendations": recs,
             "model_name": "hybrid",
@@ -244,29 +238,30 @@ def get_evaluation_metrics(k: int = 10, mode: str = "all"):
                     _item_df[_item_df["category"] == cat]["title"].tolist()
                 ) - {title}
             else:
-                relevant = set(titles) - {title}
-
-            if not relevant:
-                continue
-
-            precision_scores.append(_precision_at_k(rec_titles, relevant, k))
-            recall_scores.append(_recall_at_k(rec_titles, relevant, k))
-            ndcg_scores.append(_ndcg_at_k(rec_titles, relevant, k))
-            ap_scores.append(average_precision_at_k(rec_titles, relevant, k))
-
-        def _mean(lst):
-            return round(sum(lst) / len(lst), 4) if lst else 0.0
-
-        metrics["results"] = {
-            "precision_at_k": _mean(precision_scores),
-            "recall_at_k": _mean(recall_scores),
-            "ndcg_at_k": _mean(ndcg_scores),
-            "map": _mean(ap_scores),
-            "sample_size": len(precision_scores),
-        }
-        return metrics
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Evaluation failed: {exc}")
+                # Absolute zero-dependency static default array
+                popular_items = ["Top Trending Item A", "Top Trending Item B", "Top Trending Item C"]
+            
+            # Format the payload items to mimic real recommendation results
+            fallback_recs = [
+                {
+                    "title": item,
+                    "hybrid_score": 1.0,
+                    "content_score": "—",
+                    "collab_score": "—",
+                    "sentiment_score": "—",
+                    "rating": "5.0",
+                    "category": "Trending"
+                }
+                for item in popular_items
+            ]
+            
+            return {
+                "recommendations": fallback_recs,
+                "causal_debiasing_applied": False,
+                "fallback": True,
+                "note": "Primary pipeline encountered an error. Serving trending fallback layout."
+            }
+            
+        except Exception as fallback_exc:
+            logger.critical(f"Critical System Outage: Fallback engine failed: {str(fallback_exc)}")
+            raise HTTPException(status_code=500, detail="Recommendation engine completely offline.")

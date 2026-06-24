@@ -675,10 +675,8 @@ class HybridRecommender:
             results.sort(key=lambda x: x[score_key], reverse=True)
 
         for item in results:
-            history_tracker.add_recommendation(
-                user_id,
-                item["title"]
-            )
+            history_tracker.add_recommendation(user_id, item["title"])
+
         return results
 
     def _build_explanation(
