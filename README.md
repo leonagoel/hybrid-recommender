@@ -7,7 +7,20 @@
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+## 📌 Table of Contents
+- [🚀 Features](#-features)
+- [⚙️ Installation](#️-installation)
+- [💻 Usage](#-usage)
+- [📂 Project Structure](#-project-structure)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
+
+---
+
+
 ![Coverage](https://img.shields.io/badge/coverage-50%25-brightgreen)
+[![Live Demo](https://shields.io)](https://vercel.app)
+[![GitHub Discussions](https://shields.io)](https://github.com)
 
 <div align="center">
 
@@ -39,6 +52,26 @@
 ```text
 25,000+ products  ·  Sub-50ms search  ·  3 ML models fused  ·  ~60% faster integration
 ```
+
+---
+
+## Table of Contents
+
+- [Architecture](#01--architecture)
+- [Features](#02--features)
+- [Tech Stack](#03--tech-stack)
+- [Project Structure](#04--project-structure)
+- [Quick Start](#05--quick-start)
+- [API Reference](#06--api-reference)
+- [Security](#07--security)
+- [FAQ](#08--faq)
+- [Screenshots](#09--screenshots)
+- [Troubleshooting](#10--troubleshooting)
+- [Setup Verification](#11--setup-verification)
+- [Beginner Contributor Tips](#12--beginner-contributor-tips)
+- [Contributors](#contributors)
+- [License](#license)
+- [Knowledge Graph Embeddings](#knowledge-graph-embeddings)
 
 ---
 
@@ -391,7 +424,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
-## 08 — Security
+## 07 — Security
 
 ```text
 ✓  No hardcoded credentials — config served via /api/config
@@ -405,7 +438,7 @@ NDCG@K       —  ranking quality (discounted cumulative gain)
 
 ---
 
-## 09 — FAQ
+## 08 — FAQ
 
 <details>
 <summary><strong>How do I set up the project locally?</strong></summary>
@@ -518,14 +551,12 @@ streamlit run app.py
 ---
 ### Backend Health Check
 
-Run the utility script to verify whether the backend API server is reachable:
+Verify that the backend is running by visiting:
 
 ```bash
-python scripts/health_check.py
-```
+curl http://localhost:8000/api/status
 
 Example output when backend is running:
-
 ```text
 ✅ Backend is running
 ⏱ Response time: 42 ms
@@ -537,33 +568,25 @@ Example output when backend is offline:
 ```text
 ❌ Could not connect to backend server
 ```
-
-
-
 ### Environment Validation
 
-Run the helper script to verify required environment variables:
+Ensure the following variables are configured in your `.env` file:
 
-```bash
-python scripts/check_env.py
-```
+- SUPABASE_URL
+- SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_KEY
 
 Example output:
-
 ```text
 ❌ Missing environment variables:
  - SUPABASE_URL
  - SUPABASE_ANON_KEY
  - SUPABASE_SERVICE_KEY
 ```
-
 Or:
-
 ```text
 ✅ Environment setup looks good
 ```
-
-
 ---
 
 ## 12 — Beginner Contributor Tips

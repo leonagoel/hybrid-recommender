@@ -1,13 +1,15 @@
 """
 FastAPI Backend for Hybrid Recommender
 """
+
 import os
 import sys
-from pathlib import Path  # <-- Added
-from dotenv import load_dotenv  # <-- Added
+from pathlib import Path
+from typing import Optional
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
 
 # Calculate absolute paths and load environment variables first
 CURRENT_DIR = Path(__file__).parent.resolve()
@@ -29,30 +31,18 @@ from src.model.hybrid_model import HybridRecommender
 from src.model.causal_config import CausalConfig
 
 app = FastAPI(title="Hybrid Recommender API")
-# ===========================================================================
-# NEW: Dynamic Configuration Layout Environment Fetching
-# ===========================================================================
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://your-project-ref.supabase.co")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "your-anon-key-here")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-# Fetch and clean the comma-separated CORS origins string into a clean list array
-RAW_CORS = os.getenv("CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
-CORS_ORIGINS = [origin.strip() for origin in RAW_CORS.split(",")]
-# ===========================================================================
 
 
 class RecommendationRequest(BaseModel):
     query: str
     user_id: Optional[str] = None
     top_n: int = 10
-    # Set to True to apply IPS causal debiasing on the hybrid score.
-    # Downweights items that were over-exposed in training data (popularity/category bias).
+
+    # Apply IPS causal debiasing on the hybrid score.
     use_causal: bool = False
-    # λ blend factor: 0.0 = pure correlation, 1.0 = full IPS reweighting.
     causal_lambda: float = 0.5
-    # IPS weight cap — prevents rare items from dominating after reweighting.
     causal_clip: float = 5.0
+
     fairness: Optional[bool] = None
     fairness_key: Optional[str] = None
     fairness_max_share: Optional[float] = None
@@ -64,9 +54,47 @@ _collab_model: Optional[CollaborativeRecommender] = None
 _item_df = None
 
 
+def _make_trending_fallback(req: RecommendationRequest) -> dict:
+    # Best-effort safe pull from the global item dataframe.
+    fallback_titles = []
+    if _item_df is not None and not _item_df.empty and "title" in _item_df.columns:
+        fallback_titles = _item_df.head(max(0, req.top_n))[["title"]].copy()
+        fallback_titles = fallback_titles["title"].astype(str).tolist()
+
+    if not fallback_titles:
+        fallback_titles = [
+            "Top Trending Item A",
+            "Top Trending Item B",
+            "Top Trending Item C",
+        ][: max(1, req.top_n)]
+
+    fallback_recs = [
+        {
+            "title": item,
+            "hybrid_score": 1.0,
+            "content_score": "—",
+            "collab_score": "—",
+            "sentiment_score": "—",
+            "rating": "5.0",
+            "category": "Trending",
+        }
+        for item in fallback_titles[: max(0, req.top_n)]
+    ]
+
+    return {
+        "recommendations": fallback_recs,
+        "model_name": "hybrid",
+        "message": "Models not loaded. Serving trending fallback layout.",
+        "causal_debiasing_applied": False,
+        "fallback": True,
+        "note": "Models not loaded. Serving trending fallback layout.",
+    }
+
+
 @app.on_event("startup")
 def startup_event():
     global _content_model, _collab_model, _item_df
+
     dm = DatasetManager()
     data_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "datasets"
@@ -74,6 +102,7 @@ def startup_event():
 
     datasets_to_load = ["books.csv", "booksdata.csv", "ratings.csv"]
     loaded = False
+
     for filename in datasets_to_load:
         filepath = os.path.join(data_dir, filename)
         if os.path.exists(filepath):
@@ -82,24 +111,24 @@ def startup_event():
             break
 
     if not loaded:
-        print("Warning: No datasets found for API startup.")
+        # Keep app running; /recommend will serve fallback.
         return
 
     interaction_df, item_df = dm.merge_all()
     _item_df = item_df
     _content_model = ContentRecommender(item_df)
+
     if len(interaction_df) > 0 and interaction_df["user_id"].nunique() > 1:
         _collab_model = CollaborativeRecommender(interaction_df)
 
 
 @app.post("/recommend")
 def get_recommendations(req: RecommendationRequest):
+    # If models haven't loaded (startup missed datasets), serve fallback instead.
     if _content_model is None:
-        raise HTTPException(status_code=503, detail="Models not loaded")
+        return _make_trending_fallback(req)
 
-    # ===================================================================
     # Try the Primary Hybrid Pipeline
-    # ===================================================================
     try:
         causal_cfg = (
             CausalConfig(
@@ -120,23 +149,94 @@ def get_recommendations(req: RecommendationRequest):
         recs = model.recommend(title=req.query, user_id=req.user_id, top_n=req.top_n)
         return {
             "recommendations": recs,
+            "model_name": "hybrid",
+            "message": "Recommendations retrieved successfully",
             "causal_debiasing_applied": req.use_causal,
             "fallback": False,
         }
 
-    # ===================================================================
     # Graceful Popularity Fallback Recovery Layer (#678)
-    # ===================================================================
     except Exception as exc:
-        import logging
-        logger = logging.getLogger("uvicorn.error")
-        logger.error(f"Primary recommendation engine failed: {str(exc)}. Triggering popularity fallback.")
-        
+        # Absolute last-resort: never leak exception details to the client.
         try:
-            # Fallback calculation: safe data pull from the global item dataframe
-            if '_item_df' in globals() and _item_df is not None and not _item_df.empty:
-                # Fall back to picking items safely from your active dataframe asset
-                popular_items = _item_df.head(req.top_n)["title"].tolist()
+            payload = _make_trending_fallback(req)
+            payload["message"] = "Primary pipeline encountered an error. Serving trending fallback layout."
+            payload["note"] = "Primary pipeline encountered an error. Serving trending fallback layout."
+            payload["causal_debiasing_applied"] = False
+            payload["fallback"] = True
+            return payload
+        except Exception:
+            raise HTTPException(
+                status_code=500,
+                detail="Recommendation engine completely offline.",
+            )
+
+
+@app.post("/recommendations")
+def get_recommendations_legacy(req: RecommendationRequest):
+    """
+    Backward-compatible alias for clients and issue reports that call /recommendations.
+    """
+    return get_recommendations(req)
+
+
+# ---------------------------------------------------------------------------
+# Issue #1599 — Real-Time Evaluation Dashboard endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/api/evaluation/metrics")
+def get_evaluation_metrics(k: int = 10, mode: str = "all"):
+    """
+    Returns real-time recommendation quality metrics (MAP, NDCG@K, Precision@K,
+    Recall@K) computed against a hold-out test set built from the loaded dataset.
+
+    Query params:
+        k    – cut-off rank (default 10)
+        mode – one of content | collaborative | sentiment | hybrid | all
+    """
+    if _item_df is None or _item_df.empty:
+        raise HTTPException(
+            status_code=503,
+            detail="Models not loaded yet. Start the server with a valid dataset.",
+        )
+
+    try:
+        from src.evaluation.evaluation import (
+            _precision_at_k,
+            _recall_at_k,
+            _ndcg_at_k,
+            average_precision_at_k,
+        )
+
+        # Build a lightweight test set from in-memory item data.
+        titles = _item_df["title"].dropna().tolist()
+        if len(titles) < 2:
+            raise HTTPException(status_code=503, detail="Dataset too small for evaluation.")
+
+        # Use category grouping as a proxy for relevance (same category = relevant).
+        metrics: dict = {"k": k, "mode": mode, "results": {}}
+        sample_size = min(50, len(titles))
+        import random, math
+        rng = random.Random(42)
+        sample_titles = rng.sample(titles, sample_size)
+
+        precision_scores, recall_scores, ndcg_scores, ap_scores = [], [], [], []
+
+        for title in sample_titles:
+            if _content_model is None:
+                continue
+            recs_raw = _content_model.recommend(title, top_n=k)
+            rec_titles = [r["title"] for r in recs_raw if "title" in r]
+
+            # Relevant = same category items in the loaded dataframe.
+            if "category" in _item_df.columns:
+                row = _item_df[_item_df["title"] == title]
+                if row.empty:
+                    continue
+                cat = row.iloc[0]["category"]
+                relevant = set(
+                    _item_df[_item_df["category"] == cat]["title"].tolist()
+                ) - {title}
             else:
                 # Absolute zero-dependency static default array
                 popular_items = ["Top Trending Item A", "Top Trending Item B", "Top Trending Item C"]

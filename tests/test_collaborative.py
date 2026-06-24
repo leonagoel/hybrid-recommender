@@ -23,8 +23,8 @@ def test_matrix_creation():
 
     model = CollaborativeRecommender(df)
 
-    assert model.user_item_sparse.shape[0] > 0
-    assert model.user_item_sparse.shape[1] > 0
+    assert model.user_factors.shape[0] > 0
+    assert model.item_factors.shape[1] > 0
 
 
 def test_svd_training():
@@ -32,9 +32,10 @@ def test_svd_training():
 
     model = CollaborativeRecommender(df)
 
-    assert model.svd is not None
     assert model.user_factors is not None
     assert model.item_factors is not None
+    assert model.user_factors.shape[0] == 3
+    assert model.item_factors.shape[1] == 4
 
 
 def test_prediction_output_format():
@@ -130,3 +131,19 @@ def test_user_with_all_items_seen():
     model = CollaborativeRecommender(df)
     results = model.predict_for_user(1, top_n=10)
     assert len(results) == 0
+
+
+def test_recommend_with_catalog():
+    """Test catalog filtering in recommend."""
+    df_with_catalog = pd.DataFrame({
+        "user_id": [1, 1, 2, 2, 3, 3],
+        "title": ["Item A", "Item B", "Item A", "Item C", "Item B", "Item D"],
+        "rating": [5, 4, 3, 4, 5, 4],
+        "catalog": ["books", "books", "movies", "movies", "books", "games"]
+    })
+    model = CollaborativeRecommender(df_with_catalog)
+    results = model.recommend("Item A", target_catalog="books", top_n=10)
+    assert isinstance(results, list)
+    for r in results:
+        assert model._catalog_map[r['title']] == "books"
+

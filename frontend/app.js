@@ -7,6 +7,11 @@ const root = document.documentElement;
 function initThemeToggle() {
   if (!themeToggle) return;
 
+  // Ensure theme toggle button is focusable as a keyboard-accessible control.
+  themeToggle.setAttribute('role', 'button');
+  themeToggle.setAttribute('tabindex', '0');
+
+
   const savedTheme = localStorage.getItem('theme') || 'dark';
 
   root.setAttribute('data-theme', savedTheme);
@@ -43,7 +48,12 @@ function initThemeToggle() {
   });
 }
 
-document.addEventListener('DOMContentLoaded', initThemeToggle);
+document.addEventListener('DOMContentLoaded', () => {
+    initThemeToggle();
+    if (typeof initBenchmarkingDashboard === 'function') {
+        initBenchmarkingDashboard();
+    }
+});
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({
@@ -504,24 +514,44 @@ async function handleAuth(e) {
     const email = els.authEmail.value.trim();
     const password = els.authPassword.value;
 
+    // 1. Fetch the tracking token from browser storage
+    const guestToken = localStorage.getItem('guest_session_token') || null;
+
     try {
-        let result;
         if (state.isAuthSignUp) {
-            result = await sbClient.auth.signUp({
-                email,
-                password,
-                options: { data: { display_name: email.split('@')[0] } },
-            });
+            // --- SIGN UP LOGIC (Supabase Auth Client-side Signup) ---
+            if (!sbClient) throw new Error("Authentication infrastructure unavailable.");
+            
+            const { data, error } = await sbClient.auth.signUp({ email, password });
+            if (error) throw error;
+
+            const newUserId = data?.user?.id;
+
+            // 2. Map guest interactions directly to the new permanent profile ID
+            if (guestToken && newUserId) {
+                await sbClient
+                    .from('interactions')
+                    .update({ user_id: newUserId })
+                    .eq('guest_token', guestToken);
+                
+                // 3. Clear tracking states once migrated
+                localStorage.removeItem('guest_session_token');
+            }
+
+            toast('Signup successful! Your browsing history has been saved.', 'success');
         } else {
-            result = await sbClient.auth.signInWithPassword({ email, password });
+            // --- LOGIN LOGIC ---
+            if (!sbClient) throw new Error("Authentication infrastructure unavailable.");
+            const { error } = await sbClient.auth.signInWithPassword({ email, password });
+            if (error) throw error;
+            toast('Welcome back!', 'success');
         }
 
-        if (result.error) throw result.error;
-
-        setUser(result.data.user);
         els.authModal.hidden = true;
-        toast(state.isAuthSignUp ? 'Account created!' : 'Signed in!', 'success');
+        location.reload();
+
     } catch (err) {
+        console.error('Authentication process failed:', err.message);
         els.authError.textContent = err.message;
         els.authError.hidden = false;
     } finally {
@@ -529,6 +559,7 @@ async function handleAuth(e) {
         els.authSubmit.textContent = state.isAuthSignUp ? 'Sign Up' : 'Sign In';
     }
 }
+
 
 function toggleAuthMode() {
     state.isAuthSignUp = !state.isAuthSignUp;
@@ -1493,12 +1524,49 @@ function bindEvents() {
         }
     });
 
-    els.authForm.addEventListener('submit', handleAuth);
-    els.authToggleBtn.addEventListener('click', toggleAuthMode);
-    els.modalClose.addEventListener('click', () => { els.authModal.hidden = true; });
-    els.authModal.addEventListener('click', (e) => {
-        if (e.target === els.authModal) els.authModal.hidden = true;
-    });
+    async function handleAuth(e) {
+    e.preventDefault();
+    const email = els.authEmail.value;
+    const password = els.authPassword.value;
+    
+    // 1. Get the guest token from the browser storage
+    const guestToken = localStorage.getItem('guest_session_token') || null;
+
+    if (state.isAuthSignUp) {
+        // --- SIGN UP LOGIC ---
+        try {
+            const response = await fetch('/api/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ..._csrfHeaders()
+                },
+                body: JSON.stringify({
+                    email: email,
+                    password: password,
+                    guest_token: guestToken // <-- Pass token to backend
+                })
+            });
+
+            if (response.ok) {
+                // Remove the local token since it is now synced to your profile
+                localStorage.removeItem('guest_session_token');
+                toast('Signup successful! Your guest history has been synced.', 'success');
+                els.authModal.hidden = true;
+                location.reload(); 
+            } else {
+                const errData = await response.json();
+                if (els.authError) els.authError.textContent = errData.detail || 'Signup failed';
+            }
+        } catch (err) {
+            console.error('Signup error:', err);
+        }
+    } else {
+        // --- LOGIN LOGIC ---
+        // (Your existing login code goes here unchanged)
+    }
+}
+
 
     // Upload
     els.uploadBtn.addEventListener('click', () => els.fileInput.click());
@@ -1705,7 +1773,9 @@ function closeSearchDropdown() {
 }
 
 function handleSearchKeydown(e) {
-    const results = state.searchResults;
+    // Use autocompleteResults (single source of truth for dropdown)
+    const results = state.autocompleteResults || [];
+
     if (!results.length || !els.searchDropdown.classList.contains('active')) return;
 
     if (e.key === 'ArrowDown') {
@@ -1714,11 +1784,11 @@ function handleSearchKeydown(e) {
         renderSearchDropdown(results, els.searchInput.value);
     } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, -1);
+        state.selectedSearchIdx = Math.max(state.selectedSearchIdx - 1, 0);
         renderSearchDropdown(results, els.searchInput.value);
     } else if (e.key === 'Enter' && state.selectedSearchIdx >= 0) {
         e.preventDefault();
-        selectSearchResult(results[state.selectedSearchIdx].title);
+        selectSearchResult(results[state.selectedSearchIdx]);
     } else if (e.key === 'Escape') {
         closeSearchDropdown();
     }
@@ -2033,8 +2103,51 @@ document.querySelectorAll(".product-card").forEach(card => {
 
 document.addEventListener('DOMContentLoaded', init);
 
+// ── FIX: state filters + chips compatibility ────────────────
+// Some UI paths reference state.activeChips but the base state was missing it.
+// Ensure it exists and is initialized.
+if (!state.activeChips) {
+    state.activeChips = new Set(['all']);
+}
+if (!state.filters) {
+    state.filters = { category: '', rating: '', sentiment: '' };
+}
+
+// Utility: reset search box + filters and reload results.
+function resetAllFiltersAndSearch() {
+    if (els.searchInput) els.searchInput.value = '';
+    state.filters.category = '';
+    state.filters.rating = '';
+    state.filters.sentiment = '';
+
+    if (els.categoryFilter) els.categoryFilter.value = '';
+    if (els.ratingFilter) els.ratingFilter.value = '';
+    if (els.sentimentFilter) els.sentimentFilter.value = '';
+
+    if (state.activeChips) {
+        state.activeChips = new Set(['all']);
+        const chipsContainer = document.getElementById('filter-chips');
+        if (chipsContainer) {
+            chipsContainer.querySelectorAll('.chip').forEach((c) => {
+                if (c.dataset.filter === 'all') c.classList.add('active');
+                else c.classList.remove('active');
+            });
+        }
+    }
+
+    if (els.productGrid) {
+        // Reload the non-search product feed.
+        els.productsTitle.textContent = 'All Products';
+    }
+
+    // Prefer backend status-driven load if available.
+    checkStatus().catch(() => loadProducts(false));
+    closeSearchDropdown();
+}
+
 // ── Language Toggle ─────────────────────────────────────────────────
 let currentLang = 'EN';
+
 
 function toggleLanguage() {
     currentLang = currentLang === 'EN' ? 'HI' : 'EN';

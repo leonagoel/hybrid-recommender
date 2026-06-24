@@ -88,19 +88,59 @@ def test_federated_server_aggregation():
     
     # Updated global item factors
     # For Item A (idx 0), average update = mean([0.1,0.2,0.3] and [0.3,0.4,0.5]) = [0.2, 0.3, 0.4]
-    # New Item A factor = initial_A + lr * average_update
+    # New Item A factor = initial_A + lr * (average_update - reg * initial_A)
     expected_A_update = np.array([0.2, 0.3, 0.4])
     assert np.allclose(
         server.global_item_factors[:, 0],
-        initial_factors[:, 0] + 0.1 * expected_A_update
+        initial_factors[:, 0] + 0.1 * (expected_A_update - 0.05 * initial_factors[:, 0])
     )
     
     # For Item B (idx 1), average update = [0.2, 0.4, 0.6]
     expected_B_update = np.array([0.2, 0.4, 0.6])
     assert np.allclose(
         server.global_item_factors[:, 1],
-        initial_factors[:, 1] + 0.1 * expected_B_update
+        initial_factors[:, 1] + 0.1 * (expected_B_update - 0.05 * initial_factors[:, 1])
     )
+
+
+def test_regularization_strength_constant_across_clients():
+    """
+    Regularization must not be diluted by the number of participating clients.
+    With identical updates from 1, 2, or N clients the item factor update must
+    be the same because averaging identical data gradients is a no-op, and the
+    regularization penalty is applied once after averaging — not inside it.
+    """
+    item_list = ["Item A"]
+    n_factors = 3
+    reg = 0.1
+    lr = 0.05
+    identical_update = np.array([0.4, 0.2, 0.6])
+
+    results = []
+    for n_clients in [1, 2, 5]:
+        server = FederatedServer(
+            item_list=item_list, n_factors=n_factors, learning_rate=lr, reg=reg
+        )
+        initial_factor = server.global_item_factors[:, 0].copy()
+        client_updates = [{"Item A": identical_update.copy()} for _ in range(n_clients)]
+        server.aggregate_updates(client_updates)
+        results.append((initial_factor, server.global_item_factors[:, 0].copy()))
+
+    # Each run starts from same initial (seed fixed to 42 in FederatedServer)
+    # and must produce the same final factor regardless of client count.
+    for initial, final in results:
+        expected = initial + lr * (identical_update - reg * initial)
+        assert np.allclose(final, expected), (
+            f"Item factor update differs from expected. "
+            f"Regularization may be averaged over clients instead of applied once."
+        )
+
+    # All client-count variants must agree with each other.
+    for i in range(1, len(results)):
+        assert np.allclose(results[0][1], results[i][1]), (
+            f"Result for n_clients={[1,2,5][i]} differs from n_clients=1. "
+            f"Regularization decays with client count."
+        )
 
 
 def test_train_federated_collaborative_model():

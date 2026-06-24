@@ -27,6 +27,7 @@ WebSocket upgrades are also skipped — they are not affected by CSRF.
 import os
 import secrets
 import logging
+import string
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -42,6 +43,17 @@ CSRF_COOKIE_NAME = "csrftoken"
 CSRF_HEADER_NAME = "x-csrf-token"          # HTTP headers are lowercased by Starlette
 CSRF_TOKEN_BYTES = 32                       # 256-bit token → 64 hex chars
 CSRF_COOKIE_MAX_AGE = 60 * 60 * 8          # 8 hours in seconds
+
+# Issue #1597 — Allowed origins for Origin/Referer validation.
+# Comma-separated list in CSRF_ALLOWED_ORIGINS env var (e.g. "http://localhost:3000,https://app.example.com").
+# Falls back to permissive mode (all origins allowed) when the var is not set so that
+# existing deployments are not broken.
+_raw_allowed = os.environ.get("CSRF_ALLOWED_ORIGINS", "").strip()
+ALLOWED_ORIGINS: set[str] = (
+    {o.rstrip("/") for o in _raw_allowed.split(",") if o.strip()}
+    if _raw_allowed
+    else set()
+)
 
 
 # ── Response schema ───────────────────────────────────────────────────────────
@@ -200,6 +212,55 @@ class CSRFMiddleware:
             await self._app(scope, receive, send)
             return
 
+        # 2.5 Issue #1597 — Validate Origin / Referer header against ALLOWED_ORIGINS.
+        origin_header = request.headers.get("origin", "")
+        referer_header = request.headers.get("referer", "")
+        
+        origin: str = origin_header or referer_header
+        
+        # In strict checking, we must have an Origin or Referer for mutating requests.
+        if not origin:
+            # For TestClient compatibility, if TESTING is true and no origin is provided, we can mock it
+            # But here we enforce it strictly. TestClient should provide Origin header.
+            logger.warning("CSRF validation failed (Origin and Referer missing)")
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF validation failed: Origin and Referer missing."},
+            )
+            await response(scope, receive, send)
+            return
+
+        from urllib.parse import urlparse
+        parsed_origin = urlparse(origin)
+        origin_base = f"{parsed_origin.scheme}://{parsed_origin.netloc}".rstrip("/")
+
+        if ALLOWED_ORIGINS:
+            if origin_base not in ALLOWED_ORIGINS:
+                logger.warning(
+                    "CSRF validation failed (origin not allowed) path=%s origin=%s",
+                    request.url.path,
+                    origin_base or "(none)",
+                )
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF validation failed: origin not allowed."},
+                )
+                await response(scope, receive, send)
+                return
+        else:
+            host = request.headers.get("host", "")
+            if not host or parsed_origin.netloc != host:
+                logger.warning(
+                    "CSRF validation failed (cross-origin mismatch) origin=%s host=%s",
+                    parsed_origin.netloc, host
+                )
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF validation failed: cross-origin mismatch."},
+                )
+                await response(scope, receive, send)
+                return
+
         # 3. Read the token from the inbound cookie header.
         #    request.cookies is a plain dict populated by Starlette from
         #    the raw Cookie header — no browser involvement needed.
@@ -225,6 +286,23 @@ class CSRFMiddleware:
             response = JSONResponse(
                 status_code=403,
                 content={"detail": "CSRF token missing."},
+            )
+            await response(scope, receive, send)
+            return
+
+        # 5.5 Reject immediately if tokens do not match expected format and length.
+        def _is_valid_token(t: str) -> bool:
+            return len(t) == CSRF_TOKEN_BYTES * 2 and all(c in string.hexdigits for c in t)
+
+        if not _is_valid_token(cookie_token) or not _is_valid_token(header_token):
+            logger.warning(
+                "CSRF validation failed (invalid token format) path=%s method=%s",
+                request.url.path,
+                request.method,
+            )
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token invalid format."},
             )
             await response(scope, receive, send)
             return
