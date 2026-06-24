@@ -54,10 +54,8 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
-from typing import Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
