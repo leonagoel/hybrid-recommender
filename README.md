@@ -191,7 +191,7 @@ SUPABASE_SERVICE_KEY=your-service-role-key
 # See SETUP.md for full schema → paste into Supabase SQL Editor
 ```
 
-```bash
+```powershell
 # 4 — Start the server
 if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
 if (-not $env:PORT) { $env:PORT = "8000" }
