@@ -3,7 +3,7 @@
 // Supabase guest (anonymous) + email/password flows.
 // =============================================================================
 
-import { state, setState } from './state.js';
+import { state, setState, getAnonymousUserId } from './state.js';
 import { showToast, showModal, hideModal, setLoadingState } from './ui.js';
 
 let _supabase = null;
@@ -74,8 +74,30 @@ export async function signUpWithEmail(email, password) {
       return null;
     }
     setLoadingState('auth', true);
+    const guestId = getAnonymousUserId();
     const { data, error } = await _supabase.auth.signUp({ email, password });
     if (error) throw error;
+
+    if (data?.user?.id && guestId && guestId !== data.user.id) {
+      try {
+        const csrfToken = _getCookie('csrftoken');
+        const headers = { 'Content-Type': 'application/json' };
+        if (csrfToken) {
+          headers['X-CSRF-Token'] = csrfToken;
+        }
+        await fetch('/api/register', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            guest_id: guestId,
+            user_id: data.user.id,
+          }),
+        });
+      } catch (mergeErr) {
+        console.warn('Failed to merge guest history on register:', mergeErr);
+      }
+    }
+
     hideModal('auth-modal');
     showToast('Account created! Check your email to confirm.', 'success');
     return data;
