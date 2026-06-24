@@ -49,7 +49,7 @@ python scripts/seed_mock_data.py --users 50 --purchases 2000  # Custom amounts
 ```
 
 ### 5. Start the Server
-```bash
+```powershell
 if (-not $env:HOST) { $env:HOST = "0.0.0.0" }
 if (-not $env:PORT) { $env:PORT = "8000" }
 
