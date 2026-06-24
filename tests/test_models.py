@@ -272,3 +272,18 @@ class TestHybridRecommender:
         recs = hm.recommend_for_user('u1', top_n=3)
         assert isinstance(recs, list)
         assert len(recs) > 0
+
+    def test_recommend_for_user_records_history(self, hybrid_model, monkeypatch):
+        """User recommendations should be tracked for repeat filtering."""
+        recorded = []
+
+        monkeypatch.setattr(
+            "src.model.hybrid_model.history_tracker",
+            type("Tracker", (), {"add_recommendation": lambda self, user_id, title: recorded.append((user_id, title))})(),
+        )
+
+        recs = hybrid_model.recommend_for_user('u1', top_n=3)
+
+        assert len(recs) > 0
+        assert recorded
+        assert all(user_id == 'u1' for user_id, _ in recorded)
