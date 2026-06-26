@@ -121,7 +121,7 @@ EVALUATION_HISTORY = deque(maxlen=20)
 
 @app.get("/api/evaluate")
 async def evaluate_models(
-    k: int = 10,
+    k: int = Query(10, ge=1, le=100),
     mode: str = "all",
     alpha: float = 0.4,
     beta: float = 0.35,
@@ -2070,7 +2070,8 @@ def get_recommendations(
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
-    strategy: Optional[str] = Query(None), 
+    strategy: Optional[str] = Query(None),
+    method: Optional[str] = Query(None, description="knn for KNN-based collaborative filtering"),
 ):
     rate_limited = _apply_rate_limit(
         request,
