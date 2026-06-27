@@ -265,6 +265,72 @@ class HybridRecommender:
             except Exception:
                 self.fairness_max_share = 1.0
 
+    def _context_rerank(
+        self,
+        results: list[dict[str, Any]],
+        weather: str | None = None,
+        time_of_day: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not results:
+            return results
+
+        reranked = []
+        for item in results:
+            boost = 1.0
+            category = str(item.get("category", "")).strip().lower()
+            title = str(item.get("title", "")).strip().lower()
+            description = str(item.get("description", "")).strip().lower()
+
+            if weather:
+                w = weather.strip().lower()
+                if w in {"sunny", "hot"}:
+                    if category in {"outdoor", "sports", "fitness", "garden", "apparel"}:
+                        boost += 0.2
+                    if "sun" in title or "summer" in title or "portable" in title or "water" in title:
+                        boost += 0.15
+                elif w in {"rainy", "snowy", "cold", "stormy"}:
+                    if category in {"books", "games", "home", "kitchen", "electronics"}:
+                        boost += 0.2
+                    if "cozy" in title or "indoor" in title or "warm" in title or "home" in title:
+                        boost += 0.15
+
+            if time_of_day:
+                t = time_of_day.strip().lower()
+                if t == "morning":
+                    if category in {"health", "fitness", "books", "office"}:
+                        boost += 0.15
+                    if "morning" in title or "coffee" in title or "alarm" in title or "productivity" in title:
+                        boost += 0.1
+                elif t == "afternoon":
+                    if category in {"electronics", "office", "education"}:
+                        boost += 0.15
+                    if "work" in title or "study" in title or "desk" in title:
+                        boost += 0.1
+                elif t == "evening":
+                    if category in {"games", "entertainment", "apparel", "home"}:
+                        boost += 0.15
+                    if "relax" in title or "evening" in title or "sleep" in title:
+                        boost += 0.1
+                elif t == "night":
+                    if category in {"books", "home", "cozy"}:
+                        boost += 0.2
+                    if "sleep" in title or "night" in title or "cozy" in title:
+                        boost += 0.15
+
+            item_copy = dict(item)
+            item_copy["hybrid_score"] = item_copy["hybrid_score"] * boost
+            if "explanation" in item_copy and boost != 1.0:
+                reasons = []
+                if weather:
+                    reasons.append(f"weather ({weather})")
+                if time_of_day:
+                    reasons.append(f"time of day ({time_of_day})")
+                item_copy["explanation"] = item_copy.get("explanation", "") + f" [Boosted by context: {', '.join(reasons)}]"
+            reranked.append(item_copy)
+
+        reranked.sort(key=lambda x: x["hybrid_score"], reverse=True)
+        return reranked
+
     def _fair_rerank(self, results: list[dict[str, Any]], top_n: int, key: str, max_share: float):
         if not results or top_n <= 1:
             return results[:top_n]
@@ -413,6 +479,8 @@ class HybridRecommender:
         fairness_max_share: float | None = None,
         diversity: float = 0.0,
         serendipity: float = 0.0,
+        weather: str | None = None,
+        time_of_day: str | None = None,
     ):
         # 1) collect candidates and raw component scores
         content_recs = self.content_model.recommend(
@@ -594,6 +662,10 @@ class HybridRecommender:
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
         if not results:
             return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
+
+        # Apply context-aware reranking using weather and time data
+        if weather or time_of_day:
+            results = self._context_rerank(results, weather, time_of_day)
 
         # 7. Optional causal debiasing — applied after sorting so the debiaser
         #    sees the full candidate set for proper batch-level IPS normalization,
