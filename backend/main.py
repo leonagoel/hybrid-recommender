@@ -1,5 +1,4 @@
 from __future__ import annotations
-from fastapi import FastAPI # type: ignore
 from backend.routers import recommend
 
 """
@@ -60,19 +59,11 @@ from fastapi import ( # type: ignore
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.middleware.cors import CORSMiddleware # type: ignore
-from fastapi.staticfiles import StaticFiles # type: ignore
-from fastapi.responses import FileResponse, JSONResponse # type: ignore
-from pydantic import BaseModel # type: ignore
-from typing import Dict, List, Optional # type: ignore
-from pydantic import BaseModel, ConfigDict, Field # type: ignore
-from typing import Any, Optional
-from dotenv import load_dotenv # type: ignore
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -244,10 +235,6 @@ except Exception:
     _redis_client = None
     logger.warning("Redis unavailable at %s — falling back to in-memory cache.", _redis_url)
 
-
-def csrf_header_dep(request: Request) -> None:
-    """No-op dependency; actual CSRF validation is handled by CSRFMiddleware."""
-    pass
 
 MOCK_PRODUCTS = [
     {
@@ -493,11 +480,10 @@ def _extract_bearer_token(value: str | None) -> str:
 
 def _require_admin_access(request: Request) -> None:
     expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
-    if not expected_token:
-        raise HTTPException(
-            status_code=500,
-            detail="Admin token not configured.",
-        )
+    _placeholders = {"change-me-to-a-random-secret", "changeme_admin_token", "your-secret-admin-token-here"}
+    if not expected_token or expected_token in _placeholders:
+        # No real admin token configured — allow access (local dev mode)
+        return
 
     provided_token = (
         request.headers.get("x-admin-token", "").strip()
@@ -505,16 +491,6 @@ def _require_admin_access(request: Request) -> None:
     )
     if not provided_token or not secrets.compare_digest(provided_token, expected_token):
         raise HTTPException(status_code=401, detail="Admin token required.")
-    def _admin_access_dep(request: Request):
-        _require_admin_access(request)
-
-_admin_access_dep = _require_admin_access
-
-
-
-def _admin_access_dep(request: Request) -> None:
-    """FastAPI dependency wrapper around _require_admin_access."""
-    _require_admin_access(request)
 
 
 def _admin_access_dep(request: Request) -> None:
@@ -724,6 +700,12 @@ class InteractionCreate(BaseModel):
     )
 
 
+class MergeHistoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    guest_id: str = Field(..., min_length=1, max_length=128)
+    user_id: str = Field(..., min_length=1, max_length=128)
+
+
 class RealtimeRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     item_title: str
@@ -761,7 +743,6 @@ def health_check():
     Low-overhead health check endpoint for component tracking.
     Checks database (Supabase), model readiness, and cache (Redis).
     """
-    from src.data.db import get_supabase
 
     redis_ok = False
     if _redis_client is not None:
@@ -921,129 +902,8 @@ def _precompute_recommendation_cache(
 
     return count
 
-# ── Search ────────────────────────────────────────────────────────────
-def _normalize_search_query(query: str) -> str:
-    normalized = " ".join((query or "").split())
-    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
-    return normalized
-
-_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
 
 
-def _validate_user_id(user_id: str) -> str:
-    """Allowlist-validate user_id to block injection via path parameters."""
-    if not _USER_ID_RE.match(user_id):
-        raise HTTPException(status_code=400, detail="Invalid user_id format.")
-    return user_id
-
-
-def _set_cache_headers(response: Response, status: str) -> None:
-    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
-    response.headers["X-Cache"] = status
-
-
-def _get_rate_limit(limit_env: str, default_limit: int) -> int:
-    try:
-        limit = int(os.environ.get(limit_env, str(default_limit)))
-    except ValueError:
-        return default_limit
-    return max(1, limit)
-
-
-def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
-    return JSONResponse(
-        status_code=429,
-        content={
-            "error": "Rate limit exceeded",
-            "message": "Too many requests. Please try again later.",
-        },
-        headers={
-            "x-ratelimit-limit": str(rate_limit),
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": str(reset_time),
-        },
-    )
-
-
-def _apply_rate_limit(
-    request: Request,
-    response: Response,
-    scope: str,
-    limit_env: str,
-    default_limit: int,
-) -> JSONResponse | None:
-    rate_limit = _get_rate_limit(limit_env, default_limit)
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    bucket_key = (scope, client_ip)
-    now = time.time()
-
-    with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [
-            timestamp
-            for timestamp in timestamps
-            if now - timestamp < RATE_LIMIT_BUCKET_TTL_SECONDS
-        ]
-
-        if timestamps:
-            _rate_limit_buckets.move_to_end(bucket_key)
-
-        reset_time = (
-            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
-            if timestamps
-            else RATE_LIMIT_BUCKET_TTL_SECONDS
-        )
-        reset_time = max(0, reset_time)
-
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
-
-        timestamps.append(now)
-        _rate_limit_buckets.move_to_end(bucket_key)
-        remaining = rate_limit - len(timestamps)
-        reset_time = (
-            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
-            if timestamps
-            else RATE_LIMIT_BUCKET_TTL_SECONDS
-        )
-        reset_time = max(0, reset_time)
-
-    _prune_rate_limit_buckets(now)
-
-    response.headers["x-ratelimit-limit"] = str(rate_limit)
-    response.headers["x-ratelimit-remaining"] = str(remaining)
-    response.headers["x-ratelimit-reset"] = str(reset_time)
-    return None
-
-
-def _extract_bearer_token(value: str | None) -> str:
-    if not value:
-        return ""
-    scheme, _, token = value.partition(" ")
-    if scheme.lower() != "bearer":
-        return ""
-    return token.strip()
-
-
-def _require_admin_access(request: Request) -> None:
-    expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
-    _placeholders = {"change-me-to-a-random-secret", "changeme_admin_token", "your-secret-admin-token-here"}
-    if not expected_token or expected_token in _placeholders:
-        # No real admin token configured — allow access (local dev mode)
-        return
-
-    provided_token = (
-        request.headers.get("x-admin-token", "").strip()
-        or _extract_bearer_token(request.headers.get("authorization"))
-    )
-    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
-        raise HTTPException(status_code=401, detail="Admin token required.")
-
-
-def _admin_access_dep(request: Request) -> None:
-    _require_admin_access(request)
 
 
 def _get_feedback_storage_client():
@@ -1053,27 +913,7 @@ def _get_feedback_storage_client():
     return client
 
 
-# ── State ─────────────────────────────────────────────────────────────
-models = {
-    "content": None,
-    "collab": None,
-    "hybrid": None,
-    "ready": False,
-    "item_df": None,
-    "build_time": None,
-    "last_trained_at": None,
-}
 
-MODEL_REGISTRY = {}
-ACTIVE_MODEL_VERSION = None
-SHADOW_MODEL_VERSION = None
-STAGING_MODEL_VERSION = None
-
-SHADOW_LOGS = []
-
-def generate_model_version():
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    return f"1.0.0-{timestamp}"
 
 
 class RealtimeConnectionHub:
@@ -1105,103 +945,8 @@ realtime_hub = RealtimeConnectionHub()
 USER_INTERACTIONS = []
 
 
-class WeightsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    alpha: float = 0.5
-    beta: float = 0.3
-    gamma: float = 0.2
 
 
-class PurchaseCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    product_id: int = Field(..., gt=0)
-    rating: float = Field(0.0, ge=0.0, le=5.0)
-    review_text: str = Field("", max_length=1000)
-
-
-class FeedbackCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    item: str = Field(..., min_length=1, max_length=500)
-    feedback: str = Field(..., min_length=1, max_length=2000)
-    thumbs: str = Field(..., pattern=r"^(up|down)$")
-
-class InteractionCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    user_id: str = Field(..., min_length=1, max_length=128)
-    item_id: int = Field(..., gt=0)
-    interaction_type: str = Field(
-        ...,
-        pattern=r"^(view|click|search)$"
-    )
-
-class MergeHistoryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    guest_id: str = Field(..., min_length=1, max_length=128)
-    user_id: str = Field(..., min_length=1, max_length=128)
-
-
-class RealtimeRecommendationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    item_title: str
-    top_n: int = 10
-    explain: bool = False
-    target_catalog: Optional[str] = None
-
-class RealtimeClientEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    type: str = Field(..., min_length=1, max_length=80)
-    payload: dict = Field(default_factory=dict)
-
-
-class RealtimeRecommendationPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    item_title: str = Field(..., min_length=1, max_length=500)
-    top_n: int = Field(10, ge=1, le=50)
-    explain: bool = False
-    user_id: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=128,
-        pattern=r"^[a-zA-Z0-9_\-\.@]+$",
-    )
-
-
-def websocket_error(code: str, message: str):
-    return {
-        "type": "error",
-        "error": {
-            "code": code,
-            "message": message,
-        },
-        "message": message,
-    }
-
-
-# ── CSRF Token ───────────────────────────────────────────────────────
-@app.get(
-    "/api/csrf-token",
-    response_model=CSRFTokenResponse,
-    summary="Issue a CSRF token",
-    tags=["Security"],
-)
-def get_csrf_token(response: Response):
-    token = generate_csrf_token()
-    set_csrf_cookie(response, token)
-    return CSRFTokenResponse(csrfToken=token)
-
-
-class FederatedTrainRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    n_factors: int = 20
-    epochs: int = 5
-    lr: float = 0.05
-    reg: float = 0.05
 
 
 # ── API Metrics ───────────────────────────────────────────────────────
@@ -1769,7 +1514,7 @@ async def upload_dataset(
 
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
-def build_models(
+def api_build_models(
     _csrf: None = Depends(csrf_header_dep),
     _admin: None = Depends(_admin_access_dep),
 ):
