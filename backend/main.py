@@ -325,27 +325,28 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
-        except (RedisError, TypeError, json.JSONDecodeError):
+            # If Redis is active and returns None, it is a definitive miss. Do not fall back to in-memory.
+            _cache_misses += 1
+            return None
+        except (RedisError, TypeError):
+            # Only fall back to in-memory cache if Redis is down/raises an error
             pass
+        except json.JSONDecodeError:
+            _cache_misses += 1
+            return None
 
     with _cache_lock:
         cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-        cached = _response_cache.get(key)
-
         if not cached:
             _cache_misses += 1
             return None
 
         expires_at, value = cached
-
         if expires_at <= time.time():
             _response_cache.pop(key, None)
             _cache_misses += 1
             return None
+
         _cache_hits += 1
         return value
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ──
@@ -1511,6 +1512,8 @@ def search_items(
         'results': results
     }
     
+    _set_cached_response(cache_key, final_output)
+    _set_cache_headers(response, "MISS")
     return final_output
 
 
