@@ -576,8 +576,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=allow_creds,
-    allow_methods=["*"],
-    allow_headers=["*", "X-CSRF-Token"],
+    allow_methods=ALLOWED_CORS_METHODS,
+    allow_headers=ALLOWED_CORS_HEADERS,
 )
 
 app.add_middleware(CSRFMiddleware)
