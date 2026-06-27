@@ -294,6 +294,18 @@ def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
+def _get_current_time_of_day() -> str:
+    hour = datetime.now().hour
+    if 6 <= hour < 12:
+        return "morning"
+    elif 12 <= hour < 18:
+        return "afternoon"
+    elif 18 <= hour < 24:
+        return "evening"
+    else:
+        return "night"
+
+
 def _recommendation_cache_key(
     title: str,
     top_n: int = 10,
@@ -302,6 +314,8 @@ def _recommendation_cache_key(
     target_catalog: str = "",
     model_version: str = "",
     strategy: str = "",
+    weather: str = "",
+    time_of_day: str = "",
 ) -> str:
     """Single authoritative cache key for recommendation responses."""
     return _cache_key(
@@ -313,6 +327,8 @@ def _recommendation_cache_key(
         target_catalog or "",
         model_version or "",
         strategy or "",
+        weather or "",
+        time_of_day or "",
     )
 
 
@@ -1521,6 +1537,8 @@ async def recommend_item(
     limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
     user_id: str = Query(default="", description="Optional user ID for personalised scoring"),
+    weather: Optional[str] = Query(None, description="Optional weather context"),
+    time_of_day: Optional[str] = Query(None, description="Optional time of day context"),
 ):
     """
     Returns paginated hybrid recommendations for the given item title.
@@ -1557,8 +1575,15 @@ async def recommend_item(
                 else:
                     collab_model = None
                 
+                actual_tod = time_of_day or _get_current_time_of_day()
                 hybrid = HybridRecommender(content_model, collab_model, item_df)
-                all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
+                all_results = hybrid.recommend(
+                    title=title,
+                    user_id=user_id or None,
+                    top_n=limit + offset,
+                    weather=weather,
+                    time_of_day=actual_tod,
+                )
         except Exception:
             logger.warning("Hybrid model unavailable, using fallback recommendations")
 
@@ -2072,6 +2097,8 @@ def get_recommendations(
     model_version: Optional[str] = Query(None),
     strategy: Optional[str] = Query(None),
     method: Optional[str] = Query(None, description="knn for KNN-based collaborative filtering"),
+    weather: Optional[str] = Query(None),
+    time_of_day: Optional[str] = Query(None),
 ):
     rate_limited = _apply_rate_limit(
         request,
@@ -2155,6 +2182,9 @@ def get_recommendations(
     effective_limit = top_n if top_n is not None else limit
     effective_offset = offset
 
+    # Infer time of day if not explicitly supplied to provide dynamic context-awareness
+    actual_time_of_day = time_of_day or _get_current_time_of_day()
+
     cache_key = _recommendation_cache_key(
         query_title,
         effective_limit,
@@ -2163,6 +2193,8 @@ def get_recommendations(
         target_catalog or "",
         model_version or "",
         strategy or "",
+        weather or "",
+        actual_time_of_day,
     )
     cached = _get_cached_response(cache_key)
     if cached is not None:
@@ -2182,7 +2214,9 @@ def get_recommendations(
         query_title,
         top_n=effective_limit + effective_offset,
         explain=explain,
-        target_catalog=target_catalog
+        target_catalog=target_catalog,
+        weather=weather,
+        time_of_day=actual_time_of_day,
     )
 
     # Popularity fallback (existing behaviour)
@@ -2308,7 +2342,12 @@ def get_recommendations_alias(
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
     strategy: Optional[str] = Query(None),
+<<<<<<< HEAD
     method: Optional[str] = Query(None, description="knn for KNN-based collaborative filtering"),
+=======
+    weather: Optional[str] = Query(None),
+    time_of_day: Optional[str] = Query(None),
+>>>>>>> 277e4e8 (feat(#1726): implement context-aware recommendation reranking using real-time weather and time data)
 ):
     """Backward-compatible alias for clients calling /api/recommendations."""
     return get_recommendations(
@@ -2324,6 +2363,8 @@ def get_recommendations_alias(
         target_catalog=target_catalog,
         model_version=model_version,
         strategy=strategy,
+        weather=weather,
+        time_of_day=time_of_day,
     )
 
 
