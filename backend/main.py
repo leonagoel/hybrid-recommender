@@ -121,7 +121,7 @@ EVALUATION_HISTORY = deque(maxlen=20)
 
 @app.get("/api/evaluate")
 async def evaluate_models(
-    k: int = 10,
+    k: int = Query(10, ge=1, le=100),
     mode: str = "all",
     alpha: float = 0.4,
     beta: float = 0.35,
@@ -467,14 +467,14 @@ def _apply_rate_limit(
         reset_time = max(0, reset_time)
 
     _prune_rate_limit_buckets(now)
-        global _request_counter
-        _request_counter += 1
-        if _request_counter >= CLEANUP_THRESHOLD:
-            _request_counter = 0
-            # Garbage Collection: Remove empty buckets to prevent memory leak
-            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
-            for k in empty_keys:
-                del _rate_limit_buckets[k]
+    global _request_counter
+    _request_counter += 1
+    if _request_counter >= CLEANUP_THRESHOLD:
+        _request_counter = 0
+        # Garbage Collection: Remove empty buckets to prevent memory leak
+        empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
+        for k in empty_keys:
+            del _rate_limit_buckets[k]
 
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
@@ -2070,7 +2070,8 @@ def get_recommendations(
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
-    strategy: Optional[str] = Query(None), 
+    strategy: Optional[str] = Query(None),
+    method: Optional[str] = Query(None, description="knn for KNN-based collaborative filtering"),
 ):
     rate_limited = _apply_rate_limit(
         request,
