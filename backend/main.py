@@ -78,7 +78,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db import get_supabase, get_supabase_admin
-from backend.auth import _require_admin_access
+from backend.auth import _require_admin_access, get_current_user_id
 logging.basicConfig(
     level=logging.INFO,
     format="[%(levelname)s] %(asctime)s - %(message)s",
@@ -2375,9 +2375,20 @@ def recommend_cold_start(
 
 @app.get("/api/user_recommend")
 @app.get("/api/recommend/user/{user_id}")
-def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), explain: bool = Query(False)):
-    """Get hybrid recommendations for a user."""
-    _validate_user_id(user_id)  # allowlist-validate before model lookup
+def get_user_recommendations(
+    user_id: str,
+    top_n: int = Query(10, ge=1, le=50),
+    explain: bool = Query(False),
+    authenticated_user_id: str = Depends(get_current_user_id),
+):
+    """Get hybrid recommendations for a user.
+
+    Requires a valid, unexpired Supabase bearer token (see issue #297).
+    A caller may only request recommendations for their own user_id.
+    """
+    _validate_user_id(user_id)
+    if authenticated_user_id != user_id:
+        raise HTTPException(status_code=403, detail="Cannot access another user's recommendations.")
     if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     
@@ -2769,8 +2780,15 @@ def log_interaction(data: InteractionCreate):
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
-    _validate_user_id(user_id)  # allowlist-validate before any DB call
+def get_user_purchases(
+    user_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    authenticated_user_id: str = Depends(get_current_user_id),
+):
+    """Requires a valid, unexpired Supabase bearer token (see issue #297)."""
+    _validate_user_id(user_id)
+    if authenticated_user_id != user_id:
+        raise HTTPException(status_code=403, detail="Cannot access another user's purchase history.")
     sb = get_supabase()
     result = (
         sb.table('purchases')
@@ -3125,19 +3143,18 @@ class SearchRequest(BaseModel):
 
 # ── CLEAR USER PREFERENCES & RESET CACHE ENDPOINT ───────────────────
 @app.post("/api/v1/user/preferences/reset", dependencies=[Depends(csrf_header_dep)])
-async def reset_user_preferences(request: Request):
+async def reset_user_preferences(
+    request: Request,
+    validated_user_id: str = Depends(get_current_user_id),
+):
     """
     Clears the user interaction weights/history from Supabase 
     and wipes the local/Redis recommendation cache for that user.
+
+    Identity comes from a verified, unexpired Supabase bearer token
+    (see issue #297) rather than a caller-supplied x-user-id header,
+    which could be set to any value.
     """
-    # 1. Authentic/Validate user (In production, replace with your real auth dependency)
-    user_id = request.headers.get("x-user-id")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="Missing x-user-id header.")
-    
-    # Securely validate the user ID format
-    validated_user_id = _validate_user_id(user_id)
-    
     try:
         # 2. Connect to Supabase and delete preference entries
         supabase = get_supabase_admin()
@@ -3170,4 +3187,3 @@ async def reset_user_preferences(request: Request):
     except Exception as e:
         logger.error(f"Error resetting preferences for user {validated_user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to reset user data.")
-
