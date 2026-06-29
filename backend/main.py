@@ -1513,6 +1513,31 @@ def search_items(
     
     return final_output
 
+def _log_recommendation_history(user_id: str, session_id: str, query: str, results: list):
+    """Log the generated recommendations to Supabase for the user's history."""
+    if not user_id and not session_id:
+        return
+    try:
+        sb = get_supabase()
+        if sb:
+            # We save a simplified view of the recommended items
+            saved_items = []
+            for r in results:
+                saved_items.append({
+                    "id": r.get("id") or r.get("item_id"),
+                    "title": r.get("title"),
+                    "category": r.get("category"),
+                    "score": r.get("hybrid_score", 0.0)
+                })
+            
+            sb.table("recommendation_history").insert({
+                "user_id": user_id or "anonymous",
+                "session_id": session_id or None,
+                "query": query,
+                "recommended_items": saved_items
+            }).execute()
+    except Exception as e:
+        logger.error(f"Failed to log recommendation history: {e}")
 
 # ── Feature: Paginated Recommendations ───────────────────────────────
 @app.get("/api/recommend/paginated")
@@ -1521,6 +1546,7 @@ async def recommend_item(
     limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
     user_id: str = Query(default="", description="Optional user ID for personalised scoring"),
+    session_id: str = Query(default="", description="Session ID for tracking anonymous users"),
 ):
     """
     Returns paginated hybrid recommendations for the given item title.
@@ -1581,19 +1607,22 @@ async def recommend_item(
                     "review_count": p.get("review_count", 0),
                 } for p in MOCK_PRODUCTS[:3]]
 
-            total = len(all_results)
-            paginated = all_results[offset:offset + limit]
+        total = len(all_results)
+        paginated = all_results[offset:offset + limit]
 
-            return {
-                "recommendations": paginated,
-                "pagination": {
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                    "next_offset": offset + limit if offset + limit < total else None,
-                    "has_more": (offset + limit) < total,
-                },
-            }
+        # Log to history
+        _log_recommendation_history(user_id, session_id, title, paginated)
+
+        return {
+            "recommendations": paginated,
+            "pagination": {
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "next_offset": offset + limit if offset + limit < total else None,
+                "has_more": (offset + limit) < total,
+            },
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2375,7 +2404,7 @@ def recommend_cold_start(
 
 @app.get("/api/user_recommend")
 @app.get("/api/recommend/user/{user_id}")
-def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), explain: bool = Query(False)):
+def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), explain: bool = Query(False), session_id: str = Query(default="")):
     """Get hybrid recommendations for a user."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
@@ -2387,6 +2416,8 @@ def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), 
         is_fallback = True
 
     recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
+    
+    _log_recommendation_history(user_id, session_id, "User Profile Request", recs)
         
     return {
         "query_user": user_id,
@@ -2394,6 +2425,22 @@ def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), 
         "fallback": is_fallback,
         "weights": models["hybrid"].get_weights(),
     }
+
+@app.get("/api/user/history")
+def get_user_recommendation_history(user_id: str = Query(default=""), session_id: str = Query(default=""), limit: int = Query(20, ge=1, le=100)):
+    """Get the personalized recommendation history for a user or session."""
+    if not user_id and not session_id:
+        raise HTTPException(400, "Must provide user_id or session_id")
+    
+    sb = get_supabase()
+    query = sb.table("recommendation_history").select("*").order("created_at", desc=True).limit(limit)
+    if user_id:
+        query = query.eq("user_id", user_id)
+    elif session_id:
+        query = query.eq("session_id", session_id)
+        
+    result = query.execute()
+    return {"history": result.data or []}
 
 @app.websocket("/ws/recommendations")
 async def websocket_recommendations(websocket: WebSocket):
