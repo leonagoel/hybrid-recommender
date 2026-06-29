@@ -16,6 +16,8 @@ import math
 import secrets
 
 import json
+import random
+import inspect
 from urllib.parse import urlsplit
 from redis import Redis
 from redis.exceptions import RedisError
@@ -245,9 +247,6 @@ except Exception:
     logger.warning("Redis unavailable at %s — falling back to in-memory cache.", _redis_url)
 
 
-def csrf_header_dep(request: Request) -> None:
-    """No-op dependency; actual CSRF validation is handled by CSRFMiddleware."""
-    pass
 
 MOCK_PRODUCTS = [
     {
@@ -517,9 +516,6 @@ def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
 
 
-def _admin_access_dep(request: Request) -> None:
-    """FastAPI dependency wrapper around _require_admin_access."""
-    _require_admin_access(request)
 
 
 CORS_ORIGINS_ENV = "CORS_ORIGINS"
@@ -681,6 +677,8 @@ MODEL_REGISTRY = {}
 ACTIVE_MODEL_VERSION = None
 SHADOW_MODEL_VERSION = None
 STAGING_MODEL_VERSION = None
+CANARY_TRAFFIC_PERCENT = 10
+CANARY_ERROR_THRESHOLD = 0.05
 
 SHADOW_LOGS = []
 
@@ -922,128 +920,24 @@ def _precompute_recommendation_cache(
     return count
 
 # ── Search ────────────────────────────────────────────────────────────
-def _normalize_search_query(query: str) -> str:
-    normalized = " ".join((query or "").split())
-    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
-    return normalized
 
 _USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
 
 
-def _validate_user_id(user_id: str) -> str:
-    """Allowlist-validate user_id to block injection via path parameters."""
-    if not _USER_ID_RE.match(user_id):
-        raise HTTPException(status_code=400, detail="Invalid user_id format.")
-    return user_id
 
 
-def _set_cache_headers(response: Response, status: str) -> None:
-    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
-    response.headers["X-Cache"] = status
 
 
-def _get_rate_limit(limit_env: str, default_limit: int) -> int:
-    try:
-        limit = int(os.environ.get(limit_env, str(default_limit)))
-    except ValueError:
-        return default_limit
-    return max(1, limit)
 
 
-def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
-    return JSONResponse(
-        status_code=429,
-        content={
-            "error": "Rate limit exceeded",
-            "message": "Too many requests. Please try again later.",
-        },
-        headers={
-            "x-ratelimit-limit": str(rate_limit),
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": str(reset_time),
-        },
-    )
 
 
-def _apply_rate_limit(
-    request: Request,
-    response: Response,
-    scope: str,
-    limit_env: str,
-    default_limit: int,
-) -> JSONResponse | None:
-    rate_limit = _get_rate_limit(limit_env, default_limit)
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    bucket_key = (scope, client_ip)
-    now = time.time()
-
-    with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [
-            timestamp
-            for timestamp in timestamps
-            if now - timestamp < RATE_LIMIT_BUCKET_TTL_SECONDS
-        ]
-
-        if timestamps:
-            _rate_limit_buckets.move_to_end(bucket_key)
-
-        reset_time = (
-            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
-            if timestamps
-            else RATE_LIMIT_BUCKET_TTL_SECONDS
-        )
-        reset_time = max(0, reset_time)
-
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
-
-        timestamps.append(now)
-        _rate_limit_buckets.move_to_end(bucket_key)
-        remaining = rate_limit - len(timestamps)
-        reset_time = (
-            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
-            if timestamps
-            else RATE_LIMIT_BUCKET_TTL_SECONDS
-        )
-        reset_time = max(0, reset_time)
-
-    _prune_rate_limit_buckets(now)
-
-    response.headers["x-ratelimit-limit"] = str(rate_limit)
-    response.headers["x-ratelimit-remaining"] = str(remaining)
-    response.headers["x-ratelimit-reset"] = str(reset_time)
-    return None
 
 
-def _extract_bearer_token(value: str | None) -> str:
-    if not value:
-        return ""
-    scheme, _, token = value.partition(" ")
-    if scheme.lower() != "bearer":
-        return ""
-    return token.strip()
 
 
-def _require_admin_access(request: Request) -> None:
-    expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
-    _placeholders = {"change-me-to-a-random-secret", "changeme_admin_token", "your-secret-admin-token-here"}
-    if not expected_token or expected_token in _placeholders:
-        # No real admin token configured — allow access (local dev mode)
-        return
-
-    provided_token = (
-        request.headers.get("x-admin-token", "").strip()
-        or _extract_bearer_token(request.headers.get("authorization"))
-    )
-    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
-        raise HTTPException(status_code=401, detail="Admin token required.")
 
 
-def _admin_access_dep(request: Request) -> None:
-    _require_admin_access(request)
 
 
 def _get_feedback_storage_client():
@@ -1071,9 +965,6 @@ STAGING_MODEL_VERSION = None
 
 SHADOW_LOGS = []
 
-def generate_model_version():
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    return f"1.0.0-{timestamp}"
 
 
 class RealtimeConnectionHub:
@@ -1105,38 +996,11 @@ realtime_hub = RealtimeConnectionHub()
 USER_INTERACTIONS = []
 
 
-class WeightsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    alpha: float = 0.5
-    beta: float = 0.3
-    gamma: float = 0.2
 
 
-class PurchaseCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    product_id: int = Field(..., gt=0)
-    rating: float = Field(0.0, ge=0.0, le=5.0)
-    review_text: str = Field("", max_length=1000)
 
 
-class FeedbackCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    item: str = Field(..., min_length=1, max_length=500)
-    feedback: str = Field(..., min_length=1, max_length=2000)
-    thumbs: str = Field(..., pattern=r"^(up|down)$")
 
-class InteractionCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    user_id: str = Field(..., min_length=1, max_length=128)
-    item_id: int = Field(..., gt=0)
-    interaction_type: str = Field(
-        ...,
-        pattern=r"^(view|click|search)$"
-    )
 
 class MergeHistoryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1144,12 +1008,6 @@ class MergeHistoryRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=128)
 
 
-class RealtimeRecommendationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    item_title: str
-    top_n: int = 10
-    explain: bool = False
-    target_catalog: Optional[str] = None
 
 class RealtimeClientEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1190,18 +1048,8 @@ def websocket_error(code: str, message: str):
     summary="Issue a CSRF token",
     tags=["Security"],
 )
-def get_csrf_token(response: Response):
-    token = generate_csrf_token()
-    set_csrf_cookie(response, token)
-    return CSRFTokenResponse(csrfToken=token)
 
 
-class FederatedTrainRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    n_factors: int = 20
-    epochs: int = 5
-    lr: float = 0.05
-    reg: float = 0.05
 
 
 # ── API Metrics ───────────────────────────────────────────────────────
@@ -1767,15 +1615,9 @@ async def upload_dataset(
         raise HTTPException(400, "Upload failed. Check file format and try again.")
 
 
-# ── Build Models ──────────────────────────────────────────────────────
-@app.post("/api/build")
-def build_models(
-    _csrf: None = Depends(csrf_header_dep),
-    _admin: None = Depends(_admin_access_dep),
-):
-    global STAGING_MODEL_VERSION
+def _get_recommender_dfs():
     try:
-       sb = get_supabase_admin()
+        sb = get_supabase_admin()
     except RuntimeError:
         sb = get_supabase()
     all_products = []
@@ -1798,9 +1640,8 @@ def build_models(
         item_df['category'].fillna('').astype(str)
     )
     item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
-    start_time = time.time()
-    content_model = ContentRecommender(item_df)
-    collab_model = None
+    
+    interaction_df = None
     try:
         purchases_result = sb.table('purchases').select('user_id, product_id, rating').limit(50000).execute()
         purchases = purchases_result.data or []
@@ -1812,11 +1653,26 @@ def build_models(
                 if title:
                     interaction_rows.append({'user_id': p['user_id'], 'title': title, 'rating': p.get('rating', 3.0)})
             if len(interaction_rows) > 10:
-                interaction_df = pd.DataFrame(interaction_rows)
-                if interaction_df['user_id'].nunique() > 1:
-                    collab_model = CollaborativeRecommender(interaction_df)
+                df = pd.DataFrame(interaction_rows)
+                if df['user_id'].nunique() > 1:
+                    interaction_df = df
     except Exception as e:
         logger.warning("Collaborative model data load failed: %s", e)
+        
+    return item_df, interaction_df
+
+
+# ── Build Models ──────────────────────────────────────────────────────
+@app.post("/api/build")
+def build_models(
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
+    global STAGING_MODEL_VERSION
+    start_time = time.time()
+    item_df, interaction_df = _get_recommender_dfs()
+    content_model = ContentRecommender(item_df)
+    collab_model = CollaborativeRecommender(interaction_df) if interaction_df is not None else None
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
     
@@ -1948,111 +1804,6 @@ def train_federated(
         "build_time_seconds": build_time,
     }
 
-def build_models():
-    with _model_lock:
-        sb = get_supabase()
-
-        all_products = []
-        page_size = 1000
-        offset = 0
-
-        while True:
-            result = sb.table('products').select(
-                'id, title, description, category, rating, avg_sentiment, review_count'
-            ).range(offset, offset + page_size - 1).execute()
-
-            batch = result.data or []
-            all_products.extend(batch)
-
-            if len(batch) < page_size:
-                break
-
-            offset += page_size
-
-        if not all_products:
-            raise HTTPException(400, "No products in database. Upload data first.")
-
-        import pandas as pd
-
-        item_df = pd.DataFrame(all_products)
-
-        item_df['combined'] = (
-            item_df['title'].astype(str) + ' ' +
-            item_df['description'].fillna('').astype(str) + ' ' +
-            item_df['category'].fillna('').astype(str)
-        )
-
-        item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
-
-        start_time = time.time()
-
-        content_model = ContentRecommender(item_df)
-
-        collab_model = None
-        with _model_lock:
-            try:
-                purchases_result = sb.table('purchases').select(
-                    'user_id, product_id, rating'
-                ).limit(50000).execute()
-
-                purchases = purchases_result.data or []
-
-                if len(purchases) > 10:
-                    product_title_map = {
-                        p['id']: p['title']
-                        for p in all_products
-                    }
-
-                    interaction_rows = []
-
-                    for p in purchases:
-                        title = product_title_map.get(p['product_id'])
-
-                        if title:
-                            interaction_rows.append({
-                                'user_id': p['user_id'],
-                                'title': title,
-                                'rating': p.get('rating', 3.0)
-                            })
-
-                    if len(interaction_rows) > 10:
-                        interaction_df = pd.DataFrame(interaction_rows)
-
-                        if interaction_df['user_id'].nunique() > 1:
-                            collab_model = CollaborativeRecommender(interaction_df)
-
-            except Exception as e:
-                logger.warning(
-                    "Collaborative model data load failed: %s",
-                    e
-                )
-
-        hybrid_model = HybridRecommender(
-            content_model,
-            collab_model,
-            item_df
-        )
-
-        build_time = round(time.time() - start_time, 2)
-
-        models["content"] = content_model
-        models["collab"] = collab_model
-        models["hybrid"] = hybrid_model
-        models["item_df"] = item_df
-        models["ready"] = True
-        models["build_time"] = build_time
-        models["last_trained_at"] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        _clear_response_cache()
-
-        return {
-            "message": "Models built successfully!",
-            "items": len(item_df),
-            "has_collaborative": collab_model is not None,
-            "build_time_seconds": build_time,
-        }
 
 
 # ── Recommendations ───────────────────────────────────────────────────
@@ -2073,6 +1824,7 @@ def get_recommendations(
     strategy: Optional[str] = Query(None),
     method: Optional[str] = Query(None, description="knn for KNN-based collaborative filtering"),
 ):
+    global STAGING_MODEL_VERSION
     rate_limited = _apply_rate_limit(
         request,
         response,
@@ -2139,21 +1891,33 @@ def get_recommendations(
         raise HTTPException(status_code=400, detail="Models not built or dynamic dataset is empty.")
     # ---------------------------------
     selected_models = models
+    is_canary = False
 
     if model_version == "staging":
         if not STAGING_MODEL_VERSION:
             raise HTTPException(404, "No staging model available.")
-
         selected_models = MODEL_REGISTRY[STAGING_MODEL_VERSION]
-
     elif model_version:
         if model_version not in MODEL_REGISTRY:
             raise HTTPException(404, "Requested model version not found.")
-
         selected_models = MODEL_REGISTRY[model_version]
+    elif STAGING_MODEL_VERSION and STAGING_MODEL_VERSION in MODEL_REGISTRY:
+        import hashlib
+        if user_id:
+            h = int(hashlib.md5(user_id.encode()).hexdigest()[:8], 16)
+            is_canary = (h % 100) < CANARY_TRAFFIC_PERCENT
+        else:
+            is_canary = random.randint(0, 99) < CANARY_TRAFFIC_PERCENT
+        
+        if is_canary:
+            selected_models = MODEL_REGISTRY[STAGING_MODEL_VERSION]
 
     effective_limit = top_n if top_n is not None else limit
     effective_offset = offset
+
+    actual_version = model_version
+    if not actual_version:
+        actual_version = STAGING_MODEL_VERSION if is_canary else (ACTIVE_MODEL_VERSION or "")
 
     cache_key = _recommendation_cache_key(
         query_title,
@@ -2161,7 +1925,7 @@ def get_recommendations(
         explain,
         user_id or "",
         target_catalog or "",
-        model_version or "",
+        actual_version,
         strategy or "",
     )
     cached = _get_cached_response(cache_key)
@@ -2178,37 +1942,60 @@ def get_recommendations(
             detail="Hybrid model not available."
         )
 
-    recs = hybrid_model.recommend(
-        query_title,
-        top_n=effective_limit + effective_offset,
-        explain=explain,
-        target_catalog=target_catalog
-    )
-
-    # Popularity fallback (existing behaviour)
-    if not recs and strategy == "popularity" and models["collab"]:
-        recs = models["collab"]._popularity_fallback(effective_limit + effective_offset)
-
-    # Cold-start fallback: blend content similarity with popularity/rating
-    if not recs and strategy == "cold":
-        combined_text = query_title
-        cold_recs = cold_start_recommendation(
-            combined_text,
+    try:
+        recs = hybrid_model.recommend(
+            query_title,
             top_n=effective_limit + effective_offset,
+            explain=explain,
             target_catalog=target_catalog
         )
-        if cold_recs:
-            recs = cold_recs
-        if not recs:
-            return JSONResponse(
-                status_code=404,
-                content=error_response(
-                    message="Item not found or no recommendations.",
-                    model_name="hybrid",
-                    version=model_version or ACTIVE_MODEL_VERSION,
-                    detail="Item not found or no recommendations."
-                )
+
+        # Popularity fallback (existing behaviour)
+        if not recs and strategy == "popularity" and models["collab"]:
+            recs = models["collab"]._popularity_fallback(effective_limit + effective_offset)
+
+        # Cold-start fallback: blend content similarity with popularity/rating
+        if not recs and strategy == "cold":
+            combined_text = query_title
+            cold_recs = cold_start_recommendation(
+                combined_text,
+                top_n=effective_limit + effective_offset,
+                target_catalog=target_catalog
             )
+            if cold_recs:
+                recs = cold_recs
+            if not recs:
+                return JSONResponse(
+                    status_code=404,
+                    content=error_response(
+                        message="Item not found or no recommendations.",
+                        model_name="hybrid",
+                        version=model_version or ACTIVE_MODEL_VERSION,
+                        detail="Item not found or no recommendations."
+                    )
+                )
+
+        if is_canary and STAGING_MODEL_VERSION and STAGING_MODEL_VERSION in MODEL_REGISTRY:
+            staging_model = MODEL_REGISTRY[STAGING_MODEL_VERSION]
+            metrics = staging_model.setdefault("metrics", {})
+            metrics["canary_requests"] = metrics.get("canary_requests", 0) + 1
+            metrics["canary_errors"] = metrics.get("canary_errors", 0)
+            metrics["error_rate"] = metrics["canary_errors"] / metrics["canary_requests"]
+    except Exception as e:
+        if is_canary and STAGING_MODEL_VERSION and STAGING_MODEL_VERSION in MODEL_REGISTRY:
+            staging_model = MODEL_REGISTRY[STAGING_MODEL_VERSION]
+            metrics = staging_model.setdefault("metrics", {})
+            metrics["canary_requests"] = metrics.get("canary_requests", 0) + 1
+            metrics["canary_errors"] = metrics.get("canary_errors", 0) + 1
+            metrics["error_rate"] = metrics["canary_errors"] / metrics["canary_requests"]
+            if metrics["canary_requests"] >= 5 and metrics["error_rate"] > CANARY_ERROR_THRESHOLD:
+                staging_model["status"] = "rolled_back"
+                logger.error(
+                    "Staging model %s error rate (%f) exceeded threshold %f. Auto-rolling back.",
+                    STAGING_MODEL_VERSION, metrics["error_rate"], CANARY_ERROR_THRESHOLD
+                )
+                STAGING_MODEL_VERSION = None
+        raise
 
     has_history = False
     if user_id and models.get("collab") is not None:
@@ -2258,6 +2045,27 @@ def get_recommendations(
                 shadow_kwargs["user_id"] = user_id
             shadow_recs = shadow_recommend_func(query_title, **shadow_kwargs)
 
+            prod_titles = [r["title"] for r in recs]
+            shadow_titles = [r["title"] for r in shadow_recs]
+            
+            shared = set(prod_titles) & set(shadow_titles)
+            agreement_rate = len(shared) / max(len(prod_titles), 1)
+            
+            relevant_titles = set()
+            if user_id:
+                relevant_titles = {
+                    inter["title"]
+                    for inter in USER_INTERACTIONS
+                    if inter.get("user_id") == user_id
+                }
+            relevant_set = relevant_titles if relevant_titles else set(prod_titles)
+            
+            from src.evaluation.evaluation import _ndcg_at_k
+            k = max(len(prod_titles), len(shadow_titles), 1)
+            ndcg_prod = _ndcg_at_k(prod_titles, relevant_set, k)
+            ndcg_shadow = _ndcg_at_k(shadow_titles, relevant_set, k)
+            ndcg_delta = ndcg_prod - ndcg_shadow
+
             shadow_latency = round(
                 (time.time() - shadow_start) * 1000,
                 2,
@@ -2273,6 +2081,8 @@ def get_recommendations(
                 "query": query_title,
                 "shadow_count": len(shadow_recs),
                 "latency_ms": shadow_latency,
+                "agreement_rate": round(agreement_rate, 4),
+                "ndcg_delta": round(ndcg_delta, 4),
                 "error": None,
             })
 
@@ -2603,12 +2413,93 @@ def similarity_matrix(items: str = Query(...)):
     return result
 
 # ── Weights ───────────────────────────────────────────────────────────
+class ModelRegisterRequest(BaseModel):
+    alpha: float = 0.5
+    beta: float = 0.3
+    gamma: float = 0.2
+    version: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class CanarySettings(BaseModel):
+    traffic_percent: int = Field(10, ge=0, le=100)
+    error_threshold: float = Field(0.05, ge=0.0, le=1.0)
+
+@app.post("/api/admin/models/canary_settings")
+def update_canary_settings(
+    settings: CanarySettings,
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
+    global CANARY_TRAFFIC_PERCENT, CANARY_ERROR_THRESHOLD
+    CANARY_TRAFFIC_PERCENT = settings.traffic_percent
+    CANARY_ERROR_THRESHOLD = settings.error_threshold
+    return {
+        "message": "Canary settings updated.",
+        "traffic_percent": CANARY_TRAFFIC_PERCENT,
+        "error_threshold": CANARY_ERROR_THRESHOLD,
+    }
+
+@app.get("/api/admin/models/canary_settings")
+def get_canary_settings():
+    return {
+        "traffic_percent": CANARY_TRAFFIC_PERCENT,
+        "error_threshold": CANARY_ERROR_THRESHOLD,
+    }
+
+@app.post("/api/admin/models/register")
+def register_model(
+    req: ModelRegisterRequest,
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
+    global STAGING_MODEL_VERSION
+    start_time = time.time()
+    item_df, interaction_df = _get_recommender_dfs()
+    content_model = ContentRecommender(item_df)
+    collab_model = CollaborativeRecommender(interaction_df) if interaction_df is not None else None
+    hybrid_model = HybridRecommender(content_model, collab_model, item_df)
+    hybrid_model.set_weights(req.alpha, req.beta, req.gamma)
+    build_time = round(time.time() - start_time, 2)
+    
+    version = req.version or generate_model_version()
+    MODEL_REGISTRY[version] = {
+        "content": content_model,
+        "collab": collab_model,
+        "hybrid": hybrid_model,
+        "item_df": item_df,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "training_metadata": {
+            "items": len(item_df),
+            "has_collaborative": collab_model is not None,
+            "build_time_seconds": build_time,
+            "custom_metadata": req.metadata or {},
+        },
+        "status": "staging",
+        "metrics": {
+            "ndcg": 0.0,
+            "latency_ms": 0.0,
+            "error_rate": 0.0,
+            "canary_requests": 0,
+            "canary_errors": 0,
+        },
+    }
+    STAGING_MODEL_VERSION = version
+    return {
+        "message": "Model registered successfully in staging.",
+        "version": version,
+        "status": "staging",
+        "weights": {"alpha": req.alpha, "beta": req.beta, "gamma": req.gamma},
+    }
+
 @app.get("/api/models")
+@app.get("/api/admin/models")
 def list_models():
     return {
         "active_model": ACTIVE_MODEL_VERSION,
         "shadow_model": SHADOW_MODEL_VERSION,
         "staging_model": STAGING_MODEL_VERSION,
+        "canary_traffic_percent": CANARY_TRAFFIC_PERCENT,
+        "canary_error_threshold": CANARY_ERROR_THRESHOLD,
         "models": [
             {
                 "version": version,
@@ -2620,7 +2511,9 @@ def list_models():
             for version, data in MODEL_REGISTRY.items()
         ],
     }
+
 @app.post("/api/models/{version}/promote")
+@app.post("/api/admin/models/{version}/promote")
 def promote_model(
     version: str,
     _csrf: None = Depends(csrf_header_dep),
@@ -2664,6 +2557,7 @@ def promote_model(
     }
 
 @app.post("/api/models/{version}/shadow")
+@app.post("/api/admin/models/{version}/shadow")
 def move_model_to_shadow(
     version: str,
     _csrf: None = Depends(csrf_header_dep),
@@ -2685,6 +2579,70 @@ def move_model_to_shadow(
         "message": "Model moved to shadow mode.",
         "version": version,
         "status": "shadow",
+    }
+
+@app.delete("/api/admin/models/{version}")
+def deregister_model(
+    version: str,
+    _csrf: None = Depends(csrf_header_dep),
+    _admin: None = Depends(_admin_access_dep),
+):
+    global ACTIVE_MODEL_VERSION, SHADOW_MODEL_VERSION, STAGING_MODEL_VERSION
+    if version not in MODEL_REGISTRY:
+        raise HTTPException(404, "Model version not found.")
+    
+    del MODEL_REGISTRY[version]
+    
+    if ACTIVE_MODEL_VERSION == version:
+        ACTIVE_MODEL_VERSION = None
+        models.update({
+            "content": None,
+            "collab": None,
+            "hybrid": None,
+            "item_df": None,
+            "ready": False,
+        })
+    if SHADOW_MODEL_VERSION == version:
+        SHADOW_MODEL_VERSION = None
+    if STAGING_MODEL_VERSION == version:
+        STAGING_MODEL_VERSION = None
+    return {"message": "Model deregistered successfully.", "version": version}
+
+@app.get("/api/admin/models/shadow_comparison")
+def get_shadow_comparison(
+    _admin: None = Depends(_admin_access_dep),
+):
+    if not SHADOW_LOGS:
+        return {
+            "total_comparisons": 0,
+            "avg_agreement_rate": 0.0,
+            "avg_ndcg_delta": 0.0,
+            "avg_latency_ms": 0.0,
+            "error_rate": 0.0,
+            "logs": [],
+        }
+    
+    total = len(SHADOW_LOGS)
+    agreements = []
+    ndcg_deltas = []
+    latencies = []
+    errors = 0
+    
+    for log in SHADOW_LOGS:
+        if log.get("error"):
+            errors += 1
+        else:
+            agreements.append(log.get("agreement_rate", 0.0))
+            ndcg_deltas.append(log.get("ndcg_delta", 0.0))
+            latencies.append(log.get("latency_ms", 0.0))
+            
+    return {
+        "total_comparisons": total,
+        "avg_agreement_rate": round(sum(agreements) / len(agreements), 4) if agreements else 0.0,
+        "avg_ndcg_delta": round(sum(ndcg_deltas) / len(ndcg_deltas), 4) if ndcg_deltas else 0.0,
+        "avg_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else 0.0,
+        "error_rate": round(errors / total, 4),
+        "logs": SHADOW_LOGS[-100:]
     }
 
 @app.get("/api/weights")
@@ -2709,9 +2667,8 @@ def update_weights(
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = Query(1, ge=1), limit: int = Query(20, alias="per_page", ge=1, le=100)):
     sb = get_supabase()
-    limit = per_page
     offset = (page - 1) * limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -3118,10 +3075,11 @@ class SearchRequest(BaseModel):
     query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: Optional[int] = 5
 
+frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 
-    @app.get("/dashboard.html")
-    def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
+@app.get("/dashboard.html")
+def serve_dashboard():
+    return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
 
 # ── CLEAR USER PREFERENCES & RESET CACHE ENDPOINT ───────────────────
 @app.post("/api/v1/user/preferences/reset", dependencies=[Depends(csrf_header_dep)])

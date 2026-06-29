@@ -2,194 +2,840 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Admin Dashboard</title>
-
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MLOps Model Registry & Canary Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
   <style>
+    :root {
+      --bg-dark: #0a0e17;
+      --panel-bg: rgba(18, 26, 44, 0.6);
+      --panel-border: rgba(255, 255, 255, 0.08);
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --cyan: #00e5ff;
+      --blue: #2563eb;
+      --emerald: #10b981;
+      --amber: #f59e0b;
+      --rose: #f43f5e;
+      --violet: #8b5cf6;
+      --font-outfit: 'Outfit', sans-serif;
+      --font-space: 'Space Grotesk', sans-serif;
+      --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
     body {
-      font-family: Arial;
-      background: #f4f4f4;
-      padding: 20px;
+      font-family: var(--font-outfit);
+      background-color: var(--bg-dark);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(37, 99, 235, 0.15) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(0, 229, 255, 0.1) 0px, transparent 50%),
+        radial-gradient(at 50% 0%, rgba(139, 92, 246, 0.08) 0px, transparent 50%);
+      color: var(--text-main);
+      min-height: 100vh;
+      padding: 30px;
+      overflow-x: hidden;
     }
 
-    h1 {
-      text-align: center;
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
     }
 
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 20px;
-      margin-top: 30px;
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 40px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--panel-border);
     }
 
-    .card {
-      background: white;
-      padding: 20px;
-      border-radius: 10px;
-      text-align: center;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    .logo-area h1 {
+      font-family: var(--font-space);
+      font-weight: 700;
+      font-size: 2.2rem;
+      background: linear-gradient(135deg, #fff 30%, var(--cyan) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.5px;
     }
 
-    .value {
-      font-size: 28px;
-      font-weight: bold;
-      margin-top: 10px;
+    .logo-area p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-top: 4px;
     }
 
-    /* Added styles for resilient states */
-    .loading-notice {
-      color: #666;
-      font-style: italic;
-      grid-column: 1 / -1;
-      text-align: center;
-      font-size: 18px;
-      padding: 20px;
+    .admin-credentials {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      padding: 10px 20px;
+      border-radius: 12px;
+      backdrop-filter: blur(10px);
     }
 
-    .error-banner {
-      background-color: #ffdddd;
-      color: #990000;
-      padding: 15px;
+    .admin-credentials input {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--panel-border);
+      color: #fff;
+      padding: 8px 12px;
       border-radius: 8px;
-      margin-bottom: 20px;
-      text-align: center;
-      font-weight: bold;
-      grid-column: 1 / -1;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+      font-size: 0.85rem;
+      outline: none;
+      width: 200px;
+      font-family: monospace;
+      transition: var(--transition);
     }
 
-    .empty-notice {
-      color: #777;
-      font-style: italic;
-      list-style-type: none;
-      padding: 10px 0;
+    .admin-credentials input:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 10px rgba(0, 229, 255, 0.2);
+    }
+
+    .btn {
+      background: var(--blue);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-family: var(--font-outfit);
+      font-weight: 500;
+      cursor: pointer;
+      transition: var(--transition);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn:hover {
+      background: #3b82f6;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--panel-border);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.3);
+    }
+
+    .btn-rose {
+      background: var(--rose);
+    }
+    .btn-rose:hover {
+      background: #e11d48;
+      box-shadow: 0 4px 12px rgba(244, 63, 94, 0.3);
+    }
+
+    /* Grid Layout */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 25px;
+      margin-bottom: 30px;
+    }
+
+    .span-2 {
+      grid-column: span 2;
+    }
+
+    .span-3 {
+      grid-column: span 3;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 20px;
+      padding: 25px;
+      backdrop-filter: blur(15px);
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+      transition: var(--transition);
+    }
+
+    .card:hover {
+      border-color: rgba(0, 229, 255, 0.15);
+    }
+
+    .card-title {
+      font-family: var(--font-space);
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding-bottom: 12px;
+    }
+
+    /* Status Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge-production { background: rgba(16, 185, 129, 0.15); color: var(--emerald); border: 1px solid var(--emerald); }
+    .badge-staging { background: rgba(245, 158, 11, 0.15); color: var(--amber); border: 1px solid var(--amber); }
+    .badge-shadow { background: rgba(139, 92, 246, 0.15); color: var(--violet); border: 1px solid var(--violet); }
+    .badge-rolledback { background: rgba(244, 63, 94, 0.15); color: var(--rose); border: 1px solid var(--rose); }
+
+    /* Model Status Display */
+    .model-status-display {
+      display: flex;
+      justify-content: space-between;
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    .status-panel {
+      flex: 1;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--panel-border);
+      padding: 15px;
+      border-radius: 12px;
+      text-align: center;
+    }
+
+    .status-panel h4 {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    .status-panel .version-text {
+      font-size: 1.1rem;
+      font-weight: 600;
+      font-family: monospace;
+      color: #fff;
+    }
+
+    /* Slider / Form inputs */
+    .form-group {
+      margin-bottom: 18px;
+    }
+
+    .form-group label {
+      display: block;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-bottom: 8px;
+    }
+
+    .form-group input[type="text"],
+    .form-group input[type="number"] {
+      width: 100%;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--panel-border);
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 10px;
+      outline: none;
+      transition: var(--transition);
+    }
+
+    .form-group input[type="text"]:focus,
+    .form-group input[type="number"]:focus {
+      border-color: var(--cyan);
+    }
+
+    .slider-container {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+
+    .slider-container input[type="range"] {
+      flex: 1;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+      outline: none;
+      -webkit-appearance: none;
+    }
+
+    .slider-container input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--cyan);
+      cursor: pointer;
+      transition: var(--transition);
+    }
+
+    .slider-container input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+      box-shadow: 0 0 10px var(--cyan);
+    }
+
+    .value-display {
+      font-family: var(--font-space);
+      font-weight: 600;
+      width: 45px;
+      text-align: right;
+    }
+
+    /* Lists and Tables */
+    .model-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: 380px;
+      overflow-y: auto;
+      padding-right: 5px;
+    }
+
+    .model-item {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--panel-border);
+      padding: 15px;
+      border-radius: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: var(--transition);
+    }
+
+    .model-item:hover {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .model-info h4 {
+      font-family: monospace;
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .model-info p {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .model-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    /* Table for metrics */
+    .metrics-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+
+    .metrics-table th {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      padding: 12px;
+      border-bottom: 1px solid var(--panel-border);
+      font-weight: 500;
+    }
+
+    .metrics-table td {
+      padding: 14px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+      font-size: 0.9rem;
+    }
+
+    .metrics-table tr:hover {
+      background: rgba(255, 255, 255, 0.01);
+    }
+
+    /* Logs view */
+    .log-container {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      height: 250px;
+      overflow-y: auto;
+      font-family: monospace;
+      padding: 15px;
+      font-size: 0.8rem;
+    }
+
+    .log-line {
+      margin-bottom: 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .log-timestamp { color: var(--text-muted); }
+    .log-query { color: var(--cyan); }
+    .log-agreement { color: var(--emerald); }
+    .log-ndcg { color: var(--violet); }
+    .log-latency { color: var(--amber); }
+
+    /* Alert Banner */
+    .alert-banner {
+      padding: 12px 20px;
+      border-radius: 12px;
+      margin-bottom: 25px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      animation: slideDown 0.4s ease-out;
+    }
+
+    .alert-banner-error {
+      background: rgba(244, 63, 94, 0.15);
+      border: 1px solid var(--rose);
+      color: #fda4af;
+    }
+
+    .alert-banner-success {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid var(--emerald);
+      color: #a7f3d0;
+    }
+
+    @keyframes slideDown {
+      from { transform: translateY(-20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
     }
   </style>
 </head>
-
 <body>
 
-<h1>Admin Dashboard</h1>
+<div class="container">
+  
+  <header>
+    <div class="logo-area">
+      <h1>MLOps Model Registry & Canary</h1>
+      <p>Continuous Deployment, Traffic Splitting & Real-Time Shadow Metrics Evaluation</p>
+    </div>
+    
+    <div class="admin-credentials">
+      <label for="admin-token-input" style="font-size:0.85rem; color:var(--text-muted)">Admin Token:</label>
+      <input type="text" id="admin-token-input" value="test-admin-token">
+      <button class="btn btn-secondary" onclick="loadRegistryAndMetrics()">🔄 Refresh</button>
+    </div>
+  </header>
 
-<!-- Status box for error and loading alerts -->
-<div id="dashboard-status"></div>
+  <!-- Notification Banner -->
+  <div id="notification-area"></div>
 
-<div class="grid">
+  <!-- Realtime Status Grid -->
+  <div class="dashboard-grid">
+    
+    <!-- Active Status Card -->
+    <div class="card span-2">
+      <div class="card-title">
+        <span>Current Deployments</span>
+        <span class="badge badge-production">Live System</span>
+      </div>
+      
+      <div class="model-status-display">
+        <div class="status-panel" style="border-top: 3px solid var(--emerald)">
+          <h4>Active (Production)</h4>
+          <div class="version-text" id="active-model-text">-</div>
+        </div>
+        <div class="status-panel" style="border-top: 3px solid var(--violet)">
+          <h4>Shadow</h4>
+          <div class="version-text" id="shadow-model-text">-</div>
+        </div>
+        <div class="status-panel" style="border-top: 3px solid var(--amber)">
+          <h4>Staging (Canary)</h4>
+          <div class="version-text" id="staging-model-text">-</div>
+        </div>
+      </div>
+      
+      <div class="dashboard-grid" style="margin-bottom: 0; gap: 15px;">
+        <div class="status-panel" style="padding: 10px;">
+          <h4>Canary Traffic</h4>
+          <div class="version-text" style="font-size: 1.5rem; color: var(--cyan)" id="canary-traffic-display">-</div>
+        </div>
+        <div class="status-panel" style="padding: 10px;">
+          <h4>Rollback Threshold</h4>
+          <div class="version-text" style="font-size: 1.5rem; color: var(--rose)" id="canary-threshold-display">-</div>
+        </div>
+      </div>
+    </div>
 
-  <div class="card">
-    <h3>Total Products</h3>
-    <div class="value" id="products">-</div>
+    <!-- Canary Traffic Config -->
+    <div class="card">
+      <div class="card-title">Canary Configuration</div>
+      <div class="form-group">
+        <label for="traffic-split-slider">Traffic Allocation (Staging vs Prod)</label>
+        <div class="slider-container">
+          <input type="range" id="traffic-split-slider" min="0" max="100" value="10" oninput="document.getElementById('traffic-split-value').innerText = this.value + '%'">
+          <div class="value-display" id="traffic-split-value">10%</div>
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label for="error-threshold-input">Canary Auto-Rollback Error Threshold (0.0 - 1.0)</label>
+        <input type="number" id="error-threshold-input" min="0" max="1" step="0.01" value="0.05">
+      </div>
+      
+      <button class="btn span-3" style="width: 100%; justify-content: center;" onclick="updateCanarySettings()">Update Canary Parameters</button>
+    </div>
+
   </div>
 
-  <div class="card">
-    <h3>Total Users</h3>
-    <div class="value" id="users">-</div>
+  <div class="dashboard-grid">
+    
+    <!-- Model Registry -->
+    <div class="card span-2">
+      <div class="card-title">
+        <span>Model Registry Catalog</span>
+      </div>
+      
+      <div class="model-list" id="model-registry-list">
+        <div style="text-align: center; color: var(--text-muted); padding: 40px 0;">Loading registered models...</div>
+      </div>
+    </div>
+
+    <!-- Register Model Form (Card-style Inline Modal) -->
+    <div class="card" id="register-model-card">
+      <div class="card-title">Register Model</div>
+      
+      <div class="form-group">
+        <label for="reg-version">Version Tag (optional, auto-generated if blank)</label>
+        <input type="text" id="reg-version" placeholder="e.g. hybrid-bert-v2">
+      </div>
+      
+      <div class="form-group" style="display: flex; gap: 10px;">
+        <div style="flex: 1;">
+          <label for="reg-alpha">Alpha (Content)</label>
+          <input type="number" id="reg-alpha" step="0.1" value="0.5">
+        </div>
+        <div style="flex: 1;">
+          <label for="reg-beta">Beta (Collab)</label>
+          <input type="number" id="reg-beta" step="0.1" value="0.3">
+        </div>
+        <div style="flex: 1;">
+          <label for="reg-gamma">Gamma (Trending)</label>
+          <input type="number" id="reg-gamma" step="0.1" value="0.2">
+        </div>
+      </div>
+
+      <button class="btn" style="width:100%; justify-content: center;" onclick="registerModel()">Register Model to Staging</button>
+    </div>
+
   </div>
 
-  <div class="card">
-    <h3>Total Interactions</h3>
-    <div class="value" id="interactions">-</div>
+  <div class="dashboard-grid">
+    
+    <!-- Shadow Mode metrics -->
+    <div class="card span-2">
+      <div class="card-title">Shadow Model Evaluation Telemetry</div>
+      
+      <table class="metrics-table">
+        <thead>
+          <tr>
+            <th>Comparisons Run</th>
+            <th>Avg Agreement Rate</th>
+            <th>Avg NDCG Delta</th>
+            <th>Avg Shadow Latency</th>
+            <th>Shadow Error Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td id="shadow-total">-</td>
+            <td id="shadow-agreement" style="font-weight: 600; color: var(--emerald)">-</td>
+            <td id="shadow-ndcg" style="font-weight: 600; color: var(--violet)">-</td>
+            <td id="shadow-latency">-</td>
+            <td id="shadow-errors" style="color: var(--rose)">-</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Shadow Logs -->
+    <div class="card">
+      <div class="card-title">Recent Shadow Prediction Telemetry</div>
+      <div class="log-container" id="shadow-logs-list">
+        <div style="color: var(--text-muted); text-align: center; padding-top: 80px;">No comparison telemetry available.</div>
+      </div>
+    </div>
+
   </div>
 
-  <div class="card">
-    <h3>Avg Recommendation Score</h3>
-    <div class="value" id="recommendation">-</div>
-  </div>
-
-  <div class="card">
-    <h3>Avg Sentiment Score</h3>
-    <div class="value" id="sentiment">-</div>
-  </div>
-
-  <div class="card">
-    <h3>Last Trained</h3>
-    <div class="value" id="trained">-</div>
-  </div>
-
-</div>
-
-<div class="card" style="margin-top:30px;">
-  <h3>Top 5 Recommended Products</h3>
-  <ul id="top-products"></ul>
 </div>
 
 <script>
-async function loadDashboard() {
-  const statusBox = document.getElementById('dashboard-status');
-  const list = document.getElementById('top-products');
-  
-  try {
-    // 1. Show user-visible loading state feedback while fetching data
-    statusBox.innerHTML = '<div class="loading-notice">⌛ Loading dashboard telemetry records...</div>';
-    list.innerHTML = '<li class="loading-notice">Loading products...</li>';
-
-    const response = await fetch('/api/dashboard');
-
-    if (!response.ok) {
-      throw new Error(`Failed to load dashboard data (HTTP ${response.status})`);
-    }
-
-    const rawData = await response.json();
-    const data = rawData || {}; // Guard against null/undefined root elements
-
-    // Clear loading state notice safely on network success
-    statusBox.innerHTML = '';
-
-    // 2. Render missing numerical metrics safely as 0 or N/A using nullish coalescing
-    document.getElementById('products').textContent = data.total_products ?? 0;
-    document.getElementById('users').textContent = data.total_users ?? 0;
-    document.getElementById('interactions').textContent = data.total_interactions ?? 0;
-    document.getElementById('recommendation').textContent = data.avg_recommendation_score ?? 'N/A';
-    document.getElementById('sentiment').textContent = data.avg_sentiment_score ?? 'N/A';
-
-    // 3. Strict timestamp validation routing to prevent "Invalid Date" layout errors
-    const rawDate = data.model_last_trained;
-    let formattedDate = 'N/A';
-    if (rawDate) {
-      const parsedDate = new Date(rawDate);
-      if (!isNaN(parsedDate.getTime())) {
-        formattedDate = parsedDate.toLocaleString();
+  // Get CSRF Token and build request headers
+  async function getRequestHeaders() {
+    const adminToken = document.getElementById('admin-token-input').value;
+    
+    // Fetch CSRF Token
+    let csrfToken = "";
+    try {
+      const csrfRes = await fetch('/api/csrf-token');
+      if (csrfRes.ok) {
+        const csrfData = await csrfRes.json();
+        csrfToken = csrfData.csrfToken;
       }
-    }
-    document.getElementById('trained').textContent = formattedDate;
-
-    // 4. Secure loop iterations using Array.isArray type-guards to prevent runtime crash
-    list.innerHTML = '';
-    if (Array.isArray(data.top_5_recommended_products) && data.top_5_recommended_products.length > 0) {
-      data.top_5_recommended_products.forEach(product => {
-        const li = document.createElement('li');
-        // Handle both string arrays and object structures safely
-        li.textContent = typeof product === 'object' ? (product.title || 'Unknown Product') : product;
-        list.appendChild(li);
-      });
-    } else {
-      // 5. Show clean fallback empty state notice when product arrays are absent
-      list.innerHTML = '<li class="empty-notice">📭 No product recommendation telemetry available.</li>';
+    } catch (e) {
+      console.warn("Could not fetch CSRF token: ", e);
     }
 
-  } catch (error) {
-    // Log tracking for developer console debugging context mapping
-    console.error('Handled dashboard compilation crash successfully:', error);
-    
-    // 6. Display persistent clear user-facing failure alert message state
-    statusBox.innerHTML = `
-      <div class="error-banner">
-        ⚠️ <strong>Dashboard Sync Failure:</strong> Unable to connect to the administration server endpoint. Please check your system connection and refresh.
-      </div>
-    `;
-    
-    // Fallback UI variables to baseline states so '-' layout doesn't hang
-    document.getElementById('products').textContent = 'N/A';
-    document.getElementById('users').textContent = 'N/A';
-    document.getElementById('interactions').textContent = 'N/A';
-    document.getElementById('recommendation').textContent = 'N/A';
-    document.getElementById('sentiment').textContent = 'N/A';
-    document.getElementById('trained').textContent = 'N/A';
-    list.innerHTML = '<li class="empty-notice">⚠️ Failed to compile recommended products.</li>';
+    return {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${adminToken}`,
+      "X-CSRF-Token": csrfToken,
+      "Origin": window.location.origin
+    };
   }
-}
 
-loadDashboard();
+  function showNotification(message, isError = false) {
+    const area = document.getElementById('notification-area');
+    const banner = document.createElement('div');
+    banner.className = `alert-banner ${isError ? 'alert-banner-error' : 'alert-banner-success'}`;
+    banner.innerHTML = `
+      <span>${isError ? '⚠️' : '✅'} ${message}</span>
+      <button style="background: none; border: none; color: inherit; cursor: pointer; font-size: 1.1rem;" onclick="this.parentElement.remove()">✕</button>
+    `;
+    area.innerHTML = "";
+    area.appendChild(banner);
+    setTimeout(() => banner.remove(), 6000);
+  }
+
+  async function loadRegistryAndMetrics() {
+    try {
+      const headers = await getRequestHeaders();
+      
+      // Load models
+      const modelsRes = await fetch('/api/admin/models', { headers });
+      if (!modelsRes.ok) throw new Error("Failed to load model registry.");
+      const modelsData = await modelsRes.json();
+
+      document.getElementById('active-model-text').innerText = modelsData.active_model || 'None';
+      document.getElementById('shadow-model-text').innerText = modelsData.shadow_model || 'None';
+      document.getElementById('staging-model-text').innerText = modelsData.staging_model || 'None';
+      document.getElementById('canary-traffic-display').innerText = `${modelsData.canary_traffic_percent}%`;
+      document.getElementById('canary-threshold-display').innerText = `${modelsData.canary_error_threshold * 100}%`;
+
+      document.getElementById('traffic-split-slider').value = modelsData.canary_traffic_percent;
+      document.getElementById('traffic-split-value').innerText = `${modelsData.canary_traffic_percent}%`;
+      document.getElementById('error-threshold-input').value = modelsData.canary_error_threshold;
+
+      // Populate registry catalog
+      const list = document.getElementById('model-registry-list');
+      list.innerHTML = "";
+      
+      if (modelsData.models && modelsData.models.length > 0) {
+        modelsData.models.forEach(model => {
+          const item = document.createElement('div');
+          item.className = 'model-item';
+          
+          let badgeClass = 'badge-staging';
+          let statusText = model.status;
+          if (model.status === 'production') badgeClass = 'badge-production';
+          if (model.status === 'shadow') badgeClass = 'badge-shadow';
+          if (model.status === 'rolled_back') {
+            badgeClass = 'badge-rolledback';
+            statusText = 'rolled back';
+          }
+
+          let canaryStatsHTML = "";
+          if (model.status === 'staging' || model.status === 'rolled_back') {
+            const reqs = model.metrics?.canary_requests || 0;
+            const errs = model.metrics?.canary_errors || 0;
+            const rate = model.metrics?.error_rate ? `${round(model.metrics.error_rate * 100, 2)}%` : '0%';
+            canaryStatsHTML = `<div style="margin-top: 6px; font-size: 0.8rem; color: var(--text-muted)">Canary: <b>${reqs}</b> reqs | <b>${errs}</b> errs | <b>${rate}</b> error rate</div>`;
+          }
+
+          item.innerHTML = `
+            <div class="model-info">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <h4>${model.version}</h4>
+                <span class="badge ${badgeClass}">${statusText}</span>
+              </div>
+              <p>Registered at: ${new Date(model.created_at).toLocaleString()}</p>
+              ${canaryStatsHTML}
+            </div>
+            <div class="model-actions">
+              ${model.status !== 'production' ? `<button class="btn" style="padding: 6px 12px; font-size:0.8rem;" onclick="promoteModel('${model.version}')">🚀 Promote</button>` : ''}
+              ${model.status !== 'shadow' && model.status !== 'production' ? `<button class="btn btn-secondary" style="padding: 6px 12px; font-size:0.8rem;" onclick="shadowModel('${model.version}')">👥 Shadow</button>` : ''}
+              <button class="btn btn-rose" style="padding: 6px 12px; font-size:0.8rem;" onclick="deleteModel('${model.version}')">🗑️ Delete</button>
+            </div>
+          `;
+          list.appendChild(item);
+        });
+      } else {
+        list.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 40px 0;">No models in registry catalog.</div>`;
+      }
+
+      // Load shadow comparison metrics
+      const compRes = await fetch('/api/admin/models/shadow_comparison', { headers });
+      if (compRes.ok) {
+        const compData = await compRes.json();
+        document.getElementById('shadow-total').innerText = compData.total_comparisons;
+        document.getElementById('shadow-agreement').innerText = `${round(compData.avg_agreement_rate * 100, 2)}%`;
+        document.getElementById('shadow-ndcg').innerText = compData.avg_ndcg_delta;
+        document.getElementById('shadow-latency').innerText = `${compData.avg_latency_ms} ms`;
+        document.getElementById('shadow-errors').innerText = `${round(compData.error_rate * 100, 2)}%`;
+
+        // Render logs
+        const logsList = document.getElementById('shadow-logs-list');
+        logsList.innerHTML = "";
+        if (compData.logs && compData.logs.length > 0) {
+          compData.logs.reverse().forEach(log => {
+            const line = document.createElement('div');
+            line.className = 'log-line';
+            line.innerHTML = `
+              <span class="log-query">${log.query}</span>
+              <span class="log-agreement">Agr: ${round(log.agreement_rate * 100, 1)}%</span>
+              <span class="log-ndcg">NDCG Δ: ${log.ndcg_delta}</span>
+              <span class="log-latency">${log.latency_ms}ms</span>
+            `;
+            logsList.appendChild(line);
+          });
+        } else {
+          logsList.innerHTML = `<div style="color: var(--text-muted); text-align: center; padding-top: 80px;">No comparison telemetry available.</div>`;
+        }
+      }
+
+    } catch (error) {
+      console.error(error);
+      showNotification("Error reloading dashboard data: " + error.message, true);
+    }
+  }
+
+  async function registerModel() {
+    const version = document.getElementById('reg-version').value;
+    const alpha = parseFloat(document.getElementById('reg-alpha').value);
+    const beta = parseFloat(document.getElementById('reg-beta').value);
+    const gamma = parseFloat(document.getElementById('reg-gamma').value);
+    
+    try {
+      const headers = await getRequestHeaders();
+      const res = await fetch('/api/admin/models/register', {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ alpha, beta, gamma, version: version || null })
+      });
+      
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || "Registration failed.");
+      }
+      
+      showNotification("Model registered in staging successfully!");
+      document.getElementById('reg-version').value = "";
+      loadRegistryAndMetrics();
+    } catch (e) {
+      showNotification("Registration Error: " + e.message, true);
+    }
+  }
+
+  async function promoteModel(version) {
+    try {
+      const headers = await getRequestHeaders();
+      const res = await fetch(`/api/admin/models/${version}/promote`, {
+        method: "POST",
+        headers
+      });
+      
+      if (!res.ok) throw new Error("Failed to promote model.");
+      
+      showNotification(`Model ${version} promoted to production successfully!`);
+      loadRegistryAndMetrics();
+    } catch (e) {
+      showNotification("Promotion Error: " + e.message, true);
+    }
+  }
+
+  async function shadowModel(version) {
+    try {
+      const headers = await getRequestHeaders();
+      const res = await fetch(`/api/admin/models/${version}/shadow`, {
+        method: "POST",
+        headers
+      });
+      
+      if (!res.ok) throw new Error("Failed to move model to shadow.");
+      
+      showNotification(`Model ${version} moved to shadow evaluation successfully.`);
+      loadRegistryAndMetrics();
+    } catch (e) {
+      showNotification("Shadow Error: " + e.message, true);
+    }
+  }
+
+  async function deleteModel(version) {
+    if (!confirm(`Are you sure you want to delete and deregister ${version}?`)) return;
+    
+    try {
+      const headers = await getRequestHeaders();
+      const res = await fetch(`/api/admin/models/${version}`, {
+        method: "DELETE",
+        headers
+      });
+      
+      if (!res.ok) throw new Error("Failed to delete model.");
+      
+      showNotification(`Model ${version} deleted successfully.`);
+      loadRegistryAndMetrics();
+    } catch (e) {
+      showNotification("Delete Error: " + e.message, true);
+    }
+  }
+
+  async function updateCanarySettings() {
+    const traffic_percent = parseInt(document.getElementById('traffic-split-slider').value);
+    const error_threshold = parseFloat(document.getElementById('error-threshold-input').value);
+    
+    try {
+      const headers = await getRequestHeaders();
+      const res = await fetch('/api/admin/models/canary_settings', {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ traffic_percent, error_threshold })
+      });
+      
+      if (!res.ok) throw new Error("Failed to update canary parameters.");
+      
+      showNotification("Canary parameters updated successfully.");
+      loadRegistryAndMetrics();
+    } catch (e) {
+      showNotification("Update Error: " + e.message, true);
+    }
+  }
+
+  function round(val, places) {
+    if (isNaN(val) || val === null) return 0;
+    const factor = Math.pow(10, places);
+    return Math.round(val * factor) / factor;
+  }
+
+  // Initial load
+  loadRegistryAndMetrics();
+  // Auto refresh every 10 seconds
+  setInterval(loadRegistryAndMetrics, 10000);
 </script>
 
 </body>
