@@ -55,12 +55,20 @@ def realtime_client():
 def test_recommendations_websocket_streams_updates(realtime_client):
     with realtime_client.websocket_connect("/ws/recommendations") as websocket:
         websocket.send_json({"item_title": "Alpha", "top_n": 2})
-        payload = websocket.receive_json()
-
-    assert payload["type"] == "recommendations"
-    assert payload["query_item"] == "Alpha"
-    assert len(payload["recommendations"]) == 2
-    assert all(item["title"] != "Alpha" for item in payload["recommendations"])
+        start_payload = websocket.receive_json()
+        assert start_payload["type"] == "recommendations_start"
+        assert start_payload["payload"]["query_item"] == "Alpha"
+        
+        recs = []
+        while True:
+            payload = websocket.receive_json()
+            if payload["type"] == "recommendations_complete":
+                break
+            assert payload["type"] == "recommendations_chunk"
+            recs.extend(payload["payload"]["recommendations"])
+            
+    assert len(recs) == 2
+    assert all(item["title"] != "Alpha" for item in recs)
 
 def test_recommendations_websocket_accepts_structured_event(realtime_client):
     with realtime_client.websocket_connect("/ws/recommendations") as websocket:
@@ -68,11 +76,19 @@ def test_recommendations_websocket_accepts_structured_event(realtime_client):
             "type": "recommendation_request",
             "payload": {"item_title": "Alpha", "top_n": 2},
         })
-        payload = websocket.receive_json()
-
-    assert payload["type"] == "recommendations"
-    assert payload["payload"]["query_item"] == "Alpha"
-    assert len(payload["payload"]["recommendations"]) == 2
+        start_payload = websocket.receive_json()
+        assert start_payload["type"] == "recommendations_start"
+        assert start_payload["payload"]["query_item"] == "Alpha"
+        
+        recs = []
+        while True:
+            payload = websocket.receive_json()
+            if payload["type"] == "recommendations_complete":
+                break
+            assert payload["type"] == "recommendations_chunk"
+            recs.extend(payload["payload"]["recommendations"])
+            
+    assert len(recs) == 2
 
 
 def test_recommendations_websocket_rejects_invalid_payload(realtime_client):
@@ -117,7 +133,8 @@ def test_recommendations_websocket_rejects_unsupported_event(realtime_client):
     assert payload["error"]["code"] == "UNSUPPORTED_EVENT"
 
 def post_with_csrf(client, url, payload):
-    token = "a" * 64
+    resp = client.get("/api/csrf-token")
+    token = resp.json()["csrfToken"]
     origin = "http://testserver"
     client.cookies.set("csrftoken", token)
     return client.post(
