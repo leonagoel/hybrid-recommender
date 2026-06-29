@@ -2342,12 +2342,9 @@ def get_recommendations_alias(
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
     strategy: Optional[str] = Query(None),
-<<<<<<< HEAD
     method: Optional[str] = Query(None, description="knn for KNN-based collaborative filtering"),
-=======
     weather: Optional[str] = Query(None),
     time_of_day: Optional[str] = Query(None),
->>>>>>> 277e4e8 (feat(#1726): implement context-aware recommendation reranking using real-time weather and time data)
 ):
     """Backward-compatible alias for clients calling /api/recommendations."""
     return get_recommendations(
@@ -2363,6 +2360,7 @@ def get_recommendations_alias(
         target_catalog=target_catalog,
         model_version=model_version,
         strategy=strategy,
+        method=method,
         weather=weather,
         time_of_day=time_of_day,
     )
