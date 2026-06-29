@@ -100,6 +100,22 @@ export function initRecommendationSocket() {
         return;
       }
 
+      if (data.type === 'recommendations_start') {
+        clearTimeout(realtimeFallbackTimer);
+        renderRecommendations({ recommendations: [], has_history: data.payload?.has_history }, false);
+        return;
+      }
+
+      if (data.type === 'recommendations_chunk') {
+        renderRecommendations(data.payload || data, true);
+        return;
+      }
+
+      if (data.type === 'recommendations_complete') {
+        // Progressive loading finished
+        return;
+      }
+
       if (data.type === 'recommendations') {
         clearTimeout(realtimeFallbackTimer);
         renderRecommendations(data.payload || data);

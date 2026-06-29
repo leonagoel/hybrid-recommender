@@ -15,6 +15,7 @@ import logging
 import math
 import secrets
 
+import asyncio
 import json
 from urllib.parse import urlsplit
 from redis import Redis
@@ -2471,12 +2472,29 @@ async def websocket_recommendations(websocket: WebSocket):
             )
 
             await websocket.send_json({
-                "type": "recommendations",
-                "query_item": request_payload.item_title,
-                "recommendations": recs,
+                "type": "recommendations_start",
                 "payload": {
                     "query_item": request_payload.item_title,
-                    "recommendations": recs,
+                    "total_results": len(recs)
+                },
+            })
+
+            chunk_size = 4
+            for i in range(0, len(recs), chunk_size):
+                chunk = recs[i:i + chunk_size]
+                await websocket.send_json({
+                    "type": "recommendations_chunk",
+                    "payload": {
+                        "recommendations": chunk,
+                    },
+                })
+                # Simulate progressive loading delay
+                await asyncio.sleep(0.3)
+
+            await websocket.send_json({
+                "type": "recommendations_complete",
+                "payload": {
+                    "query_item": request_payload.item_title,
                 },
             })
 
