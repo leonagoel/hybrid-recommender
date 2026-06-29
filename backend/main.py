@@ -16,6 +16,7 @@ import math
 import secrets
 
 import json
+import inspect
 from urllib.parse import urlsplit
 from redis import Redis
 from redis.exceptions import RedisError
@@ -68,12 +69,6 @@ from typing import Dict, List, Optional # type: ignore
 from pydantic import BaseModel, ConfigDict, Field # type: ignore
 from typing import Any, Optional
 from dotenv import load_dotenv # type: ignore
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
-from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -245,9 +240,6 @@ except Exception:
     logger.warning("Redis unavailable at %s — falling back to in-memory cache.", _redis_url)
 
 
-def csrf_header_dep(request: Request) -> None:
-    """No-op dependency; actual CSRF validation is handled by CSRFMiddleware."""
-    pass
 
 MOCK_PRODUCTS = [
     {
@@ -517,9 +509,6 @@ def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
 
 
-def _admin_access_dep(request: Request) -> None:
-    """FastAPI dependency wrapper around _require_admin_access."""
-    _require_admin_access(request)
 
 
 CORS_ORIGINS_ENV = "CORS_ORIGINS"
@@ -922,128 +911,24 @@ def _precompute_recommendation_cache(
     return count
 
 # ── Search ────────────────────────────────────────────────────────────
-def _normalize_search_query(query: str) -> str:
-    normalized = " ".join((query or "").split())
-    if len(normalized) > MAX_SEARCH_QUERY_LENGTH:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail=f"Search query must be {MAX_SEARCH_QUERY_LENGTH} characters or fewer.")
-    return normalized
 
 _USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
 
 
-def _validate_user_id(user_id: str) -> str:
-    """Allowlist-validate user_id to block injection via path parameters."""
-    if not _USER_ID_RE.match(user_id):
-        raise HTTPException(status_code=400, detail="Invalid user_id format.")
-    return user_id
 
 
-def _set_cache_headers(response: Response, status: str) -> None:
-    response.headers["Cache-Control"] = CACHE_CONTROL_VALUE
-    response.headers["X-Cache"] = status
 
 
-def _get_rate_limit(limit_env: str, default_limit: int) -> int:
-    try:
-        limit = int(os.environ.get(limit_env, str(default_limit)))
-    except ValueError:
-        return default_limit
-    return max(1, limit)
 
 
-def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
-    return JSONResponse(
-        status_code=429,
-        content={
-            "error": "Rate limit exceeded",
-            "message": "Too many requests. Please try again later.",
-        },
-        headers={
-            "x-ratelimit-limit": str(rate_limit),
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": str(reset_time),
-        },
-    )
 
 
-def _apply_rate_limit(
-    request: Request,
-    response: Response,
-    scope: str,
-    limit_env: str,
-    default_limit: int,
-) -> JSONResponse | None:
-    rate_limit = _get_rate_limit(limit_env, default_limit)
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    bucket_key = (scope, client_ip)
-    now = time.time()
-
-    with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [
-            timestamp
-            for timestamp in timestamps
-            if now - timestamp < RATE_LIMIT_BUCKET_TTL_SECONDS
-        ]
-
-        if timestamps:
-            _rate_limit_buckets.move_to_end(bucket_key)
-
-        reset_time = (
-            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
-            if timestamps
-            else RATE_LIMIT_BUCKET_TTL_SECONDS
-        )
-        reset_time = max(0, reset_time)
-
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
-
-        timestamps.append(now)
-        _rate_limit_buckets.move_to_end(bucket_key)
-        remaining = rate_limit - len(timestamps)
-        reset_time = (
-            int(RATE_LIMIT_BUCKET_TTL_SECONDS - (now - timestamps[0]))
-            if timestamps
-            else RATE_LIMIT_BUCKET_TTL_SECONDS
-        )
-        reset_time = max(0, reset_time)
-
-    _prune_rate_limit_buckets(now)
-
-    response.headers["x-ratelimit-limit"] = str(rate_limit)
-    response.headers["x-ratelimit-remaining"] = str(remaining)
-    response.headers["x-ratelimit-reset"] = str(reset_time)
-    return None
 
 
-def _extract_bearer_token(value: str | None) -> str:
-    if not value:
-        return ""
-    scheme, _, token = value.partition(" ")
-    if scheme.lower() != "bearer":
-        return ""
-    return token.strip()
 
 
-def _require_admin_access(request: Request) -> None:
-    expected_token = os.environ.get(ADMIN_API_TOKEN_ENV, "").strip()
-    _placeholders = {"change-me-to-a-random-secret", "changeme_admin_token", "your-secret-admin-token-here"}
-    if not expected_token or expected_token in _placeholders:
-        # No real admin token configured — allow access (local dev mode)
-        return
-
-    provided_token = (
-        request.headers.get("x-admin-token", "").strip()
-        or _extract_bearer_token(request.headers.get("authorization"))
-    )
-    if not provided_token or not secrets.compare_digest(provided_token, expected_token):
-        raise HTTPException(status_code=401, detail="Admin token required.")
 
 
-def _admin_access_dep(request: Request) -> None:
-    _require_admin_access(request)
 
 
 def _get_feedback_storage_client():
@@ -1071,9 +956,6 @@ STAGING_MODEL_VERSION = None
 
 SHADOW_LOGS = []
 
-def generate_model_version():
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    return f"1.0.0-{timestamp}"
 
 
 class RealtimeConnectionHub:
@@ -1105,38 +987,11 @@ realtime_hub = RealtimeConnectionHub()
 USER_INTERACTIONS = []
 
 
-class WeightsUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    alpha: float = 0.5
-    beta: float = 0.3
-    gamma: float = 0.2
 
 
-class PurchaseCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    product_id: int = Field(..., gt=0)
-    rating: float = Field(0.0, ge=0.0, le=5.0)
-    review_text: str = Field("", max_length=1000)
 
 
-class FeedbackCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
-    item: str = Field(..., min_length=1, max_length=500)
-    feedback: str = Field(..., min_length=1, max_length=2000)
-    thumbs: str = Field(..., pattern=r"^(up|down)$")
 
-class InteractionCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    user_id: str = Field(..., min_length=1, max_length=128)
-    item_id: int = Field(..., gt=0)
-    interaction_type: str = Field(
-        ...,
-        pattern=r"^(view|click|search)$"
-    )
 
 class MergeHistoryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1144,12 +999,6 @@ class MergeHistoryRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=128)
 
 
-class RealtimeRecommendationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    item_title: str
-    top_n: int = 10
-    explain: bool = False
-    target_catalog: Optional[str] = None
 
 class RealtimeClientEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1190,18 +1039,8 @@ def websocket_error(code: str, message: str):
     summary="Issue a CSRF token",
     tags=["Security"],
 )
-def get_csrf_token(response: Response):
-    token = generate_csrf_token()
-    set_csrf_cookie(response, token)
-    return CSRFTokenResponse(csrfToken=token)
 
 
-class FederatedTrainRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    n_factors: int = 20
-    epochs: int = 5
-    lr: float = 0.05
-    reg: float = 0.05
 
 
 # ── API Metrics ───────────────────────────────────────────────────────
@@ -1948,111 +1787,6 @@ def train_federated(
         "build_time_seconds": build_time,
     }
 
-def build_models():
-    with _model_lock:
-        sb = get_supabase()
-
-        all_products = []
-        page_size = 1000
-        offset = 0
-
-        while True:
-            result = sb.table('products').select(
-                'id, title, description, category, rating, avg_sentiment, review_count'
-            ).range(offset, offset + page_size - 1).execute()
-
-            batch = result.data or []
-            all_products.extend(batch)
-
-            if len(batch) < page_size:
-                break
-
-            offset += page_size
-
-        if not all_products:
-            raise HTTPException(400, "No products in database. Upload data first.")
-
-        import pandas as pd
-
-        item_df = pd.DataFrame(all_products)
-
-        item_df['combined'] = (
-            item_df['title'].astype(str) + ' ' +
-            item_df['description'].fillna('').astype(str) + ' ' +
-            item_df['category'].fillna('').astype(str)
-        )
-
-        item_df['review_count'] = item_df['review_count'].fillna(0).astype(int)
-
-        start_time = time.time()
-
-        content_model = ContentRecommender(item_df)
-
-        collab_model = None
-        with _model_lock:
-            try:
-                purchases_result = sb.table('purchases').select(
-                    'user_id, product_id, rating'
-                ).limit(50000).execute()
-
-                purchases = purchases_result.data or []
-
-                if len(purchases) > 10:
-                    product_title_map = {
-                        p['id']: p['title']
-                        for p in all_products
-                    }
-
-                    interaction_rows = []
-
-                    for p in purchases:
-                        title = product_title_map.get(p['product_id'])
-
-                        if title:
-                            interaction_rows.append({
-                                'user_id': p['user_id'],
-                                'title': title,
-                                'rating': p.get('rating', 3.0)
-                            })
-
-                    if len(interaction_rows) > 10:
-                        interaction_df = pd.DataFrame(interaction_rows)
-
-                        if interaction_df['user_id'].nunique() > 1:
-                            collab_model = CollaborativeRecommender(interaction_df)
-
-            except Exception as e:
-                logger.warning(
-                    "Collaborative model data load failed: %s",
-                    e
-                )
-
-        hybrid_model = HybridRecommender(
-            content_model,
-            collab_model,
-            item_df
-        )
-
-        build_time = round(time.time() - start_time, 2)
-
-        models["content"] = content_model
-        models["collab"] = collab_model
-        models["hybrid"] = hybrid_model
-        models["item_df"] = item_df
-        models["ready"] = True
-        models["build_time"] = build_time
-        models["last_trained_at"] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        _clear_response_cache()
-
-        return {
-            "message": "Models built successfully!",
-            "items": len(item_df),
-            "has_collaborative": collab_model is not None,
-            "build_time_seconds": build_time,
-        }
 
 
 # ── Recommendations ───────────────────────────────────────────────────
@@ -2709,9 +2443,8 @@ def update_weights(
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = Query(1, ge=1), limit: int = Query(20, alias="per_page", ge=1, le=100)):
     sb = get_supabase()
-    limit = per_page
     offset = (page - 1) * limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -3118,10 +2851,11 @@ class SearchRequest(BaseModel):
     query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: Optional[int] = 5
 
+frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 
-    @app.get("/dashboard.html")
-    def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
+@app.get("/dashboard.html")
+def serve_dashboard():
+    return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
 
 # ── CLEAR USER PREFERENCES & RESET CACHE ENDPOINT ───────────────────
 @app.post("/api/v1/user/preferences/reset", dependencies=[Depends(csrf_header_dep)])
