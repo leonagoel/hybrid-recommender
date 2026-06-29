@@ -783,6 +783,8 @@ def health_check():
         "database": db_ok,
         "redis": redis_ok,
         "models_ready": models.get("ready", False),
+        "model_loaded": models.get("ready", False),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 def _set_cached_response(key: str, value: Any) -> None:
@@ -2709,9 +2711,8 @@ def update_weights(
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = Query(1, ge=1), limit: int = Query(20, alias="per_page", ge=1, le=100)):
     sb = get_supabase()
-    limit = per_page
     offset = (page - 1) * limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
