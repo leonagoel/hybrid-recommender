@@ -16,6 +16,7 @@ import math
 import secrets
 
 import json
+import inspect
 from urllib.parse import urlsplit
 from redis import Redis
 from redis.exceptions import RedisError
@@ -325,27 +326,28 @@ def _get_cached_response(key: str):
             if cached is not None:
                 _cache_hits += 1
                 return json.loads(cached)
-        except (RedisError, TypeError, json.JSONDecodeError):
+            # If Redis is active and returns None, it is a definitive miss. Do not fall back to in-memory.
+            _cache_misses += 1
+            return None
+        except (RedisError, TypeError):
+            # Only fall back to in-memory cache if Redis is down/raises an error
             pass
+        except json.JSONDecodeError:
+            _cache_misses += 1
+            return None
 
     with _cache_lock:
         cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-        cached = _response_cache.get(key)
-
         if not cached:
             _cache_misses += 1
             return None
 
         expires_at, value = cached
-
         if expires_at <= time.time():
             _response_cache.pop(key, None)
             _cache_misses += 1
             return None
+
         _cache_hits += 1
         return value
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ──
@@ -1511,6 +1513,8 @@ def search_items(
         'results': results
     }
     
+    _set_cached_response(cache_key, final_output)
+    _set_cache_headers(response, "MISS")
     return final_output
 
 
@@ -2709,9 +2713,8 @@ def update_weights(
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = Query(1, ge=1), limit: int = Query(20, alias="per_page", ge=1, le=100)):
     sb = get_supabase()
-    limit = per_page
     offset = (page - 1) * limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -3118,10 +3121,11 @@ class SearchRequest(BaseModel):
     query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: Optional[int] = 5
 
+frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 
-    @app.get("/dashboard.html")
-    def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
+@app.get("/dashboard.html")
+def serve_dashboard():
+    return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
 
 # ── CLEAR USER PREFERENCES & RESET CACHE ENDPOINT ───────────────────
 @app.post("/api/v1/user/preferences/reset", dependencies=[Depends(csrf_header_dep)])
