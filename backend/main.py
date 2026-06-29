@@ -16,6 +16,7 @@ import math
 import secrets
 
 import json
+import inspect
 from urllib.parse import urlsplit
 from redis import Redis
 from redis.exceptions import RedisError
@@ -2748,9 +2749,8 @@ def update_weights(
 
 # ── Items ─────────────────────────────────────────────────────────────
 @app.get("/api/items")
-def list_items(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+def list_items(page: int = Query(1, ge=1), limit: int = Query(20, alias="per_page", ge=1, le=100)):
     sb = get_supabase()
-    limit = per_page
     offset = (page - 1) * limit
     result = sb.table('products') \
         .select('id, title, description, category, rating, avg_sentiment, review_count, reviews') \
@@ -3157,10 +3157,11 @@ class SearchRequest(BaseModel):
     query: str = Field(..., max_length=MAX_SEARCH_QUERY_LENGTH)
     limit: Optional[int] = 5
 
+frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend")
 
-    @app.get("/dashboard.html")
-    def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
+@app.get("/dashboard.html")
+def serve_dashboard():
+    return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
 
 # ── CLEAR USER PREFERENCES & RESET CACHE ENDPOINT ───────────────────
 @app.post("/api/v1/user/preferences/reset", dependencies=[Depends(csrf_header_dep)])
