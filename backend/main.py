@@ -3088,9 +3088,6 @@ async def reset_user_preferences(request: Request):
         # 3. Wipe out the internal memory cache
         _clear_response_cache()
 
-
-        global global_redis_client
-
         if _redis_client is not None:
             try:
                 # Find keys matching this user's recommendation cache pattern
@@ -3109,4 +3106,3 @@ async def reset_user_preferences(request: Request):
     except Exception as e:
         logger.error(f"Error resetting preferences for user {validated_user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to reset user data.")
-
