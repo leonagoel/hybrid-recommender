@@ -60,6 +60,7 @@ from fastapi import ( # type: ignore
     Response,
     WebSocket,
     WebSocketDisconnect,
+    status
 )
 from fastapi.middleware.cors import CORSMiddleware # type: ignore
 from fastapi.staticfiles import StaticFiles # type: ignore
@@ -115,6 +116,45 @@ from issue_triage import triage_issue
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+
+from src.evaluation.evaluation import run_evaluation
+
+EVALUATION_HISTORY = deque(maxlen=20)
+
+@app.get("/api/evaluate")
+async def evaluate_models(
+    k: int = Query(10, ge=1, le=100),
+    mode: str = "all",
+    alpha: float = 0.4,
+    beta: float = 0.35,
+    gamma: float = 0.25,
+):
+    try:
+        results = run_evaluation(
+            k=k,
+            mode=mode,
+            weights={"alpha": alpha, "beta": beta, "gamma": gamma}
+        )
+        
+        # Save to history
+        run_record = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "k": k,
+            "mode": mode,
+            "weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
+            "results": results,
+        }
+        EVALUATION_HISTORY.appendleft(run_record)
+        
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Evaluation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/evaluate/history")
+async def evaluate_history(limit: int = 5):
+    history = list(EVALUATION_HISTORY)[:limit]
+    return {"runs": history}
 
 # Register routers
 app.include_router(recommend.router, prefix="/api")
@@ -191,6 +231,7 @@ CLEANUP_THRESHOLD = 10000   # run stale-bucket cleanup every N requests
 _request_counter = 0
 
 _cache_lock = Lock()
+_model_lock = Lock()  # Guards hot-path model read during async training
 
 # ── Redis client ──────────────────────────────────────────────────────
 _redis_client = None
@@ -301,6 +342,24 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
+import asyncio
+
+async def _cache_cleanup_worker():
+    while True:
+        await asyncio.sleep(60)  # Cleanup every 60 seconds
+        now = time.time()
+        expired_keys = []
+        with _cache_lock:
+            for key, (expires_at, _) in _response_cache.items():
+                if expires_at <= now:
+                    expired_keys.append(key)
+            for key in expired_keys:
+                _response_cache.pop(key, None)
+
+@app.on_event("startup")
+async def start_cache_cleanup():
+    asyncio.create_task(_cache_cleanup_worker())
+    logger.info("Background cache cleanup task started.")
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
@@ -349,6 +408,12 @@ def _set_cache_headers(response: Response, status: str) -> None:
 
 
 def _get_rate_limit(limit_env: str, default_limit: int) -> int:
+    """Read the per-minute cap from an environment variable.
+
+    Falls back to *default_limit* when the variable is absent or non-integer.
+    Always returns at least 1 so the endpoint is never fully disabled by a
+    misconfiguration.
+    """
     try:
         limit = int(os.environ.get(limit_env, str(default_limit)))
     except ValueError:
@@ -357,6 +422,7 @@ def _get_rate_limit(limit_env: str, default_limit: int) -> int:
 
 
 def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
+    """Build a standards-compliant 429 Too Many Requests JSON response."""
     return JSONResponse(
         status_code=429,
         content={
@@ -378,34 +444,69 @@ def _apply_rate_limit(
     limit_env: str,
     default_limit: int,
 ) -> JSONResponse | None:
+    """Token Bucket rate limiter (per IP, per scope).
+
+    Each (scope, client_ip) pair has its own bucket.  The bucket holds up to
+    *rate_limit* tokens and refills at a rate of *rate_limit* tokens per 60
+    seconds (i.e. one token per ``60 / rate_limit`` seconds).  A request is
+    allowed when at least 1 token is available; otherwise a 429 response is
+    returned immediately.
+
+    Standard ``x-ratelimit-*`` headers are always attached to the response so
+    clients can implement polite back-off.
+
+    Args:
+        request:       Incoming FastAPI/Starlette request (used to read client IP).
+        response:      Outgoing response object (rate-limit headers are written here).
+        scope:         Logical name of the protected endpoint (e.g. ``"search"``).  Used
+                       as part of the bucket key so each endpoint has independent limits.
+        limit_env:     Name of the environment variable that overrides *default_limit*
+                       at runtime (e.g. ``"RATE_LIMIT_SEARCH_PER_MIN"``).  Must be a
+                       positive integer when set.
+        default_limit: Fallback requests-per-minute cap when the env variable is absent.
+
+    Returns:
+        ``None`` when the request is allowed (caller should continue normally).
+        A :class:`JSONResponse` with status 429 when the bucket is empty.
+    """
     rate_limit = _get_rate_limit(limit_env, default_limit)
     client_ip = request.client.host if request.client else "127.0.0.1"
     bucket_key = (scope, client_ip)
     now = time.time()
 
+    # Token Bucket parameters derived from the per-minute cap.
+    capacity = float(rate_limit)          # max burst == full-minute quota
+    refill_rate = rate_limit / 60.0       # tokens per second
+
     with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+        # Initialise a fresh bucket on first access.
+        if bucket_key not in _rate_limit_buckets:
+            _rate_limit_buckets[bucket_key] = {"tokens": capacity, "last_updated": now}
 
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
+        bucket = _rate_limit_buckets[bucket_key]
 
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
+        # Refill: add tokens proportional to time elapsed since the last request.
+        elapsed = now - bucket["last_updated"]
+        bucket["tokens"] = min(capacity, bucket["tokens"] + elapsed * refill_rate)
+        bucket["last_updated"] = now
 
-        timestamps.append(now)
-        remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
+        # Compute seconds until the bucket would have one token available.
+        if bucket["tokens"] < 1.0:
+            wait_seconds = max(0, int((1.0 - bucket["tokens"]) / refill_rate))
+            return _rate_limit_exceeded_response(rate_limit, wait_seconds)
 
+        # Consume one token and allow the request.
+        bucket["tokens"] -= 1.0
+        remaining = int(bucket["tokens"])
+        reset_time = max(0, int((capacity - bucket["tokens"]) / refill_rate))
+
+        # LRU eviction: keep memory bounded when many unique IPs are seen.
         global _request_counter
         _request_counter += 1
         if _request_counter >= CLEANUP_THRESHOLD:
             _request_counter = 0
-            # Garbage Collection: Remove empty buckets to prevent memory leak
-            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
-            for k in empty_keys:
-                del _rate_limit_buckets[k]
+            while len(_rate_limit_buckets) > MAX_RATE_LIMIT_IPS:
+                _rate_limit_buckets.popitem(last=False)
 
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
@@ -736,8 +837,6 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
-    return result
-
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
     """Expose simple cache hit/miss metrics and configured TTL."""
@@ -877,60 +976,10 @@ def _set_cache_headers(response: Response, status: str) -> None:
     response.headers["X-Cache"] = status
 
 
-def _get_rate_limit(limit_env: str, default_limit: int) -> int:
-    try:
-        limit = int(os.environ.get(limit_env, str(default_limit)))
-    except ValueError:
-        return default_limit
-    return max(1, limit)
-
-
-def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
-    return JSONResponse(
-        status_code=429,
-        content={
-            "error": "Rate limit exceeded",
-            "message": "Too many requests. Please try again later.",
-        },
-        headers={
-            "x-ratelimit-limit": str(rate_limit),
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": str(reset_time),
-        },
-    )
-
-
-def _apply_rate_limit(
-    request: Request,
-    response: Response,
-    scope: str,
-    limit_env: str,
-    default_limit: int,
-) -> JSONResponse | None:
-    rate_limit = _get_rate_limit(limit_env, default_limit)
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    bucket_key = (scope, client_ip)
-    now = time.time()
-
-    with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
-
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
-
-        timestamps.append(now)
-        remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-    response.headers["x-ratelimit-limit"] = str(rate_limit)
-    response.headers["x-ratelimit-remaining"] = str(remaining)
-    response.headers["x-ratelimit-reset"] = str(reset_time)
-    return None
+# NOTE: _get_rate_limit, _rate_limit_exceeded_response, and _apply_rate_limit
+# are defined earlier in this module (Token Bucket implementation).
+# The duplicate definitions that previously existed here (from a merge conflict)
+# have been removed as part of Issue #887.
 
 
 def _extract_bearer_token(value: str | None) -> str:
@@ -2584,15 +2633,63 @@ def register_and_merge_history(
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
+
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
-    _validate_user_id(user_id)  # allowlist-validate before any DB call
+def get_user_purchases(
+    user_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    authorization: str = Header(None),
+):
+    """Fetch purchase history for a user.
+
+    Args:
+        user_id: ID of the user whose purchases to fetch.
+        limit: Maximum number of purchases to return (1-200).
+        authorization: Bearer token from request headers.
+
+    Returns:
+        Dictionary containing list of purchases.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if access denied.
+    """
+    _validate_user_id(user_id)
+
+    # Step 1 — make sure they're logged in
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    # Step 2 — extract the token
+    token = authorization.split(" ")[1]
     sb = get_supabase()
+
+    # Step 3 — ask Supabase who this token belongs to
+    user_response = sb.auth.get_user(token)
+    if not user_response or not user_response.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+
+    # Step 4 — does the logged-in user match the requested user_id?
+    if user_response.user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    # Only reaches here if user is fetching their OWN data
     result = (
-        sb.table('purchases')
-        .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)')
-        .eq('user_id', user_id)
-        .order('purchased_at', desc=True)
+        sb.table("purchases")
+        .select(
+            "id, product_id, rating, review_text, "
+            "purchased_at, products(title, category, rating)"
+        )
+        .eq("user_id", user_id)
+        .order("purchased_at", desc=True)
         .limit(limit)
         .execute()
     )
@@ -2603,14 +2700,59 @@ def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
 def create_purchase(
     data: PurchaseCreate,
     _csrf: None = Depends(csrf_header_dep),
+    authorization: str = Header(None),
 ):
+    """Record a new purchase for the authenticated user.
+
+    Args:
+        data: Purchase details (product_id, rating, review_text, user_id).
+        _csrf: CSRF token validation dependency.
+        authorization: Bearer token from request headers.
+
+    Returns:
+        Dictionary containing the newly created purchase.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if user_id does not
+        match the authenticated user.
+    """
+    # Step 1 — make sure they're logged in
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    # Step 2 — extract the token
+    token = authorization.split(" ")[1]
     sb = get_supabase()
-    result = sb.table('purchases').insert({
-        'user_id': data.user_id,
-        'product_id': data.product_id,
-        'rating': max(0, min(5, data.rating)),
-        'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
-    }).execute()
+
+    # Step 3 — ask Supabase who this token belongs to
+    user_response = sb.auth.get_user(token)
+    if not user_response or not user_response.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+
+    # Step 4 — token user must match the user_id in the request body
+    if user_response.user.id != data.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    result = (
+        sb.table("purchases")
+        .insert({
+            "user_id": data.user_id,
+            "product_id": data.product_id,
+            "rating": max(0, min(5, data.rating)),
+            "review_text": data.review_text,
+        })
+        .execute()
+    )
+
     _clear_response_cache()
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
