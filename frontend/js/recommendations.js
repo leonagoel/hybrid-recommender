@@ -1,8 +1,8 @@
 // =============================================================================
 // recommendations.js — Hybrid Recommendations & WebSocket
 // =============================================================================
-import { state, setState, getAnonymousUserId } from './state.js';
-import { renderProductCards, showToast, setLoadingState, showLoadingBar, hideLoadingBar } from './ui.js';
+import { getAnonymousUserId, state } from './state.js';
+import { hideLoadingBar, showLoadingBar, showToast } from './ui.js';
 
 const PAGE_SIZE = 20;
 let currentOffset = 0;
@@ -216,6 +216,12 @@ function renderRecommendations(data, append = false) {
         · Content: ${(r.content_score || 0).toFixed(2)}
         · Collab: ${(r.collab_score || 0).toFixed(2)}
       </div>
+      <div class="feedback-actions">
+  <button class="feedback-btn" data-feedback="LIKE">👍</button>
+  <button class="feedback-btn" data-feedback="DISLIKE">👎</button>
+  <button class="feedback-btn" data-feedback="SAVE">🔖</button>
+  <button class="feedback-btn" data-feedback="SKIP">⏭</button>
+</div>
     </div>
   `).join('');
 
@@ -230,6 +236,27 @@ function renderRecommendations(data, append = false) {
       loadRecommendations(card.dataset.title);
     });
   });
+  document.querySelectorAll('.feedback-btn').forEach((btn) => {
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+
+    const card = btn.closest('.rec-card');
+
+    await fetch('/api/feedback/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        user_id: getAnonymousUserId(),
+        item_id: card.dataset.title,
+        feedback_type: btn.dataset.feedback
+      })
+    });
+
+    showToast('Feedback submitted', 'success');
+  });
+});
 
   const recsSection = document.getElementById('recs-section');
   if (recsSection) recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
