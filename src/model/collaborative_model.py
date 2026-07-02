@@ -7,6 +7,8 @@ Improvements:
 - Implicit feedback support (views, purchases → confidence weights)
 - Adaptive n_factors for sparse matrices
 - User-based personalized recommendations
+- [NEW] Temporal dynamics — time-decay weighting for recent preferences
+         Recent interactions weighted higher; old preferences decay over time
 - [NEW] NeuMF (Neural Matrix Factorization) — two-tower ANN replacing SVD
          Enable via USE_NEUMF=true in .env
 """
@@ -15,6 +17,7 @@ __all__ = ["CollaborativeRecommender"]
 from typing import Optional, List, Dict, Any
 import logging
 from typing import Any, Dict, List, Optional, Union
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -28,14 +31,18 @@ logger = logging.getLogger(__name__)
 
 
 class CollaborativeRecommender:
-    def __init__(self, interaction_df, n_factors=50, use_implicit=True):
+    def __init__(self, interaction_df, n_factors=50, use_implicit=True, enable_temporal=True, time_decay_days=90):
         """
         interaction_df: DataFrame with columns 'user_id', 'title', 'rating'.
-                        Optionally 'views' and 'purchases' for implicit feedback.
+                        Optionally 'views', 'purchases' for implicit feedback, 'timestamp' for temporal weighting.
         n_factors: number of latent factors for SVD decomposition.
         use_implicit: blend in implicit feedback signals if available.
+        enable_temporal: apply time-decay weighting to recent interactions.
+        time_decay_days: half-life for exponential time decay (default 90 days).
         """
         self.df = interaction_df.copy()
+        self.enable_temporal = enable_temporal
+        self.time_decay_days = time_decay_days
 
         self.users  = self.df['user_id'].astype('category')
         self.titles = self.df['title'].astype('category')
@@ -47,6 +54,9 @@ class CollaborativeRecommender:
         row  = self.users.cat.codes.values
         col  = self.titles.cat.codes.values
         data = self.df['rating'].values.astype(float)
+
+        if enable_temporal and 'timestamp' in self.df.columns:
+            data = data * self._compute_temporal_weights()
 
         if use_implicit:
             alpha_implicit = 0.5
@@ -116,6 +126,26 @@ class CollaborativeRecommender:
         # Online SGD learning rate — used by online_update() (Issue #1596)
         self._lr = 0.01
         self._reg = 0.02
+
+    def _compute_temporal_weights(self) -> np.ndarray:
+        """
+        Compute exponential time-decay weights for interactions.
+        Recent interactions (within decay window) weighted higher.
+        Interactions older than 3x decay window approach zero weight.
+
+        Returns: array of weights in [0, 1] range.
+        """
+        timestamps = pd.to_datetime(self.df['timestamp'], errors='coerce')
+        if timestamps.isna().all():
+            return np.ones(len(self.df))
+
+        now = timestamps.max()
+        days_ago = (now - timestamps).dt.days.fillna(self.time_decay_days * 3)
+
+        decay_constant = np.log(2) / self.time_decay_days
+        weights = np.exp(-decay_constant * days_ago.values)
+
+        return np.clip(weights, 0.1, 1.0)
 
     def online_update(self, user_id: str, title: str, rating: float) -> None:
         """
