@@ -340,6 +340,24 @@ def _clear_response_cache() -> None:
         _cache_hits = 0
         _cache_misses = 0
 
+import asyncio
+
+async def _cache_cleanup_worker():
+    while True:
+        await asyncio.sleep(60)  # Cleanup every 60 seconds
+        now = time.time()
+        expired_keys = []
+        with _cache_lock:
+            for key, (expires_at, _) in _response_cache.items():
+                if expires_at <= now:
+                    expired_keys.append(key)
+            for key in expired_keys:
+                _response_cache.pop(key, None)
+
+@app.on_event("startup")
+async def start_cache_cleanup():
+    asyncio.create_task(_cache_cleanup_worker())
+    logger.info("Background cache cleanup task started.")
 
 @app.get("/api/cache_metrics")
 def get_cache_metrics():
