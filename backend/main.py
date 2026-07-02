@@ -59,6 +59,7 @@ from fastapi import ( # type: ignore
     Response,
     WebSocket,
     WebSocketDisconnect,
+    status
 )
 from fastapi.middleware.cors import CORSMiddleware # type: ignore
 from fastapi.staticfiles import StaticFiles # type: ignore
@@ -2613,15 +2614,63 @@ def register_and_merge_history(
 
 
 # ── Purchases ─────────────────────────────────────────────────────────
+
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
-    _validate_user_id(user_id)  # allowlist-validate before any DB call
+def get_user_purchases(
+    user_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    authorization: str = Header(None),
+):
+    """Fetch purchase history for a user.
+
+    Args:
+        user_id: ID of the user whose purchases to fetch.
+        limit: Maximum number of purchases to return (1-200).
+        authorization: Bearer token from request headers.
+
+    Returns:
+        Dictionary containing list of purchases.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if access denied.
+    """
+    _validate_user_id(user_id)
+
+    # Step 1 — make sure they're logged in
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    # Step 2 — extract the token
+    token = authorization.split(" ")[1]
     sb = get_supabase()
+
+    # Step 3 — ask Supabase who this token belongs to
+    user_response = sb.auth.get_user(token)
+    if not user_response or not user_response.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+
+    # Step 4 — does the logged-in user match the requested user_id?
+    if user_response.user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    # Only reaches here if user is fetching their OWN data
     result = (
-        sb.table('purchases')
-        .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)')
-        .eq('user_id', user_id)
-        .order('purchased_at', desc=True)
+        sb.table("purchases")
+        .select(
+            "id, product_id, rating, review_text, "
+            "purchased_at, products(title, category, rating)"
+        )
+        .eq("user_id", user_id)
+        .order("purchased_at", desc=True)
         .limit(limit)
         .execute()
     )
@@ -2632,14 +2681,59 @@ def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
 def create_purchase(
     data: PurchaseCreate,
     _csrf: None = Depends(csrf_header_dep),
+    authorization: str = Header(None),
 ):
+    """Record a new purchase for the authenticated user.
+
+    Args:
+        data: Purchase details (product_id, rating, review_text, user_id).
+        _csrf: CSRF token validation dependency.
+        authorization: Bearer token from request headers.
+
+    Returns:
+        Dictionary containing the newly created purchase.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if user_id does not
+        match the authenticated user.
+    """
+    # Step 1 — make sure they're logged in
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    # Step 2 — extract the token
+    token = authorization.split(" ")[1]
     sb = get_supabase()
-    result = sb.table('purchases').insert({
-        'user_id': data.user_id,
-        'product_id': data.product_id,
-        'rating': max(0, min(5, data.rating)),
-        'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
-    }).execute()
+
+    # Step 3 — ask Supabase who this token belongs to
+    user_response = sb.auth.get_user(token)
+    if not user_response or not user_response.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+
+    # Step 4 — token user must match the user_id in the request body
+    if user_response.user.id != data.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    result = (
+        sb.table("purchases")
+        .insert({
+            "user_id": data.user_id,
+            "product_id": data.product_id,
+            "rating": max(0, min(5, data.rating)),
+            "review_text": data.review_text,
+        })
+        .execute()
+    )
+
     _clear_response_cache()
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
