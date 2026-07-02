@@ -2918,6 +2918,7 @@ def submit_feedback(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
+        await feedback_client.table("feedback").insert(feedback_record).execute()
 @app.get("/api/user-preferences/{user_id}")
 def get_user_preferences(user_id: str):
 
