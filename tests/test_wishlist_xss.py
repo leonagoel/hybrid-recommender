@@ -219,6 +219,12 @@ class TestWishlistPayloadRendering:
         assert "Headphones" in rendered
         assert "€29.99" in rendered
 
+    def test_title_with_single_quote_is_safe(self):
+        """A single quote in a product title must be entity-encoded or safely assigned (Issue #1076)."""
+        title = "Women's running shoes"
+        rendered = self._simulate_text_content(title)
+        assert "'" in rendered or "&#39;" in rendered or "&#x27;" in rendered
+
 
 # ---------------------------------------------------------------------------
 # ui.js — escapeHtml helper unit tests
