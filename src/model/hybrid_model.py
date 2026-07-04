@@ -591,6 +591,9 @@ class HybridRecommender:
                 )
             results.append(result)
 
+        # Filter out the query title from its own recommendations
+        results = [r for r in results if r['title'] != title]
+
         results.sort(key=lambda x: x['hybrid_score'], reverse=True)
         if not results:
             return self.get_popular_fallback_items(top_n=top_n, exclude_title=title)
