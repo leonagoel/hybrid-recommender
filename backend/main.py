@@ -1499,10 +1499,12 @@ async def recommend_item(
     limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
     user_id: str = Query(default="", description="Optional user ID for personalised scoring"),
+    explain: bool = Query(default=False, description="Include explanation for each recommendation"),
 ):
     """
     Returns paginated hybrid recommendations for the given item title.
     Supports limit/offset pagination with a pagination metadata block.
+    When explain=True, each recommendation includes an explanation field.
     """
     try:
         all_results: list[dict] = []
@@ -1536,7 +1538,7 @@ async def recommend_item(
                     collab_model = None
 
                 hybrid = HybridRecommender(content_model, collab_model, item_df)
-                all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
+                all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset, explain=explain)
         except Exception:
             logger.warning("Hybrid model unavailable, using fallback recommendations")
 
