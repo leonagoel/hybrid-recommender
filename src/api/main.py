@@ -270,3 +270,4 @@ def get_evaluation_metrics(k: int = 10, mode: str = "all"):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Evaluation failed: {exc}")
+TODO: Add response body to feedback endpoint
