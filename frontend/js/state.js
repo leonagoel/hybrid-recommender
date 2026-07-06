@@ -22,6 +22,9 @@ export const state = {
     scrollObserver: null,
     filters: { category: '', rating: '', sentiment: '' },
 
+    // α/β/γ blend weights — kept in sync with the weight sliders by handleWeightChange()
+    weights: { alpha: 0.40, beta: 0.35, gamma: 0.25 },
+
     // Core application feature baseline parameters
     activeChips: new Set(),
     heatmapSelected: [],
