@@ -1,4 +1,4 @@
-import { initBenchmarkingDashboard } from './js/benchmarking.js';
+﻿import { initBenchmarkingDashboard } from './js/benchmarking.js';
 
 // ===== THEME TOGGLE =====
 const themeToggle = document.getElementById('theme-toggle');
@@ -1444,6 +1444,10 @@ async function handleWeightChange() {
     const a = parseInt(els.weightAlpha.value);
     const b = parseInt(els.weightBeta.value);
     const g = parseInt(els.weightGamma.value);
+
+    // Keep shared state in sync so the benchmarking dashboard always reads
+    // the current slider values when "Run Evaluation" is clicked.
+    state.weights = { alpha: a / 100, beta: b / 100, gamma: g / 100 };
 
     try {
         await API.put('/api/weights', { alpha: a / 100, beta: b / 100, gamma: g / 100 });

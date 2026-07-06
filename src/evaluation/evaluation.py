@@ -236,6 +236,98 @@ def _get_hybrid_recs(title: str, df: pd.DataFrame, tfidf_matrix, svd_matrix, alp
     top_indices = np.argsort(hybrid_scores)[::-1][:k]
     return df.iloc[top_indices]["title"].tolist()
 
+def run_evaluation_sample(
+    k: int = 10,
+    mode: Mode = "all",
+    weights: dict[str, float] | None = None,
+    data_path: str | None = None,
+    sample_fraction: float = 0.1,
+    random_seed: int = 42,
+) -> ResultsDict:
+    """Run evaluation on a random sample of users for speed.
+
+    Equivalent to ``run_evaluation`` but limits the test pairs to
+    ``sample_fraction`` of the dataset (default 10 %).  Intended for the
+    live ``/api/evaluate`` endpoint where full evaluation can take minutes.
+
+    Args:
+        k:               Number of recommendations to consider.
+        mode:            Which model(s) to evaluate — "content", "collaborative",
+                         "sentiment", "hybrid", or "all".
+        weights:         Hybrid blend weights {"alpha", "beta", "gamma"}.
+        data_path:       Optional override for the product CSV path.
+        sample_fraction: Fraction of test pairs to use (0 < sample_fraction ≤ 1).
+        random_seed:     RNG seed for reproducibility.
+
+    Returns:
+        ResultsDict mapping model name → {"precision", "recall", "ndcg"}.
+    """
+    content_model, collab_model, df, test_pairs = _build_test_data(data_path, random_seed)
+
+    if not test_pairs:
+        return {}
+
+    # Sub-sample test pairs for speed
+    sample_fraction = max(0.0, min(1.0, sample_fraction))
+    sample_size = max(1, int(len(test_pairs) * sample_fraction))
+    rng = np.random.default_rng(random_seed)
+    indices = rng.choice(len(test_pairs), size=sample_size, replace=False)
+    sampled_pairs = [test_pairs[i] for i in indices]
+
+    # Delegate to the core logic with the sampled pairs via a thin shim
+    try:
+        tfidf_matrix = content_model.tfidf_matrix
+    except AttributeError:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        tfidf_matrix = TfidfVectorizer().fit_transform(df["combined"])
+
+    try:
+        svd_matrix = (
+            collab_model.svd_matrix
+            if hasattr(collab_model, "svd_matrix")
+            else _load_or_build_svd(df)
+        )
+    except Exception:
+        svd_matrix = _load_or_build_svd(df)
+
+    if weights is None:
+        weights = {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}
+
+    results: ResultsDict = {}
+    modes_to_run = (
+        ["content", "collaborative", "sentiment", "hybrid"] if mode == "all" else [mode]
+    )
+
+    for m in modes_to_run:
+        precisions, recalls, ndcgs = [], [], []
+        for _uid, title, relevant in sampled_pairs:
+            if m == "content":
+                recs = _get_content_recs(title, df, tfidf_matrix, k)
+            elif m == "collaborative":
+                recs = _get_collab_recs(title, df, svd_matrix, k)
+            elif m == "sentiment":
+                recs = _get_sentiment_recs(title, df, k)
+            elif m == "hybrid":
+                recs = _get_hybrid_recs(
+                    title, df, tfidf_matrix, svd_matrix,
+                    weights["alpha"], weights["beta"], weights["gamma"], k,
+                )
+            else:
+                recs = []
+
+            precisions.append(_precision_at_k(recs, relevant, k))
+            recalls.append(_recall_at_k(recs, relevant, k))
+            ndcgs.append(_ndcg_at_k(recs, relevant, k))
+
+        results[m] = {
+            "precision": float(np.mean(precisions)) if precisions else 0.0,
+            "recall":    float(np.mean(recalls))    if recalls    else 0.0,
+            "ndcg":      float(np.mean(ndcgs))      if ndcgs      else 0.0,
+        }
+
+    return results
+
+
 def run_evaluation(
     k: int = 10,
     mode: Mode = "all",
