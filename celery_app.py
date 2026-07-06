@@ -74,5 +74,6 @@ def dispatch_task_safely(task, *args, **kwargs):
             f"Degrading gracefully to execute task {task.__name__} synchronously inline."
         )
         # .apply() tells Celery to run the function right now on the main execution thread
+        celery_app.conf.worker_max_tasks_per_child = 5
         return task.apply(args=args, kwargs=kwargs)
         celery_app.conf.worker_max_tasks_per_child = 5
