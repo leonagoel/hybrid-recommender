@@ -50,6 +50,7 @@ function initThemeToggle() {
 
 document.addEventListener('DOMContentLoaded', () => {
     initThemeToggle();
+    initRecentlyViewedSection();
     if (typeof initBenchmarkingDashboard === 'function') {
         initBenchmarkingDashboard();
     }
@@ -137,6 +138,9 @@ const els = {
     searchInput: $('search-input'),
     searchContainer: $('search-container'),
     searchDropdown: $('search-dropdown'),
+    recentlyViewedList: $('recently-viewed-list'),
+    recentlyViewedSection: $('recently-viewed-section'),
+    clearRecentlyViewedBtn: $('clear-recently-viewed-btn'),
     searchSpinner: $('search-spinner'),
     searchShortcut: $('search-shortcut'),
     authBtn: $('auth-btn'),
@@ -201,6 +205,9 @@ const CONFIG = {
   SEARCH_LIMIT: 5,
   MAX_COMPARE_ITEMS: 20
 };
+
+const RECENTLY_VIEWED_STORAGE_KEY = 'hybridrec.recently-viewed';
+const RECENTLY_VIEWED_LIMIT = 8;
 
 function loadPreferences() {
     const saved = localStorage.getItem('userPreferences');
@@ -303,6 +310,123 @@ function formatReviewCount(count) {
     }
 
     return `(${count} reviews)`;
+}
+
+function getRecentlyViewedProducts() {
+    try {
+        const stored = localStorage.getItem(RECENTLY_VIEWED_STORAGE_KEY);
+        if (!stored) return [];
+        const parsed = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        console.warn('Failed to load recently viewed history:', error);
+        return [];
+    }
+}
+
+function saveRecentlyViewedProducts(items) {
+    localStorage.setItem(RECENTLY_VIEWED_STORAGE_KEY, JSON.stringify(items));
+}
+
+function normalizeRecentlyViewedProduct(product) {
+    if (!product) return null;
+
+    return {
+        title: product.title || 'Untitled',
+        category: product.category || '',
+        description: product.description || '',
+        image: product.image || '',
+        price: product.price || 0,
+        rating: product.rating || 0,
+        avg_sentiment: product.avg_sentiment || 0,
+        review_count: product.review_count || 0,
+    };
+}
+
+function findProductByTitle(title) {
+    const normalizedTitle = (title || '').toLowerCase();
+    const candidates = [
+        ...(state.allProducts || []),
+        ...(state.products || []),
+        ...(state.trending || []),
+    ];
+
+    return candidates.find((item) => (item.title || '').toLowerCase() === normalizedTitle) || null;
+}
+
+function trackRecentlyViewedProduct(productOrTitle) {
+    const product = typeof productOrTitle === 'string'
+        ? findProductByTitle(productOrTitle)
+        : productOrTitle;
+
+    const normalized = normalizeRecentlyViewedProduct(product);
+    if (!normalized) return;
+
+    const existing = getRecentlyViewedProducts().filter((item) => item.title !== normalized.title);
+    const nextItems = [normalized, ...existing].slice(0, RECENTLY_VIEWED_LIMIT);
+    saveRecentlyViewedProducts(nextItems);
+    renderRecentlyViewedSection();
+}
+
+function clearRecentlyViewedHistory() {
+    localStorage.removeItem(RECENTLY_VIEWED_STORAGE_KEY);
+    renderRecentlyViewedSection();
+}
+
+function renderRecentlyViewedSection() {
+    if (!els.recentlyViewedList) return;
+
+    const items = getRecentlyViewedProducts();
+    if (!items.length) {
+        els.recentlyViewedList.innerHTML = `
+            <div class="recently-viewed__empty">
+                <span class="recently-viewed__empty-icon">🛍️</span>
+                <p>Browse products to build your viewing history.</p>
+            </div>
+        `;
+        return;
+    }
+
+    els.recentlyViewedList.innerHTML = items.map((item) => {
+        const safeTitle = escapeHtml(item.title || 'Untitled');
+        const safeCategory = escapeHtml(item.category || '');
+        const safeDescription = escapeHtml(item.description || '');
+        return `
+            <button class="recently-viewed__card" type="button" data-title="${safeTitle}">
+                <div class="recently-viewed__image">
+                    ${item.image
+                        ? `<img src="${escapeHtml(item.image)}" alt="${safeTitle}" loading="lazy">`
+                        : `<span class="recently-viewed__placeholder">${categoryIcon(item.category)}</span>`}
+                </div>
+                <div class="recently-viewed__content">
+                    <div class="recently-viewed__title">${safeTitle}</div>
+                    ${item.category ? `<div class="recently-viewed__category">${safeCategory}</div>` : ''}
+                    <div class="recently-viewed__meta">
+                        <span>₹${item.price || 0}</span>
+                        <span>${(item.rating || 0).toFixed(1)}★</span>
+                    </div>
+                    ${safeDescription ? `<div class="recently-viewed__desc">${safeDescription}</div>` : ''}
+                </div>
+            </button>
+        `;
+    }).join('');
+
+    els.recentlyViewedList.querySelectorAll('.recently-viewed__card').forEach((card) => {
+        card.addEventListener('click', () => {
+            const title = card.dataset.title;
+            if (!title) return;
+            const product = items.find((item) => item.title === title) || null;
+            if (product) {
+                openProductModal(product);
+            }
+        });
+    });
+}
+
+function initRecentlyViewedSection() {
+    if (!els.clearRecentlyViewedBtn) return;
+    els.clearRecentlyViewedBtn.addEventListener('click', clearRecentlyViewedHistory);
+    renderRecentlyViewedSection();
 }
 
 function sentimentBadge(score) {
@@ -1297,6 +1421,8 @@ async function loadRecommendationsOverHttp(title) {
 }
 
 async function loadRecommendations(title) {
+    trackRecentlyViewedProduct(title);
+
     if (!state.modelReady) {
         toast('Build models first to get recommendations', 'info');
         return;
@@ -1451,6 +1577,7 @@ async function handleWeightChange() {
 }
 
 async function openProductModal(product) {
+    trackRecentlyViewedProduct(product);
     els.modalProductTitle.textContent = product.title || 'Untitled';
 
     els.modalProductCategory.textContent =
@@ -1938,6 +2065,8 @@ function renderProducts(products, options = {}) {
 
 // ── Recommendations ─────────────────────────────────────────────────
 async function loadRecommendations(title) {
+    trackRecentlyViewedProduct(title);
+
     if (!state.modelReady) {
         toast('Build models first to get recommendations', 'info');
         return;
