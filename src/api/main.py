@@ -24,6 +24,7 @@ else:
 # Fix the path mapping so internal src imports work perfectly
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+from src.api.exceptions import register_exception_handlers
 from src.data.dataset_manager import DatasetManager
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
@@ -31,6 +32,7 @@ from src.model.hybrid_model import HybridRecommender
 from src.model.causal_config import CausalConfig
 
 app = FastAPI(title="Hybrid Recommender API")
+register_exception_handlers(app)
 
 
 class RecommendationRequest(BaseModel):
