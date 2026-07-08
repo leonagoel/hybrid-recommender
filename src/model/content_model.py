@@ -125,6 +125,13 @@ class ContentRecommender:
             t = self.df.iloc[i]['title']
             if t.lower() == title.lower() or t in seen:
                 continue
+
+            # Catalog filtering
+            if target_catalog and 'catalog' in self.df.columns:
+                item_catalog = self.df.iloc[i].get('catalog', '')
+                if str(item_catalog).lower() != str(target_catalog).lower():
+                    continue
+
             seen.add(t)
             
             results.append({
@@ -137,10 +144,10 @@ class ContentRecommender:
 
         return validate_recommendations(
             results,
-            fallback_fn=lambda top_n: self._popularity_fallback(top_n, exclude_title=title),
+            fallback_fn=lambda top_n: self._popularity_fallback(top_n, exclude_title=title, target_catalog=target_catalog),
             top_n=top_n,
             context="content",
-            force_padding=True
+            force_padding=(target_catalog is None)
         )
 
     def explain_similarity(self, source_title, candidate_title, top_n=5):
@@ -238,17 +245,20 @@ class ContentRecommender:
 
         return validate_recommendations(
             results,
-            fallback_fn=lambda top_n: self._popularity_fallback(top_n),
+            fallback_fn=lambda top_n: self._popularity_fallback(top_n, target_catalog=target_catalog),
             top_n=top_n,
             context="content",
-            force_padding=True
+            force_padding=(target_catalog is None)
         )
 
-    def _popularity_fallback(self, top_n=10, exclude_title=None):
+    def _popularity_fallback(self, top_n=10, exclude_title=None, target_catalog=None):
         df = self.df.copy()
         if exclude_title is not None and 'title' in df.columns:
             df = df[df['title'].str.lower() != exclude_title.lower()]
             
+        if target_catalog and 'catalog' in df.columns:
+            df = df[df['catalog'].astype(str).str.lower() == str(target_catalog).lower()]
+
         if "rating" in df.columns:
             df = df.sort_values("rating", ascending=False)
         elif "review_count" in df.columns:
@@ -258,6 +268,7 @@ class ContentRecommender:
         for _, row in df.head(top_n).iterrows():
             results.append({
                 "title": row["title"],
-                "content_score": 0.0
+                "content_score": 0.0,
+                "score": 0.0
             })
         return results

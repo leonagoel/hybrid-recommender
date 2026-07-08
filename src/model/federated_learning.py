@@ -105,10 +105,15 @@ class FederatedServer:
         """
         Aggregates local updates from multiple clients using Federated Averaging (FedAvg)
         and performs a global gradient descent update step.
+
+        Client updates contain only data gradients (no regularization term).
+        Regularization is applied once server-side, independent of how many clients
+        contributed updates for a given item, so its strength does not decay with
+        client participation.
         """
         aggregated_updates = {title: [] for title in self.item_list}
 
-        # Gather updates for each item
+        # Gather data-gradient updates for each item
         for client_updates in client_updates_list:
             for title, update in client_updates.items():
                 if title in aggregated_updates:
@@ -119,11 +124,16 @@ class FederatedServer:
             if not updates:
                 continue
             idx = self.title_to_idx[title]
-            # Average update across all contributing clients
-            avg_update = np.mean(updates, axis=0)
-            
-            # Apply global gradient descent update: average data gradient - global regularization
-            self.global_item_factors[:, idx] += self.lr * (avg_update - self.reg * self.global_item_factors[:, idx])
+
+            # Average only the data-gradient contributions across participating clients.
+            # This keeps the data signal properly normalized regardless of client count.
+            avg_data_gradient = np.mean(updates, axis=0)
+
+            # Regularization penalty applied once at full strength, independent of N clients.
+            # Separating it here ensures it is never divided by the number of clients.
+            reg_penalty = self.reg * self.global_item_factors[:, idx]
+
+            self.global_item_factors[:, idx] += self.lr * (avg_data_gradient - reg_penalty)
 
 
 def train_federated_collaborative_model(

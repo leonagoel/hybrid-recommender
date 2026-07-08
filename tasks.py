@@ -308,3 +308,22 @@ def get_recommendations(self, user_id: str, top_n: int = 10) -> list[dict]:
         _fire_webhook(task_id, "FAILURE", str(exc))
         raise
 
+@celery_app.task(name="tasks.rebuild_models_task", max_retries=3)
+def rebuild_models_task():
+    """
+    Issue #1596: Scheduled task to rebuild the full SVD matrix and other models 
+    during off-peak hours instead of on every transaction.
+    """
+    task_id = celery_app.current_task.request.id if celery_app.current_task else "manual"
+    logger.info("Executing nightly model rebuild task...")
+    try:
+        from backend.main import build_models
+        build_models()
+        logger.info("Nightly model rebuild completed.")
+        _fire_webhook(task_id, "SUCCESS", "Nightly build successful")
+        return True
+    except Exception as exc:
+        logger.error("Nightly model rebuild failed: %s", exc)
+        _fire_webhook(task_id, "FAILURE", str(exc))
+        raise
+

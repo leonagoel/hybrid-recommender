@@ -300,7 +300,23 @@ cp .env.example .env
 # Edit .env with your Supabase credentials
 ```
 
-**2. Start the stack**
+**2. Initialize Supabase:**
+- Benchmark_runs
+- products
+- feedback_submissions
+
+Run the SQL migration scripts in the Supabase SQL Editor:
+
+`supabase\migrations\001_create_benchmark_runs.sql`
+`supabase\migrations\002_create_products_table.sql`
+`supabase\migrations\003_create_feedback_submissions.sql`
+
+Then import the product dataset:
+`python scripts/import_to_supabase.py`
+
+Important: Without completing these steps, the frontend and backend may start successfully, but product-related functionality will not work because the database schema and product data are missing.
+
+**3. Start the stack**
 
 ```bash
 docker-compose up --build
@@ -309,7 +325,7 @@ docker-compose up --build
 - `--build` forces a fresh image build. Omit it on subsequent runs when
   code hasn't changed.
 
-**3. Access the app**
+**4. Access the app**
 
 | Service  | URL                        |
 |----------|----------------------------|
@@ -318,7 +334,7 @@ docker-compose up --build
 | API docs | http://localhost:8000/docs  |
 | Health   | http://localhost:8000/health|
 
-**4. Stop the stack**
+**5. Stop the stack**
 
 ```bash
 docker-compose down

@@ -23,8 +23,8 @@ def test_matrix_creation():
 
     model = CollaborativeRecommender(df)
 
-    assert model.user_item_sparse.shape[0] > 0
-    assert model.user_item_sparse.shape[1] > 0
+    assert model.user_factors.shape[0] > 0
+    assert model.item_factors.shape[1] > 0
 
 
 def test_svd_training():
@@ -32,9 +32,10 @@ def test_svd_training():
 
     model = CollaborativeRecommender(df)
 
-    assert model.svd is not None
     assert model.user_factors is not None
     assert model.item_factors is not None
+    assert model.user_factors.shape[0] == 3
+    assert model.item_factors.shape[1] == 4
 
 
 def test_prediction_output_format():
