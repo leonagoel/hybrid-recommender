@@ -2107,3 +2107,23 @@ RESPONSIVE FIX
     border-color: var(--accent-color, #007bff);
     transform: scale(1.05);
 }
+.realtime-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.realtime-status[data-status="live"] {
+  color: #16a34a;
+}
+
+.realtime-status[data-status="reconnecting"] {
+  color: #f59e0b;
+}
+
+.realtime-status[data-status="offline"] {
+  color: #ef4444;
+}
