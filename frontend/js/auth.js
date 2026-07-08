@@ -8,6 +8,22 @@ import { showToast, showModal, hideModal, setLoadingState } from './ui.js';
 
 let _supabase = null;
 
+function _validateStrongPassword(password) {
+  if (typeof password !== 'string' || password.length < 8) {
+    return 'Use at least 8 characters with an uppercase letter, a number, and a special character.';
+  }
+  if (!/[A-Z]/.test(password)) {
+    return 'Use at least 8 characters with an uppercase letter, a number, and a special character.';
+  }
+  if (!/\d/.test(password)) {
+    return 'Use at least 8 characters with an uppercase letter, a number, and a special character.';
+  }
+  if (!/[!@#$%^&*()\-_=+[\]{};:'",.<>/?\\|`~]/.test(password)) {
+    return 'Use at least 8 characters with an uppercase letter, a number, and a special character.';
+  }
+  return null;
+}
+
 /** Called once from app.js after Supabase client is created. */
 export function initAuth(supabaseClient) {
   _supabase = supabaseClient;
@@ -52,6 +68,11 @@ export async function signInWithEmail(email, password) {
 
 export async function signUpWithEmail(email, password) {
   try {
+    const passwordError = _validateStrongPassword(password);
+    if (passwordError) {
+      showToast(passwordError, 'error');
+      return null;
+    }
     setLoadingState('auth', true);
     const guestId = getAnonymousUserId();
     const { data, error } = await _supabase.auth.signUp({ email, password });
@@ -160,11 +181,4 @@ export function bindAuthEvents() {
         ? 'Already have an account? Sign in'
         : "Don't have an account? Sign up";
     });
-}
-
-function _getCookie(name) {
-  const value = `; ${document.cookie}`;
-  const parts = value.split(`; ${name}=`);
-  if (parts.length === 2) return parts.pop().split(';').shift();
-  return '';
 }
