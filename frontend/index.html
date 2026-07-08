@@ -107,7 +107,7 @@
                 </div>
                 <div class="form-group">
                     <label for="auth-password">Password</label>
-                    <input type="password" id="auth-password" placeholder="Min 6 characters" required minlength="6">
+                    <input type="password" id="auth-password" placeholder="Min 8 chars, uppercase, number, symbol" required minlength="8">
                 </div>
                 <button type="submit" class="btn btn--primary btn--full" id="auth-submit">Sign In</button>
             </form>
@@ -183,12 +183,18 @@
     <main class="main" id="main-content">
         <!-- Recommendations Strip -->
         <section class="recs-section" id="recs-section" hidden>
-            <h2 class="section-title">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-                </svg>
-                Recommended for you
-            </h2>
+            <div class="section-header">
+                <h2 class="section-title">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                    </svg>
+                    Recommended for you
+                </h2>
+
+                <span id="realtime-status" class="realtime-status" data-status="offline">
+                    Offline
+                </span>
+            </div>
 
             <div class="recs-loader" id="recs-loader" hidden aria-live="polite" aria-label="Loading recommendations">
 

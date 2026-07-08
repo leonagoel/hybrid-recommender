@@ -19,7 +19,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Task 2: Add GIN index on product titles for fast similarity lookups
 CREATE INDEX IF NOT EXISTS idx_products_title_trgm 
-    ON products USING gin (title pg_trgm_ops);
+    ON products USING gin (title gin_trgm_ops);
 
 
 -- =============================================================================

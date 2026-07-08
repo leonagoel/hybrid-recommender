@@ -245,19 +245,53 @@ def run_evaluation(
     random_seed: int = 42,
 ) -> ResultsDict:
     """Run core precision, recall, and tracking computations."""
-    # Dummy placeholder grouping for compilation safety
-    user_groups = [] 
-    test_pairs = []
-
-    for user_id, group in user_groups:
-        # User aggregation logic processing framework
-        processed_group = group
-        test_pairs.append((user_id, processed_group))
-
-    # --- BUG FIX: Clean outdent placement outside the loop structure ---
+    content_model, collab_model, df, test_pairs = _build_test_data(data_path, random_seed)
+    
     if not test_pairs:
-        print("Not enough data for evaluation.")
         return {}
 
-    print(f"Total interactions processed: {len(test_pairs)}")
-    return {"status": "success", "processed_records": len(test_pairs)}
+    try:
+        tfidf_matrix = content_model.tfidf_matrix
+    except AttributeError:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        tfidf_matrix = TfidfVectorizer().fit_transform(df['combined'])
+
+    try:
+        svd_matrix = collab_model.svd_matrix if hasattr(collab_model, 'svd_matrix') else _load_or_build_svd(df)
+    except Exception:
+        svd_matrix = _load_or_build_svd(df)
+
+    if weights is None:
+        weights = {"alpha": 0.4, "beta": 0.35, "gamma": 0.25}
+
+    results = {}
+    modes_to_run = ["content", "collaborative", "sentiment", "hybrid"] if mode == "all" else [mode]
+    
+    for m in modes_to_run:
+        precisions = []
+        recalls = []
+        ndcgs = []
+        
+        for uid, title, relevant in test_pairs:
+            if m == "content":
+                recs = _get_content_recs(title, df, tfidf_matrix, k)
+            elif m == "collaborative":
+                recs = _get_collab_recs(title, df, svd_matrix, k)
+            elif m == "sentiment":
+                recs = _get_sentiment_recs(title, df, k)
+            elif m == "hybrid":
+                recs = _get_hybrid_recs(title, df, tfidf_matrix, svd_matrix, weights["alpha"], weights["beta"], weights["gamma"], k)
+            else:
+                recs = []
+                
+            precisions.append(_precision_at_k(recs, relevant, k))
+            recalls.append(_recall_at_k(recs, relevant, k))
+            ndcgs.append(_ndcg_at_k(recs, relevant, k))
+            
+        results[m] = {
+            "precision": float(np.mean(precisions)) if precisions else 0.0,
+            "recall": float(np.mean(recalls)) if recalls else 0.0,
+            "ndcg": float(np.mean(ndcgs)) if ndcgs else 0.0,
+        }
+
+    return results

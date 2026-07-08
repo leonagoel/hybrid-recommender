@@ -1,8 +1,8 @@
 // =============================================================================
 // recommendations.js — Hybrid Recommendations & WebSocket
 // =============================================================================
-import { state, setState, getAnonymousUserId } from './state.js';
-import { renderProductCards, showToast, setLoadingState, showLoadingBar, hideLoadingBar } from './ui.js';
+import { getAnonymousUserId, state } from './state.js';
+import { hideLoadingBar, showLoadingBar, showToast } from './ui.js';
 
 const PAGE_SIZE = 20;
 let currentOffset = 0;
@@ -18,69 +18,150 @@ let recommendationSocket = null;
 let realtimeReady = false;
 let realtimeFallbackTimer = null;
 let pendingRecommendationTitle = null;
+let reconnectTimer = null;
+let heartbeatTimer = null;
+let reconnectAttempts = 0;
+
+const MAX_RECONNECT_ATTEMPTS = 5;
+const HEARTBEAT_INTERVAL_MS = 25000;
+
+function setRealtimeStatus(status) {
+  const el = document.getElementById('realtime-status');
+  if (!el) return;
+
+  const labels = {
+    live: 'Live',
+    reconnecting: 'Reconnecting',
+    offline: 'Offline',
+  };
+
+  el.textContent = labels[status] || 'Offline';
+  el.dataset.status = status;
+}
+
+function startRealtimeHeartbeat() {
+  clearInterval(heartbeatTimer);
+
+  heartbeatTimer = setInterval(() => {
+    if (!recommendationSocket || !realtimeReady) return;
+
+    recommendationSocket.send(JSON.stringify({
+      type: 'ping',
+      payload: {},
+    }));
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+
+function stopRealtimeHeartbeat() {
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+}
+
+
+function scheduleRealtimeReconnect() {
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    setRealtimeStatus('offline');
+    return;
+  }
+
+  setRealtimeStatus('reconnecting');
+
+  const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000);
+  reconnectAttempts += 1;
+
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    recommendationSocket = null;
+    initRecommendationSocket();
+  }, delay);
+}
 
 export function initRecommendationSocket() {
   if (!('WebSocket' in window) || recommendationSocket) return;
 
   const socket = new WebSocket(getRealtimeUrl());
   recommendationSocket = socket;
+  setRealtimeStatus('reconnecting');
 
   socket.addEventListener('open', () => {
     realtimeReady = true;
+    reconnectAttempts = 0;
+    setRealtimeStatus('live');
+    startRealtimeHeartbeat();
   });
 
   socket.addEventListener('message', (event) => {
     try {
       const data = JSON.parse(event.data);
+
+      if (data.type === 'pong' || data.type === 'connection_status') {
+        setRealtimeStatus('live');
+        return;
+      }
+
       if (data.type === 'recommendations') {
-        renderRecommendations(data);
-      } else if (data.type === 'error') {
-        throw new Error(data.detail || 'Recommendation stream failed');
+        clearTimeout(realtimeFallbackTimer);
+        renderRecommendations(data.payload || data);
+        return;
+      }
+
+      if (data.type === 'error') {
+        throw new Error(data.error?.message || data.message || 'Realtime request failed');
       }
     } catch (err) {
-      console.warn('Realtime recommendation update failed:', err.message);
-      fallbackRecommendationRequest(pendingRecommendationTitle);
+      console.warn('Realtime recommendation update failed:', err);
+      if (pendingRecommendationTitle) {
+        fallbackRecommendationRequest(pendingRecommendationTitle);
+      }
     }
   });
 
   socket.addEventListener('close', () => {
     realtimeReady = false;
     recommendationSocket = null;
+    stopRealtimeHeartbeat();
+    scheduleRealtimeReconnect();
   });
 
   socket.addEventListener('error', () => {
     realtimeReady = false;
+    setRealtimeStatus('offline');
   });
 }
 
 function requestRealtimeRecommendations(title) {
-  if (!realtimeReady || !recommendationSocket) return false;
+  if (!realtimeReady || !recommendationSocket) {
+    return false;
+  }
 
   pendingRecommendationTitle = title;
-  const userId = getAnonymousUserId();
+
   recommendationSocket.send(JSON.stringify({
-    item_title: title,
-    top_n: 12,
-    user_id: userId,
+    type: 'recommendation_request',
+    payload: {
+      item_title: title,
+      top_n: 12,
+      explain: false,
+      user_id: getAnonymousUserId(),
+    },
   }));
+
   return true;
 }
 
 async function fallbackRecommendationRequest(title) {
   if (!title) return;
 
-  clearTimeout(realtimeFallbackTimer);
-  realtimeFallbackTimer = setTimeout(async () => {
-    try {
-      const data = await API.post('/api/realtime/behavior', {
-        item_title: title,
-        top_n: 12,
-      });
-      renderRecommendations(data);
-    } catch {
-      await loadRecommendationsOverHttp(title);
-    }
-  }, 250);
+  try {
+    const data = await API.post('/api/realtime/behavior', {
+      item_title: title,
+      top_n: 12,
+    });
+    renderRecommendations(data);
+  } catch {
+    await loadRecommendationsOverHttp(title);
+  }
 }
 
 /**
@@ -135,6 +216,12 @@ function renderRecommendations(data, append = false) {
         · Content: ${(r.content_score || 0).toFixed(2)}
         · Collab: ${(r.collab_score || 0).toFixed(2)}
       </div>
+      <div class="feedback-actions">
+  <button class="feedback-btn" data-feedback="LIKE">👍</button>
+  <button class="feedback-btn" data-feedback="DISLIKE">👎</button>
+  <button class="feedback-btn" data-feedback="SAVE">🔖</button>
+  <button class="feedback-btn" data-feedback="SKIP">⏭</button>
+</div>
     </div>
   `).join('');
 
@@ -149,6 +236,27 @@ function renderRecommendations(data, append = false) {
       loadRecommendations(card.dataset.title);
     });
   });
+  document.querySelectorAll('.feedback-btn').forEach((btn) => {
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+
+    const card = btn.closest('.rec-card');
+
+    await fetch('/api/feedback/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        user_id: getAnonymousUserId(),
+        item_id: card.dataset.title,
+        feedback_type: btn.dataset.feedback
+      })
+    });
+
+    showToast('Feedback submitted', 'success');
+  });
+});
 
   const recsSection = document.getElementById('recs-section');
   if (recsSection) recsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -204,6 +312,16 @@ export async function loadRecommendations(title) {
 
   showLoadingBar();
 
+  const sentRealtime = requestRealtimeRecommendations(title);
+
+  if (sentRealtime) {
+    clearTimeout(realtimeFallbackTimer);
+    realtimeFallbackTimer = setTimeout(() => {
+      fallbackRecommendationRequest(title);
+    }, 2500);
+    return;
+  }
+
   try {
     const userId = getAnonymousUserId();
     const res = await fetch(
@@ -250,13 +368,27 @@ function escapeHtml(str) {
   }[c]));
 }
 
+async function getCsrfToken() {
+  const res = await fetch('/api/csrf-token');
+  if (!res.ok) throw new Error(`CSRF token request failed: ${res.status}`);
+
+  const data = await res.json();
+  return data.csrfToken;
+}
+
 const API = {
   async post(url, data) {
+    const csrfToken = await getCsrfToken();
+
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+      },
       body: JSON.stringify(data),
     });
+
     if (!res.ok) throw new Error(`API error: ${res.status}`);
     return res.json();
   },
