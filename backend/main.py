@@ -3088,9 +3088,6 @@ async def reset_user_preferences(request: Request):
         # 3. Wipe out the internal memory cache
         _clear_response_cache()
 
-
-        global global_redis_client
-
         if _redis_client is not None:
             try:
                 # Find keys matching this user's recommendation cache pattern

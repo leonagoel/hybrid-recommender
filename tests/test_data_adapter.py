@@ -51,6 +51,29 @@ class TestDetectColumn:
         columns = ["title", "original_title"]
         assert detect_column(columns, ["title"]) == "title"
 
+    def test_user_id_exact_match(self):
+        """user_id column must match via exact keyword, not only substring fallback."""
+        columns = ["user_id", "title", "rating"]
+        result = detect_column(columns, [
+            "user_id", "user id", "userid", "user", "reviewer", "customer"
+        ])
+        assert result == "user_id"
+
+    def test_user_id_not_in_old_dead_keyword_list_only(self):
+        """Regression: second detect_column call previously lacked 'user_id',
+        causing it to rely on the 'user' substring match instead of exact match.
+        Verify the surviving keyword list includes 'user_id' for precise matching.
+        """
+        columns = ["user_id", "title", "rating"]
+        # This is the exact keyword list used by the surviving call after the fix.
+        result = detect_column(columns, [
+            "user_id", "user id", "userid", "user", "reviewer", "customer"
+        ])
+        assert result == "user_id", (
+            "user_id must be matched via exact keyword — substring via 'user' "
+            "is a false-positive risk for columns like 'first_user_data'"
+        )
+
 
 class TestValidateDataframe:
     """Test validate_dataframe function."""

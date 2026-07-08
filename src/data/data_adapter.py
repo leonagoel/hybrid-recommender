@@ -284,12 +284,8 @@ def adapt_data(df):
             'about'
         ]
     )
-    user_col = detect_column(
-        columns,
-        ['user_id', 'user', 'reviewer', 'customer']
-    )
-
     user_col = detect_column(columns, [
+        'user_id',                           # canonical Python/SQL form
         'user id', 'userid',                 # BX: 'User-ID'
         'user', 'reviewer', 'customer',
     ])
