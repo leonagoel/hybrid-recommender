@@ -1,6 +1,7 @@
 from __future__ import annotations
 from fastapi import FastAPI # type: ignore
 from backend.routers import recommend
+from backend.routers import feedback
 
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
@@ -59,6 +60,7 @@ from fastapi import ( # type: ignore
     Response,
     WebSocket,
     WebSocketDisconnect,
+    status
 )
 from fastapi.middleware.cors import CORSMiddleware # type: ignore
 from fastapi.staticfiles import StaticFiles # type: ignore
@@ -121,7 +123,7 @@ EVALUATION_HISTORY = deque(maxlen=20)
 
 @app.get("/api/evaluate")
 async def evaluate_models(
-    k: int = 10,
+    k: int = Query(10, ge=1, le=100),
     mode: str = "all",
     alpha: float = 0.4,
     beta: float = 0.35,
@@ -156,6 +158,7 @@ async def evaluate_history(limit: int = 5):
 
 # Register routers
 app.include_router(recommend.router, prefix="/api")
+app.include_router(feedback.router, prefix="/api")
 
 # ── OpenAPI CSRF header dependency ────────────────────────────────────
 # WHY a Depends() instead of just relying on the middleware?
@@ -228,7 +231,7 @@ CLEANUP_THRESHOLD = 10000   # run stale-bucket cleanup every N requests
 _request_counter = 0
 
 _cache_lock = Lock()
-_model_lock = Lock()
+_model_lock = Lock()  # Guards hot-path model read during async training
 
 # ── Redis client ──────────────────────────────────────────────────────
 _redis_client = None
@@ -292,28 +295,6 @@ def _cache_key(*parts: Any) -> str:
     return ":".join(str(part).strip().lower() for part in parts)
 
 
-def _recommendation_cache_key(
-    title: str,
-    top_n: int = 10,
-    explain: bool = False,
-    user_id: str = "",
-    target_catalog: str = "",
-    model_version: str = "",
-    strategy: str = "",
-) -> str:
-    """Single authoritative cache key for recommendation responses."""
-    return _cache_key(
-        "recommend",
-        title,
-        top_n,
-        explain,
-        user_id or "",
-        target_catalog or "",
-        model_version or "",
-        strategy or "",
-    )
-
-
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
 
@@ -347,6 +328,48 @@ def _get_cached_response(key: str):
         _cache_hits += 1
         return value
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ──
+def _set_cached_response(key: str, value: Any) -> None:
+    try:
+        with _cache_lock:
+            _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+    except (RedisError, TypeError):
+        pass
+
+def _clear_response_cache() -> None:
+    with _cache_lock:
+        _response_cache.clear()
+        global _cache_hits, _cache_misses
+        _cache_hits = 0
+        _cache_misses = 0
+
+import asyncio
+
+async def _cache_cleanup_worker():
+    while True:
+        await asyncio.sleep(60)  # Cleanup every 60 seconds
+        now = time.time()
+        expired_keys = []
+        with _cache_lock:
+            for key, (expires_at, _) in _response_cache.items():
+                if expires_at <= now:
+                    expired_keys.append(key)
+            for key in expired_keys:
+                _response_cache.pop(key, None)
+
+@app.on_event("startup")
+async def start_cache_cleanup():
+    asyncio.create_task(_cache_cleanup_worker())
+    logger.info("Background cache cleanup task started.")
+
+@app.get("/api/cache_metrics")
+def get_cache_metrics():
+    """Expose simple cache hit/miss metrics and configured TTL."""
+    return {
+        "cache_ttl_seconds": CACHE_TTL_SECONDS,
+        "hits": int(_cache_hits),
+        "misses": int(_cache_misses),
+        "current_items": len(_response_cache),
+    }
 
 
 def _normalize_search_query(query: str) -> str:
@@ -385,6 +408,12 @@ def _set_cache_headers(response: Response, status: str) -> None:
 
 
 def _get_rate_limit(limit_env: str, default_limit: int) -> int:
+    """Read the per-minute cap from an environment variable.
+
+    Falls back to *default_limit* when the variable is absent or non-integer.
+    Always returns at least 1 so the endpoint is never fully disabled by a
+    misconfiguration.
+    """
     try:
         limit = int(os.environ.get(limit_env, str(default_limit)))
     except ValueError:
@@ -393,6 +422,7 @@ def _get_rate_limit(limit_env: str, default_limit: int) -> int:
 
 
 def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
+    """Build a standards-compliant 429 Too Many Requests JSON response."""
     return JSONResponse(
         status_code=429,
         content={
@@ -414,34 +444,69 @@ def _apply_rate_limit(
     limit_env: str,
     default_limit: int,
 ) -> JSONResponse | None:
+    """Token Bucket rate limiter (per IP, per scope).
+
+    Each (scope, client_ip) pair has its own bucket.  The bucket holds up to
+    *rate_limit* tokens and refills at a rate of *rate_limit* tokens per 60
+    seconds (i.e. one token per ``60 / rate_limit`` seconds).  A request is
+    allowed when at least 1 token is available; otherwise a 429 response is
+    returned immediately.
+
+    Standard ``x-ratelimit-*`` headers are always attached to the response so
+    clients can implement polite back-off.
+
+    Args:
+        request:       Incoming FastAPI/Starlette request (used to read client IP).
+        response:      Outgoing response object (rate-limit headers are written here).
+        scope:         Logical name of the protected endpoint (e.g. ``"search"``).  Used
+                       as part of the bucket key so each endpoint has independent limits.
+        limit_env:     Name of the environment variable that overrides *default_limit*
+                       at runtime (e.g. ``"RATE_LIMIT_SEARCH_PER_MIN"``).  Must be a
+                       positive integer when set.
+        default_limit: Fallback requests-per-minute cap when the env variable is absent.
+
+    Returns:
+        ``None`` when the request is allowed (caller should continue normally).
+        A :class:`JSONResponse` with status 429 when the bucket is empty.
+    """
     rate_limit = _get_rate_limit(limit_env, default_limit)
     client_ip = request.client.host if request.client else "127.0.0.1"
     bucket_key = (scope, client_ip)
     now = time.time()
 
+    # Token Bucket parameters derived from the per-minute cap.
+    capacity = float(rate_limit)          # max burst == full-minute quota
+    refill_rate = rate_limit / 60.0       # tokens per second
+
     with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
+        # Initialise a fresh bucket on first access.
+        if bucket_key not in _rate_limit_buckets:
+            _rate_limit_buckets[bucket_key] = {"tokens": capacity, "last_updated": now}
 
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
+        bucket = _rate_limit_buckets[bucket_key]
 
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
+        # Refill: add tokens proportional to time elapsed since the last request.
+        elapsed = now - bucket["last_updated"]
+        bucket["tokens"] = min(capacity, bucket["tokens"] + elapsed * refill_rate)
+        bucket["last_updated"] = now
 
-        timestamps.append(now)
-        remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
+        # Compute seconds until the bucket would have one token available.
+        if bucket["tokens"] < 1.0:
+            wait_seconds = max(0, int((1.0 - bucket["tokens"]) / refill_rate))
+            return _rate_limit_exceeded_response(rate_limit, wait_seconds)
 
+        # Consume one token and allow the request.
+        bucket["tokens"] -= 1.0
+        remaining = int(bucket["tokens"])
+        reset_time = max(0, int((capacity - bucket["tokens"]) / refill_rate))
+
+        # LRU eviction: keep memory bounded when many unique IPs are seen.
         global _request_counter
         _request_counter += 1
         if _request_counter >= CLEANUP_THRESHOLD:
             _request_counter = 0
-            # Garbage Collection: Remove empty buckets to prevent memory leak
-            empty_keys = [k for k, v in _rate_limit_buckets.items() if not v]
-            for k in empty_keys:
-                del _rate_limit_buckets[k]
+            while len(_rate_limit_buckets) > MAX_RATE_LIMIT_IPS:
+                _rate_limit_buckets.popitem(last=False)
 
     response.headers["x-ratelimit-limit"] = str(rate_limit)
     response.headers["x-ratelimit-remaining"] = str(remaining)
@@ -865,7 +930,7 @@ def _precompute_recommendation_cache(
     item_df = models["item_df"]
 
     for title in item_df["title"].dropna().astype(str).unique():
-        cache_key = _recommendation_cache_key(title, top_n, explain)
+        cache_key = _cache_key("recommend", title, top_n, explain, "")
 
         recs = models["hybrid"].recommend(title, top_n=top_n, explain=explain)
 
@@ -911,60 +976,10 @@ def _set_cache_headers(response: Response, status: str) -> None:
     response.headers["X-Cache"] = status
 
 
-def _get_rate_limit(limit_env: str, default_limit: int) -> int:
-    try:
-        limit = int(os.environ.get(limit_env, str(default_limit)))
-    except ValueError:
-        return default_limit
-    return max(1, limit)
-
-
-def _rate_limit_exceeded_response(rate_limit: int, reset_time: int) -> JSONResponse:
-    return JSONResponse(
-        status_code=429,
-        content={
-            "error": "Rate limit exceeded",
-            "message": "Too many requests. Please try again later.",
-        },
-        headers={
-            "x-ratelimit-limit": str(rate_limit),
-            "x-ratelimit-remaining": "0",
-            "x-ratelimit-reset": str(reset_time),
-        },
-    )
-
-
-def _apply_rate_limit(
-    request: Request,
-    response: Response,
-    scope: str,
-    limit_env: str,
-    default_limit: int,
-) -> JSONResponse | None:
-    rate_limit = _get_rate_limit(limit_env, default_limit)
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    bucket_key = (scope, client_ip)
-    now = time.time()
-
-    with _rate_limit_lock:
-        timestamps = _rate_limit_buckets.setdefault(bucket_key, [])
-        timestamps[:] = [timestamp for timestamp in timestamps if now - timestamp < 60]
-
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-        if len(timestamps) >= rate_limit:
-            return _rate_limit_exceeded_response(rate_limit, reset_time)
-
-        timestamps.append(now)
-        remaining = rate_limit - len(timestamps)
-        reset_time = int(60 - (now - timestamps[0])) if timestamps else 60
-        reset_time = max(0, reset_time)
-
-    response.headers["x-ratelimit-limit"] = str(rate_limit)
-    response.headers["x-ratelimit-remaining"] = str(remaining)
-    response.headers["x-ratelimit-reset"] = str(reset_time)
-    return None
+# NOTE: _get_rate_limit, _rate_limit_exceeded_response, and _apply_rate_limit
+# are defined earlier in this module (Token Bucket implementation).
+# The duplicate definitions that previously existed here (from a merge conflict)
+# have been removed as part of Issue #887.
 
 
 def _extract_bearer_token(value: str | None) -> str:
@@ -1291,16 +1306,16 @@ def search_items(
                     'match_count': limit,
                     'offset_val': offset,
                 }).execute()
-    
+
                 products = result.data or []
-    
+
             except Exception as e:
                 logger.warning(
                     "Full-text search failed for query '%s': %s",
                     query.strip(),
                     e
                 )
-    
+
                 # Fallback: LIKE search
                 escaped_query = _escape_like_pattern(query.strip())
                 result = sb.table('products') \
@@ -1309,31 +1324,31 @@ def search_items(
                     .order('rating', desc=True) \
                     .limit(limit) \
                     .execute()
-    
+
                 products = result.data or []
-    
+
             # 2. Fuzzy fallback
             if not products:
                 is_fuzzy_fallback = True
-    
+
                 fuzzy_res = sb.rpc('fuzzy_search_products', {
                     'q': query,
                     'threshold': 0.3
                 }).execute()
-    
+
                 products = fuzzy_res.data or []
-    
+
         else:
             query_builder = sb.table('products').select(
                 'id, title, description, category, rating, avg_sentiment, review_count, metadata'
             )
-    
+
             if sort == "rating":
                 query_builder = query_builder.order('rating', desc=True)
             else:
                 query_builder = query_builder.order('rating', desc=True) \
                 .order('review_count', desc=True)
-    
+
             result = query_builder.limit(limit).offset(offset).execute()
             products = result.data or []
 
@@ -1354,54 +1369,34 @@ def search_items(
         for p in products:
             if 'rank' not in p or p['rank'] is None:
                 p['rank'] = 0.0
-    
-    
-    def _product_price(product):
-        metadata = product.get('metadata') or {}
-    
-        raw_price = (
-            product.get('price')
-            if product.get('price') is not None
-            else metadata.get('price')
-        )
-    
-        try:
-            return float(raw_price or 0)
-    
-        except (TypeError, ValueError):
-            return 0.0
-    
-    
-    if sort == "price-low":
-        products = sorted(products, key=_product_price)
-    
-    elif sort == "price-high":
-        products = sorted(products, key=_product_price, reverse=True)
-    
-    elif sort == "rating":
-        products = sorted(
-            products,
-            key=lambda p: float(p.get('rating') or 0),
-            reverse=True
-        )
+
+
+    # Format response
     results = []
+
     for p in products:
+
         raw_sentiment = p.get('avg_sentiment', 0.0)
         reviews = p.get('reviews', [])
+
+        # Newly added products may still have the default
+        # sentiment value before the NLP batch pipeline runs.
+        # Recompute dynamically so the UI never shows misleading 0.0.
         if raw_sentiment == 0.0 and reviews:
             try:
                 from nlp_engine import compute_product_sentiment
-    
+
                 computed_sentiment = compute_product_sentiment(reviews)
-    
+
                 sentiment_value = (
                     computed_sentiment
                     if computed_sentiment is not None
                     else "N/A"
                 )
-    
+
             except Exception:
                 sentiment_value = "N/A"
+
         else:
             sentiment_value = (
                 raw_sentiment
@@ -1411,16 +1406,81 @@ def search_items(
 
         results.append({
             'id': p.get('id'),
+            'title': p.get('title', ''),
+            'description': str(p.get('description', ''))[:200],
+            'category': p.get('category', ''),
+            'rating': p.get('rating', 0.0),
+            'avg_sentiment': sentiment_value,
+            'review_count': p.get('review_count', 0),
+            'rank': p.get('rank', 0.0),
+        })
+
+
+    def _product_price(product):
+        metadata = product.get('metadata') or {}
+
+        raw_price = (
+            product.get('price')
+            if product.get('price') is not None
+            else metadata.get('price')
+        )
+
+        try:
+            return float(raw_price or 0)
+
+        except (TypeError, ValueError):
+            return 0.0
+
+
+    if sort == "price-low":
+        products = sorted(products, key=_product_price)
+
+    elif sort == "price-high":
+        products = sorted(products, key=_product_price, reverse=True)
+
+    elif sort == "rating":
+        products = sorted(
+            products,
+            key=lambda p: float(p.get('rating') or 0),
+            reverse=True
+        )
+
+
+    results = []
+
+    for p in products:
+
+        raw_sentiment = p.get('avg_sentiment', 0.0)
+        reviews = p.get('reviews', [])
+
+        if raw_sentiment == 0.0 and reviews:
+            try:
+                from nlp_engine import compute_product_sentiment
+
+                computed_sentiment = compute_product_sentiment(reviews)
+
+                sentiment_value = (
+                    computed_sentiment
+                    if computed_sentiment is not None
+                    else "N/A"
+                )
+
+            except Exception:
+                sentiment_value = "N/A"
+        else:
+            sentiment_value = raw_sentiment
+
+        results.append({
+            'id': p.get('id'),
             'title': p.get('title'),
-            'description': str(p.get('description',''))[:200],
+            'description': p.get('description'),
             'category': p.get('category'),
             'price': _product_price(p),
             'rating': float(p.get('rating') or 0),
-            'avg_sentiment': sentiment_value,
-            'review_count': p.get('review_count', 0),
-            'rank': p.get('rank', 0.0)
+            'sentiment': sentiment_value,
+            'review_count': p.get('review_count', 0)
         })
-  
+
     final_output = {
         'query': query,
         'limit': limit,
@@ -1428,12 +1488,12 @@ def search_items(
         'total_found': len(results),
         'results': results
     }
-    
+
     return final_output
 
 
 # ── Feature: Paginated Recommendations ───────────────────────────────
-@app.get("/api/recommend/paginated")
+@app.get("/api/recommend")
 async def recommend_item(
     title: str = Query(..., min_length=1, description="Item title to base recommendations on"),
     limit: int = Query(default=20, ge=1, le=100, description="Items per page"),
@@ -1462,11 +1522,11 @@ async def recommend_item(
 
             if item_df is not None and not item_df.empty:
                 content_model = ContentRecommender(item_df)
-                
+
                 import os
                 from src.model.neural_collaborative_model import NeuralCollaborativeRecommender
                 use_ncf = os.getenv("USE_NCF", "true").lower() == "true"
-                
+
                 if interaction_df is not None and not interaction_df.empty:
                     if use_ncf:
                         collab_model = NeuralCollaborativeRecommender(interaction_df)
@@ -1474,7 +1534,7 @@ async def recommend_item(
                         collab_model = CollaborativeRecommender(interaction_df)
                 else:
                     collab_model = None
-                
+
                 hybrid = HybridRecommender(content_model, collab_model, item_df)
                 all_results = hybrid.recommend(title=title, user_id=user_id or None, top_n=limit + offset)
         except Exception:
@@ -1737,7 +1797,7 @@ def build_models(
         logger.warning("Collaborative model data load failed: %s", e)
     hybrid_model = HybridRecommender(content_model, collab_model, item_df)
     build_time = round(time.time() - start_time, 2)
-    
+
     version = generate_model_version()
 
     MODEL_REGISTRY[version] = {
@@ -1760,7 +1820,7 @@ def build_models(
     }
 
     STAGING_MODEL_VERSION = version
-    
+
     models["content"] = content_model
     models["collab"] = collab_model
     models["hybrid"] = hybrid_model
@@ -1981,14 +2041,12 @@ def get_recommendations(
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
-    top_n: Optional[int] = Query(None),
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    top_n: int = 10,
     explain: bool = Query(False),
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
     model_version: Optional[str] = Query(None),
-    strategy: Optional[str] = Query(None), 
+    strategy: Optional[str] = Query(None),
 ):
     rate_limited = _apply_rate_limit(
         request,
@@ -2023,12 +2081,10 @@ def get_recommendations(
 
         selected_models = MODEL_REGISTRY[model_version]
 
-    effective_limit = top_n if top_n is not None else limit
-    effective_offset = offset
-
-    cache_key = _recommendation_cache_key(
+    cache_key = _cache_key(
+        "recommend",
         query_title,
-        effective_limit,
+        top_n,
         explain,
         user_id or "",
         target_catalog or "",
@@ -2051,21 +2107,21 @@ def get_recommendations(
 
     recs = hybrid_model.recommend(
         query_title,
-        top_n=effective_limit + effective_offset,
+        top_n=top_n,
         explain=explain,
         target_catalog=target_catalog
     )
 
     # Popularity fallback (existing behaviour)
     if not recs and strategy == "popularity" and models["collab"]:
-        recs = models["collab"]._popularity_fallback(effective_limit + effective_offset)
+        recs = models["collab"]._popularity_fallback(top_n)
 
     # Cold-start fallback: blend content similarity with popularity/rating
     if not recs and strategy == "cold":
         combined_text = query_title
         cold_recs = cold_start_recommendation(
             combined_text,
-            top_n=effective_limit + effective_offset,
+            top_n=top_n,
             target_catalog=target_catalog
         )
         if cold_recs:
@@ -2085,27 +2141,17 @@ def get_recommendations(
     if user_id and models.get("collab") is not None:
         has_history = user_id in models["collab"]._user_to_idx
 
-    total_found = len(recs)
-    paginated_recs = recs[effective_offset : effective_offset + effective_limit]
-
     payload = {
         "query": query_title,
         "query_item": query_title,
-        "count": len(paginated_recs),
-        "results": paginated_recs,
-        "recommendations": paginated_recs,
-        "weights": hybrid_model.get_weights(),
+        "count": len(recs),
+        "results": recs,
+        "recommendations": recs,
+        "weights": active_hybrid.get_weights(),
         "explain": explain,
         "target_catalog": target_catalog,
         "model_version": model_version or ACTIVE_MODEL_VERSION,
         "has_history": has_history,
-        "pagination": {
-            "total": total_found,
-            "limit": effective_limit,
-            "offset": effective_offset,
-            "next_offset": effective_offset + effective_limit if effective_offset + effective_limit < total_found else None,
-            "has_more": (effective_offset + len(paginated_recs)) < total_found,
-        }
     }
 
     if (
@@ -2171,9 +2217,7 @@ def get_recommendations_alias(
     response: Response,
     item_title: Optional[str] = None,
     title: Optional[str] = Query(None),
-    top_n: Optional[int] = Query(None),
-    limit: int = Query(default=20, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    top_n: int = 10,
     explain: bool = Query(False),
     user_id: Optional[str] = Query(None),
     target_catalog: Optional[str] = Query(None),
@@ -2187,8 +2231,6 @@ def get_recommendations_alias(
         item_title=item_title,
         title=title,
         top_n=top_n,
-        limit=limit,
-        offset=offset,
         explain=explain,
         user_id=user_id,
         target_catalog=target_catalog,
@@ -2244,20 +2286,19 @@ def recommend_cold_start(
 
 
 @app.get("/api/user_recommend")
-@app.get("/api/recommend/user/{user_id}")
-def get_user_recommendations(user_id: str, top_n: int = Query(10, ge=1, le=50), explain: bool = Query(False)):
+def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
     """Get hybrid recommendations for a user."""
     _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(400, "Models not built. Build first via /api/build.")
-    
+
     is_fallback = False
     collab = models["hybrid"].collab_model
     if collab is None or user_id not in getattr(collab, "_user_to_idx", {}):
         is_fallback = True
 
     recs = models["hybrid"].recommend_for_user(user_id, top_n=top_n, explain=explain)
-        
+
     return {
         "query_user": user_id,
         "recommendations": recs,
@@ -2555,8 +2596,6 @@ def get_categories():
     except Exception as e:
         logger.error("Failed to retrieve categories: %s", e)
         return {"categories": []}
-
-
 @app.post("/api/interactions")
 def log_interaction(data: InteractionCreate):
     USER_INTERACTIONS.append({
@@ -2565,22 +2604,92 @@ def log_interaction(data: InteractionCreate):
         "interaction_type": data.interaction_type,
         "timestamp": datetime.now(timezone.utc).isoformat()
     })
-
     return {
         "message": "Interaction logged successfully",
         "interaction": USER_INTERACTIONS[-1]
     }
 
-# ── Purchases ─────────────────────────────────────────────────────────
-@app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
-    _validate_user_id(user_id)  # allowlist-validate before any DB call
+
+@app.post("/api/register")
+def register_and_merge_history(
+    data: MergeHistoryRequest,
+    _csrf: None = Depends(csrf_header_dep),
+):
     sb = get_supabase()
+    try:
+        # Update purchases in database
+        result = sb.table('purchases').update({'user_id': data.user_id}).eq('user_id', data.guest_id).execute()
+
+        # Also update in-memory USER_INTERACTIONS list
+        for interaction in USER_INTERACTIONS:
+            if interaction.get("user_id") == data.guest_id:
+                interaction["user_id"] = data.user_id
+
+        _clear_response_cache()
+        return {"status": "success", "message": "Guest history merged successfully", "updated_count": len(result.data or [])}
+    except Exception as e:
+        logger.error("Failed to merge guest history: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Purchases ─────────────────────────────────────────────────────────
+
+@app.get("/api/purchases/{user_id}")
+def get_user_purchases(
+    user_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    authorization: str = Header(None),
+):
+    """Fetch purchase history for a user.
+
+    Args:
+        user_id: ID of the user whose purchases to fetch.
+        limit: Maximum number of purchases to return (1-200).
+        authorization: Bearer token from request headers.
+
+    Returns:
+        Dictionary containing list of purchases.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if access denied.
+    """
+    _validate_user_id(user_id)
+
+    # Step 1 — make sure they're logged in
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    # Step 2 — extract the token
+    token = authorization.split(" ")[1]
+    sb = get_supabase()
+
+    # Step 3 — ask Supabase who this token belongs to
+    user_response = sb.auth.get_user(token)
+    if not user_response or not user_response.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+
+    # Step 4 — does the logged-in user match the requested user_id?
+    if user_response.user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    # Only reaches here if user is fetching their OWN data
     result = (
-        sb.table('purchases')
-        .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)')
-        .eq('user_id', user_id)
-        .order('purchased_at', desc=True)
+        sb.table("purchases")
+        .select(
+            "id, product_id, rating, review_text, "
+            "purchased_at, products(title, category, rating)"
+        )
+        .eq("user_id", user_id)
+        .order("purchased_at", desc=True)
         .limit(limit)
         .execute()
     )
@@ -2591,34 +2700,60 @@ def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
 def create_purchase(
     data: PurchaseCreate,
     _csrf: None = Depends(csrf_header_dep),
+    authorization: str = Header(None),
 ):
+    """Record a new purchase for the authenticated user.
+
+    Args:
+        data: Purchase details (product_id, rating, review_text, user_id).
+        _csrf: CSRF token validation dependency.
+        authorization: Bearer token from request headers.
+
+    Returns:
+        Dictionary containing the newly created purchase.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if user_id does not
+        match the authenticated user.
+    """
+    # Step 1 — make sure they're logged in
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    # Step 2 — extract the token
+    token = authorization.split(" ")[1]
     sb = get_supabase()
-    result = sb.table('purchases').insert({
-        'user_id': data.user_id,
-        'product_id': data.product_id,
-        'rating': max(0, min(5, data.rating)),
-        'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
-    }).execute()
+
+    # Step 3 — ask Supabase who this token belongs to
+    user_response = sb.auth.get_user(token)
+    if not user_response or not user_response.user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+
+    # Step 4 — token user must match the user_id in the request body
+    if user_response.user.id != data.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
+
+    result = (
+        sb.table("purchases")
+        .insert({
+            "user_id": data.user_id,
+            "product_id": data.product_id,
+            "rating": max(0, min(5, data.rating)),
+            "review_text": data.review_text,
+        })
+        .execute()
+    )
+
     _clear_response_cache()
-
-    # Issue #1596: Perform micro-update of latent vectors in memory
-    try:
-        if "collab" in models and models["collab"]:
-            collab_model = models["collab"]
-            item_df = models.get("item_df")
-            if item_df is not None:
-                matched = item_df[item_df['id'] == data.product_id]
-                if not matched.empty:
-                    title = matched.iloc[0]['title']
-                    collab_model.online_update(
-                        user_id=data.user_id,
-                        title=title,
-                        rating=data.rating
-                    )
-                    logger.info("Micro-updated latent vectors for user %s, item %s", data.user_id, title)
-    except Exception as e:
-        logger.warning("Failed to perform online micro-update: %s", e)
-
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 
@@ -2840,13 +2975,13 @@ def _verify_github_signature(request_body: bytes, signature_header: str | None) 
         raise HTTPException(status_code=401, detail="Signature header X-Hub-Signature-256 missing.")
     if not signature_header.startswith("sha256="):
         raise HTTPException(status_code=400, detail="Invalid signature format.")
-        
+
     expected_signature = hmac.new(
         secret.encode(),
         request_body,
         hashlib.sha256
     ).hexdigest()
-    
+
     provided_signature = signature_header.partition("sha256=")[2].strip()
     if not hmac.compare_digest(expected_signature, provided_signature):
         raise HTTPException(status_code=403, detail="Invalid webhook signature.")
@@ -2867,21 +3002,21 @@ async def github_webhook(request: Request, response: Response):
     body_bytes = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
     _verify_github_signature(body_bytes, signature)
-    
+
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
-        
+
     event = request.headers.get("X-GitHub-Event")
     action = payload.get("action")
-    
+
     issue_number = None
     title = None
     body = None
     repo_full_name = None
     should_triage = False
-    
+
     if event == "issues" and action == "opened":
         issue = payload.get("issue", {})
         issue_number = issue.get("number")
@@ -2889,7 +3024,7 @@ async def github_webhook(request: Request, response: Response):
         body = issue.get("body", "")
         repo_full_name = payload.get("repository", {}).get("full_name")
         should_triage = True
-        
+
     elif event == "issue_comment" and action == "created":
         comment = payload.get("comment", {})
         comment_body = comment.get("body", "").strip()
@@ -2900,7 +3035,7 @@ async def github_webhook(request: Request, response: Response):
             body = issue.get("body", "")
             repo_full_name = payload.get("repository", {}).get("full_name")
             should_triage = True
-            
+
     if should_triage and issue_number and repo_full_name:
         token = os.environ.get("GITHUB_TOKEN", "").strip()
         triage_res = await triage_issue(
@@ -2911,7 +3046,7 @@ async def github_webhook(request: Request, response: Response):
             token=token
         )
         return {"status": "success", "action": "triaged", "details": triage_res}
-        
+
     return {"status": "skipped", "reason": f"No triage actions required for event '{event}' action '{action}'."}
 
 # ---------------------------------------------------------------------------
@@ -2931,31 +3066,31 @@ class SearchRequest(BaseModel):
 @app.post("/api/v1/user/preferences/reset", dependencies=[Depends(csrf_header_dep)])
 async def reset_user_preferences(request: Request):
     """
-    Clears the user interaction weights/history from Supabase 
+    Clears the user interaction weights/history from Supabase
     and wipes the local/Redis recommendation cache for that user.
     """
     # 1. Authentic/Validate user (In production, replace with your real auth dependency)
     user_id = request.headers.get("x-user-id")
     if not user_id:
         raise HTTPException(status_code=400, detail="Missing x-user-id header.")
-    
+
     # Securely validate the user ID format
     validated_user_id = _validate_user_id(user_id)
-    
+
     try:
         # 2. Connect to Supabase and delete preference entries
         supabase = get_supabase_admin()
-        
+
         # Adjust table name and column names to match your schema
         supabase.table("user_preferences").delete().eq("user_id", validated_user_id).execute()
         supabase.table("user_interactions").delete().eq("user_id", validated_user_id).execute()
-        
+
         # 3. Wipe out the internal memory cache
         _clear_response_cache()
 
 
-        
-      
+        global global_redis_client
+
         if _redis_client is not None:
             try:
                 # Find keys matching this user's recommendation cache pattern
@@ -2970,7 +3105,7 @@ async def reset_user_preferences(request: Request):
             "status": "success",
             "message": "User preferences completely reset. Cache successfully evicted."
         }
-        
+
     except Exception as e:
         logger.error(f"Error resetting preferences for user {validated_user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to reset user data.")

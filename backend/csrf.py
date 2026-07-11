@@ -28,6 +28,8 @@ import os
 import secrets
 import logging
 import string
+import time
+from threading import Lock
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -44,6 +46,8 @@ CSRF_HEADER_NAME = "x-csrf-token"          # HTTP headers are lowercased by Star
 CSRF_TOKEN_BYTES = 32                       # 256-bit token → 64 hex chars
 CSRF_COOKIE_MAX_AGE = 60 * 60 * 8          # 8 hours in seconds
 
+_issued_tokens: dict[str, float] = {}
+_issued_tokens_lock = Lock()
 # Issue #1597 — Allowed origins for Origin/Referer validation.
 # Comma-separated list in CSRF_ALLOWED_ORIGINS env var (e.g. "http://localhost:3000,https://app.example.com").
 # Falls back to permissive mode (all origins allowed) when the var is not set so that
@@ -81,8 +85,26 @@ _EXEMPT_PATHS: set[str] = {"/api/feedback"}
 # ── Token helpers ─────────────────────────────────────────────────────────────
 
 def generate_csrf_token() -> str:
-    """Return a new cryptographically secure hex token."""
-    return secrets.token_hex(CSRF_TOKEN_BYTES)
+    """Return and register a new cryptographically secure hex token."""
+    token = secrets.token_hex(CSRF_TOKEN_BYTES)
+    with _issued_tokens_lock:
+        _issued_tokens[token] = time.time() + CSRF_COOKIE_MAX_AGE
+    return token
+
+
+def _prune_issued_tokens(now: float) -> None:
+    with _issued_tokens_lock:
+        expired = [token for token, expires_at in _issued_tokens.items() if expires_at <= now]
+        for token in expired:
+            _issued_tokens.pop(token, None)
+
+
+def _is_issued_token(token: str, now: float) -> bool:
+    with _issued_tokens_lock:
+        expires_at = _issued_tokens.get(token)
+        if expires_at is None:
+            return False
+        return expires_at > now
 
 
 def _is_secure_context() -> bool:
@@ -303,6 +325,22 @@ class CSRFMiddleware:
             response = JSONResponse(
                 status_code=403,
                 content={"detail": "CSRF token invalid format."},
+            )
+            await response(scope, receive, send)
+            return
+
+        now = time.time()
+        _prune_issued_tokens(now)
+
+        if not _is_issued_token(cookie_token, now) or not _is_issued_token(header_token, now):
+            logger.warning(
+                "CSRF validation failed (unissued token) path=%s method=%s",
+                request.url.path,
+                request.method,
+            )
+            response = JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token invalid."},
             )
             await response(scope, receive, send)
             return
