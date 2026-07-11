@@ -34,6 +34,7 @@ import numpy as np
 from src.model.causal_config import CausalConfig
 from src.model.causal_model import CausalDebiaser
 from src.model.recommendation_history import history_tracker
+from src.model.validation import validate_recommendations
 
 logger = logging.getLogger(__name__)
 
