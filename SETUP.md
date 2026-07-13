@@ -136,6 +136,8 @@ docker-compose down
 ---
 
 ### 8. Open the App
+The backend renders the frontend with your Supabase URL and anon key injected into the page, so there is no separate public `/api/config` endpoint.
+
 Navigate to: [http://localhost:8000](http://localhost:8000)
 
 ## Architecture

@@ -97,12 +97,16 @@ let sbClient = null;
 
 async function initSupabase() {
     try {
-        const resp = await fetch('/api/config');
-        if (!resp.ok) return null;
-        const config = await resp.json();
+        const config = window.__HYBRIDREC_SUPABASE__ || {};
         const { createClient } = window.supabase || {};
-        if (createClient && config.supabase_url && config.supabase_anon_key) {
-            sbClient = createClient(config.supabase_url, config.supabase_anon_key);
+        const hasInjectedConfig =
+            config.supabaseUrl &&
+            config.supabaseAnonKey &&
+            config.supabaseUrl !== '__SUPABASE_URL__' &&
+            config.supabaseAnonKey !== '__SUPABASE_ANON_KEY__';
+
+        if (createClient && hasInjectedConfig) {
+            sbClient = createClient(config.supabaseUrl, config.supabaseAnonKey);
         }
     } catch (e) {
         console.warn('Supabase init skipped:', e.message);
@@ -2206,3 +2210,4 @@ function initFilterChips() {
         });
     });
 }
+document.addEventListener('DOMContentLoaded', init);
