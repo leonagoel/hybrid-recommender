@@ -15,6 +15,7 @@ except ImportError:
     genai = None
 
 logger = logging.getLogger(__name__)
+
 GOOGLE_API_KEY = "Your_API_KEY"
 
 class LLMExplainer:
@@ -29,6 +30,8 @@ class LLMExplainer:
             api_key: Google API key (will read from GOOGLE_API_KEY env var if not provided)
         """
         self.model_name = model_name
+     
+        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or None
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or GOOGLE_API_KEY
 
         if genai is None:
