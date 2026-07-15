@@ -351,6 +351,23 @@ Add `-v` to also remove named volumes if you want a completely clean state.
 | Port 8000 already in use | Stop other services on 8000, or change `"8000:8000"` to `"8001:8000"` |
 | Dataset not found at runtime | Make sure `datasets/` folder exists in project root |
 
+**Celery worker cannot connect to Redis**
+
+For `ConnectionRefusedError: [Errno 61] Connection refused`, verify the Redis service and inspect the worker logs:
+
+```bash
+docker ps
+docker-compose ps
+docker-compose logs redis celery-worker
+```
+
+Use `redis://localhost:6379/0` when Celery runs on the host. Use `redis://redis:6379/0` when Celery runs inside Docker Compose; `redis` is the Compose service hostname, while `localhost` points back to the current host or container. After changing `REDIS_URL`, restart the stack and follow the worker log:
+
+```bash
+docker-compose up -d --build
+docker-compose logs -f celery-worker
+```
+
 ## 06 — API Reference
 
 **Retrieve frontend configuration (Supabase URL + anon key):**
@@ -798,5 +815,4 @@ Run:
 python scripts/generate_kg_embeddings.py
 
 ---
-
 
