@@ -29,11 +29,6 @@ def analyze_sentiment(text: str) -> float:
             -1.0 (highly negative) and 1.0 (highly positive). Returns 0.0 
             if the string is empty or invalid.
     """
-    def analyze_sentiment(text: str) -> float:
-        if text is None:
-            return 0.0
-        
-
     if not isinstance(text, str):
         return 0.0
 
