@@ -133,6 +133,35 @@ docker-compose down
 | Port 8000 already in use | Change `"8000:8000"` to `"8001:8000"` in `docker-compose.yml` |
 | Dataset not found | Make sure `datasets/` folder exists in project root |
 
+#### Celery and Redis connection errors
+
+If the Celery worker reports `ConnectionRefusedError: [Errno 61] Connection refused`, first confirm that the Redis container is running and healthy:
+
+```bash
+docker ps
+docker-compose ps
+docker-compose logs redis celery-worker
+```
+
+For a local worker started outside Docker Compose, use the host-published Redis address:
+
+```env
+REDIS_URL=redis://localhost:6379/0
+```
+
+For a worker running inside Docker Compose, use the Compose service name instead of `localhost`:
+
+```env
+REDIS_URL=redis://redis:6379/0
+```
+
+`localhost` refers to the current machine or container. Inside the Compose network, `redis` resolves to the Redis service. Restart the stack after changing the value:
+
+```bash
+docker-compose up -d --build
+docker-compose logs -f celery-worker
+```
+
 ---
 
 ### 8. Open the App
