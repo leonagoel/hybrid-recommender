@@ -179,4 +179,3 @@ def test_search_rejects_oversized_offset(monkeypatch):
     response = client.get("/api/search", params={"offset": 10001})
 
     assert response.status_code == 422
-

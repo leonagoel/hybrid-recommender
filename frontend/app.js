@@ -1805,7 +1805,8 @@ async function loadProducts(append = false) {
     try {
         const data = await API.get(`/api/search?q=&limit=${state.perPage}&offset=${(state.page - 1) * state.perPage}&sort=${getSelectedSort()}`);
         const products = data.results || [];
-        state.totalProducts = data.total || products.length;
+        state.totalProducts = data.total ?? data.total_found ?? products.length;
+        state.hasMore = data.has_more ?? products.length === state.perPage;
         state.allProducts = append
             ? [...(state.allProducts || []), ...products]
             : [...products];
@@ -1824,8 +1825,10 @@ async function loadProducts(append = false) {
 
         // Show load more if there might be more
         if (els.loadMoreContainer) {
-            els.loadMoreContainer.hidden = products.length < state.perPage;
+            els.loadMoreContainer.hidden = !state.hasMore;
         }
+
+        state.page++;
     } catch (err) {
         els.skeletonLoader.hidden = true;
         toast('Failed to load products', 'error');
