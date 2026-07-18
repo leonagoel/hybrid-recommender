@@ -1486,7 +1486,9 @@ def search_items(
         'limit': limit,
         'offset': offset,
         'total_found': len(results),
-        'results': results
+        'results': results,
+        'has_more': len(results) == limit,
+        'next_offset': offset + limit if len(results) == limit else None,
     }
 
     return final_output
@@ -3109,4 +3111,3 @@ async def reset_user_preferences(request: Request):
     except Exception as e:
         logger.error(f"Error resetting preferences for user {validated_user_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to reset user data.")
-
