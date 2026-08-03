@@ -99,8 +99,12 @@ class NLPEngine:
         Returns:
             scipy.sparse._csr.csr_matrix: A sparse matrix containing TF-IDF weights.
         """
-        # Original function logic goes here
-        pass
+        if not metadata_list:
+            return None
+        
+        # Fit and transform the text data into TF-IDF feature vectors
+        tfidf_matrix = self.vectorizer.fit_transform(metadata_list)
+        return tfidf_matrix
 
     def calculate_similarity(self, tfidf_matrix) -> float:
         """
@@ -112,5 +116,9 @@ class NLPEngine:
         Returns:
             ndarray: A square similarity matrix representing pairwise text matching profiles.
         """
-        # Original function logic goes here
-        pass
+        if tfidf_matrix is None:
+            return None
+        
+        # Compute pairwise cosine similarity between all items
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+        return similarity_matrix
