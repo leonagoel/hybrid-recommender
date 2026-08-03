@@ -1,7 +1,4 @@
 from __future__ import annotations
-from fastapi import FastAPI # type: ignore
-from backend.routers import recommend
-from backend.routers import feedback
 
 """
 FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
@@ -12,16 +9,17 @@ import re
 import sys
 import io
 import time
-import logging
+import json
 import math
 import secrets
-
-import json
+import logging
 from urllib.parse import urlsplit
+from collections import deque, Counter, defaultdict
+from threading import Lock
+from datetime import datetime, timezone, timedelta
+
 from redis import Redis
 from redis.exceptions import RedisError
-
-logger = logging.getLogger(__name__)
 
 try:
     import bleach
@@ -33,21 +31,10 @@ except ModuleNotFoundError:
                 return str(value)
             return re.sub(r"<[^>]*>", "", str(value))
 
-from collections import deque, Counter
-from threading import Lock
-from datetime import datetime, timezone, timedelta
-
-from collections import defaultdict
-
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-_project_root = os.path.dirname(os.path.dirname(__file__))
-sys.path.insert(0, _project_root)
-sys.path.insert(0, os.path.join(_project_root, "src", "data"))
-sys.path.insert(0, os.path.join(_project_root, "src", "model"))
-
-from fastapi import ( # type: ignore
+from fastapi import (
     FastAPI,
     APIRouter,
     Depends,
@@ -60,44 +47,41 @@ from fastapi import ( # type: ignore
     Response,
     WebSocket,
     WebSocketDisconnect,
-    status
+    status,
 )
-from fastapi.middleware.cors import CORSMiddleware # type: ignore
-from fastapi.staticfiles import StaticFiles # type: ignore
-from fastapi.responses import FileResponse, JSONResponse # type: ignore
-from pydantic import BaseModel # type: ignore
-from typing import Dict, List, Optional # type: ignore
-from pydantic import BaseModel, ConfigDict, Field # type: ignore
-from typing import Any, Optional
-from dotenv import load_dotenv # type: ignore
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Any, Optional
+from typing import Dict, List, Optional, Any
 from dotenv import load_dotenv
 
-load_dotenv()
-
-from db import get_supabase, get_supabase_admin
-from backend.auth import _require_admin_access
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(levelname)s] %(asctime)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-from celery.result import AsyncResult # type: ignore
+from celery.result import AsyncResult
 from celery_app import celery_app
 
+from backend.routers import recommend, feedback
+from backend.auth import _require_admin_access
 
-# backend/main.py — corrected imports
-from src.data.db import get_supabase, get_supabase_admin
+_project_root = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, "src", "data"))
+sys.path.insert(0, os.path.join(_project_root, "src", "model"))
+
+from db import get_supabase, get_supabase_admin
+from src.data.db import get_supabase as src_get_supabase, get_supabase_admin as src_get_supabase_admin
 from src.data.data_adapter import adapt_data, read_file
 from src.model.nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from src.model.content_model import ContentRecommender
 from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
+
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(levelname)s] %(asctime)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 from src.model.trending_model import TrendingRecommender
 from src.model.issue_triage import triage_issue
 from src.model.federated_learning import train_federated_collaborative_model
