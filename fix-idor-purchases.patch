@@ -1,0 +1,204 @@
+"""
+Fix for Issue #4: IDOR Vulnerability in Purchases API
+
+APPLY THIS FIX TO: backend/main.py or the purchases router
+
+DESCRIPTION:
+The purchases API allows users to view other users' purchase history without 
+proper authorization checks (CWE-639: Authorization Bypass Through User-Controlled Key)
+
+SECURITY IMPACT:
+- Users can view private purchase data of other users
+- Privacy violation of user purchase history
+- Potential data leakage for analytics
+
+USAGE:
+Add authorization checks to all /api/purchases endpoints.
+"""
+
+# ============================================================
+# ADD THIS MIXIN/DEPENDENCY TO backend/main.py
+# ============================================================
+
+from fastapi import Header, HTTPException
+
+async def get_current_user_id(x_user_id: str = Header(..., alias="X-User-ID")) -> str:
+    """
+    Extract and validate the current user ID from request headers.
+    
+    In production, this should validate a JWT or session token.
+    For now, we use the X-User-ID header with format validation.
+    """
+    import re
+    # Basic UUID format validation (adjust pattern as needed)
+    uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    if not re.match(uuid_pattern, x_user_id, re.IGNORECASE):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid user identification"
+        )
+    return x_user_id.lower()
+
+
+async def require_purchase_access(
+    request: Request,
+    target_user_id: str,
+) -> None:
+    """
+    Verify the requesting user has access to the target user's purchase data.
+    
+    Rules:
+    1. Users can only access their own purchase data
+    2. Admins can access any user's purchase data
+    
+    Raises HTTPException 403 if access is denied.
+    """
+    current_user = get_current_user_id()
+    
+    # Check if user is accessing their own data
+    if current_user.lower() == target_user_id.lower():
+        return  # Access granted
+    
+    # Check if user has admin privileges
+    admin_header = request.headers.get("X-Admin-Token", "")
+    if admin_header == os.environ.get("ADMIN_API_TOKEN", ""):
+        return  # Admin access granted
+    
+    # Deny access
+    raise HTTPException(
+        status_code=403,
+        detail="Not authorized to access this user's purchase data"
+    )
+
+
+# ============================================================
+# ADD THIS TO PURCHASES ENDPOINT
+# ============================================================
+
+# BEFORE (VULNERABLE):
+@app.get("/api/purchases/{user_id}")
+async def get_purchases(user_id: str):
+    # No authorization check!
+    purchases = get_user_purchases(user_id)
+    return {"purchases": purchases}
+
+# AFTER (SECURE):
+@app.get("/api/purchases/{user_id}")
+async def get_purchases(request: Request, user_id: str):
+    """
+    Get purchase history for a specific user.
+    
+    Security: Users can only view their own purchases.
+    Admins can view any user's purchases.
+    """
+    await require_purchase_access(request, user_id)
+    purchases = get_user_purchases(user_id)
+    return {"purchases": purchases}
+
+
+# ============================================================
+# ADD AUTHORIZATION TO OTHER PURCHASE ENDPOINTS
+# ============================================================
+
+@app.delete("/api/purchases/{purchase_id}")
+async def delete_purchase(request: Request, purchase_id: str):
+    """
+    Delete a specific purchase.
+    
+    Security: Users can only delete their own purchases.
+    """
+    current_user = get_current_user_id()
+    
+    # Get the purchase and verify ownership
+    purchase = get_purchase_by_id(purchase_id)
+    if not purchase:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    
+    if purchase["user_id"].lower() != current_user.lower():
+        # Verify admin status
+        admin_header = request.headers.get("X-Admin-Token", "")
+        if admin_header != os.environ.get("ADMIN_API_TOKEN", ""):
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to delete this purchase"
+            )
+    
+    delete_purchase_by_id(purchase_id)
+    return {"status": "deleted", "purchase_id": purchase_id}
+
+
+@app.post("/api/purchases")
+async def create_purchase(request: Request, purchase_data: PurchaseCreate):
+    """
+    Create a new purchase.
+    
+    The purchase is automatically associated with the authenticated user.
+    """
+    current_user = get_current_user_id()
+    
+    # Associate purchase with authenticated user (not from request body)
+    purchase = {
+        "user_id": current_user,  # Use authenticated ID, ignore any from body
+        "item_id": purchase_data.item_id,
+        "quantity": purchase_data.quantity,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    
+    save_purchase(purchase)
+    return {"status": "created", "purchase": purchase}
+
+
+# ============================================================
+# ADD TEST FILE: tests/test_idor_purchases_fix.py
+# ============================================================
+
+"""
+Test cases verifying IDOR vulnerability is fixed.
+"""
+import pytest
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def client():
+    from backend.main import app
+    return TestClient(app)
+
+
+class TestIDORPrevention:
+    """Verify users cannot access other users' purchase data."""
+    
+    def test_user_cannot_access_other_user_purchases(self, client):
+        """User A should NOT be able to view User B's purchases."""
+        response = client.get(
+            "/api/purchases/user-b-uuid",
+            headers={"X-User-ID": "user-a-uuid"}  # Authenticated as User A
+        )
+        assert response.status_code == 403, "IDOR: User can view other user's purchases!"
+    
+    def test_user_can_access_own_purchases(self, client):
+        """User A SHOULD be able to view their own purchases."""
+        response = client.get(
+            "/api/purchases/user-a-uuid",
+            headers={"X-User-ID": "user-a-uuid"}  # Authenticated as User A
+        )
+        assert response.status_code in [200, 404]  # 404 if no purchases, not 403
+    
+    def test_admin_can_access_any_user_purchases(self, client):
+        """Admin SHOULD be able to view any user's purchases."""
+        response = client.get(
+            "/api/purchases/any-user-uuid",
+            headers={
+                "X-User-ID": "admin-uuid",
+                "X-Admin-Token": os.environ.get("ADMIN_API_TOKEN")
+            }
+        )
+        assert response.status_code in [200, 404]
+    
+    def test_delete_other_user_purchase_denied(self, client):
+        """User should NOT be able to delete another user's purchase."""
+        response = client.delete(
+            "/api/purchases/12345",  # Purchase owned by another user
+            headers={"X-User-ID": "user-a-uuid"}
+        )
+        assert response.status_code == 403
