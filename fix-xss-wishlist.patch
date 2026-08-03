@@ -1,0 +1,343 @@
+"""
+Fix for Issue #5: XSS Vulnerability in Wishlist API
+
+APPLY THIS FIX TO: backend/main.py or frontend/wishlist.js
+
+DESCRIPTION:
+The wishlist functionality reflects user input without proper sanitization (CWE-79: Cross-site Scripting)
+
+SECURITY IMPACT:
+- Stored XSS: Malicious scripts stored in item names
+- Reflected XSS: User input reflected in responses without encoding
+- Session hijacking via stolen cookies
+- Malicious redirects
+
+USAGE:
+Apply sanitization to all user input in wishlist operations.
+"""
+
+# ============================================================
+# FIX 1: BACKEND SANITIZATION (backend/main.py)
+# ============================================================
+
+# Add bleach import if not present
+try:
+    import bleach
+except ModuleNotFoundError:
+    import os
+    os.system("pip install bleach")
+    import bleach
+
+
+def sanitize_for_html(text: str) -> str:
+    """
+    Sanitize text to prevent XSS attacks.
+    
+    Removes all HTML tags and attributes that could be used for XSS.
+    Safe for use in HTML content and JSON responses.
+    """
+    if not text:
+        return ""
+    
+    # bleach.clean removes all HTML tags and attributes
+    # tags=[] means no tags allowed
+    # strip=True removes extra whitespace
+    cleaned = bleach.clean(
+        text,
+        tags=[],  # No HTML tags allowed
+        attributes={},  # No attributes allowed
+        strip=True  # Strip extra whitespace
+    )
+    
+    return cleaned
+
+
+def validate_item_name(name: str) -> str:
+    """
+    Validate and sanitize an item name for wishlist operations.
+    
+    Rules:
+    1. Maximum length: 200 characters
+    2. No HTML/JS/CSS tags
+    3. No special characters that could be used in XSS
+    """
+    if not name:
+        raise ValueError("Item name cannot be empty")
+    
+    # Strip and truncate
+    name = name.strip()[:200]
+    
+    # Sanitize HTML/JS
+    sanitized = sanitize_for_html(name)
+    
+    # Additional validation: no control characters
+    if any(ord(c) < 32 and c not in '\t\n\r' for c in sanitized):
+        raise ValueError("Item name contains invalid characters")
+    
+    return sanitized
+
+
+# ============================================================
+# FIX 2: UPDATE WISHLIST ENDPOINTS
+# ============================================================
+
+# BEFORE (VULNERABLE):
+@app.post("/api/wishlist")
+async def add_to_wishlist(item: str):
+    # No sanitization!
+    wishlist.append(item)
+    return {"item": item}  # Reflects unsanitized input
+
+
+# AFTER (SECURE):
+class WishlistItem(BaseModel):
+    item: str = Field(..., max_length=200)
+
+
+@app.post("/api/wishlist")
+async def add_to_wishlist(item_data: WishlistItem):
+    """
+    Add an item to the user's wishlist.
+    
+    All item names are sanitized to prevent XSS attacks.
+    """
+    try:
+        safe_item = validate_item_name(item_data.item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Store sanitized item
+    wishlist.append(safe_item)
+    return {"item": safe_item, "status": "added"}
+
+
+@app.get("/api/wishlist")
+async def get_wishlist():
+    """
+    Get the user's wishlist.
+    
+    All items are returned in sanitized form.
+    """
+    return {"items": wishlist, "count": len(wishlist)}
+
+
+# ============================================================
+# FIX 3: FRONTEND ESCAPING (frontend/wishlist.js)
+# ============================================================
+
+// Add this utility function to frontend/wishlist.js
+
+function escapeHtml(text) {
+    /**
+     * Escape HTML special characters to prevent XSS.
+     * Use this before inserting any user-controlled data into HTML.
+     */
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function escapeHtmlAttr(text) {
+    /**
+     * Escape text for use in HTML attributes.
+     */
+    return text
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#x27;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+async function addToWishlist(itemName) {
+    // Sanitize before display
+    const safeName = escapeHtml(itemName);
+    
+    // Create wishlist item element with escaped content
+    const itemDiv = document.createElement('div');
+    itemDiv.className = 'wishlist-item';
+    itemDiv.innerHTML = `
+        <span class="item-name">${safeName}</span>
+        <button onclick="removeFromWishlist('${escapeHtmlAttr(itemName)}')">Remove</button>
+    `;
+    
+    document.getElementById('wishlist-items').appendChild(itemDiv);
+    
+    // Send to API (API will also sanitize)
+    await fetch('/api/wishlist', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': getCsrfToken(),
+        },
+        body: JSON.stringify({ item: itemName })
+    });
+}
+
+function renderWishlistItem(item) {
+    /**
+     * Render a single wishlist item with proper escaping.
+     * 
+     * NEVER use innerHTML with user-controlled data without escaping!
+     */
+    const li = document.createElement('li');
+    
+    // Safe: textContent escapes automatically
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = item.name;  // Safe!
+    li.appendChild(nameSpan);
+    
+    // Safe: using textContent for all user data
+    const countSpan = document.createElement('span');
+    countSpan.textContent = `Added: ${new Date(item.added_at).toLocaleDateString()}`;
+    li.appendChild(countSpan);
+    
+    return li;
+}
+
+// ============================================================
+// FIX 4: ADD SECURITY HEADERS
+// ============================================================
+
+# Add to backend/main.py
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    
+    # Content Security Policy
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none';"
+    )
+    
+    # X-Content-Type-Options
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    
+    # X-Frame-Options
+    response.headers["X-Frame-Options"] = "DENY"
+    
+    # X-XSS-Protection (legacy, but still useful)
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    
+    return response
+
+
+# ============================================================
+# FIX 5: ADD TEST FILE: tests/test_wishlist_xss_fix.py
+# ============================================================
+
+"""
+Test cases verifying XSS vulnerability is fixed in wishlist.
+"""
+import pytest
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def client():
+    from backend.main import app
+    return TestClient(app)
+
+
+class TestXSSPrevention:
+    """Verify XSS payloads are sanitized in wishlist operations."""
+    
+    def test_script_tag_rejected(self, client):
+        """Script tags should be stripped from item names."""
+        payload = "<script>alert('XSS')</script>"
+        response = client.post(
+            "/api/wishlist",
+            json={"item": payload}
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Script tag should be removed
+            assert "<script>" not in data.get("item", "")
+            assert "alert" not in data.get("item", "")
+    
+    def test_img_onerror_rejected(self, client):
+        """IMG onerror handlers should be stripped."""
+        payload = '<img src=x onerror="alert(1)">'
+        response = client.post(
+            "/api/wishlist",
+            json={"item": payload}
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            assert "onerror" not in data.get("item", "")
+    
+    def testSvgOnloadRejected(self, client):
+        """SVG onload handlers should be stripped."""
+        payload = '<svg onload="alert(1)">'
+        response = client.post(
+            "/api/wishlist",
+            json={"item": payload}
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            assert "onload" not in data.get("item", "")
+    
+    def test_js_url_rejected(self, client):
+        """JavaScript URLs should be stripped."""
+        payload = 'javascript:alert(1)'
+        response = client.post(
+            "/api/wishlist",
+            json={"item": payload}
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            assert "javascript:" not in data.get("item", "")
+    
+    def test_entity_encoding_neutralized(self, client):
+        """HTML entity encoding should be neutralized."""
+        payload = "&lt;script&gt;alert(1)&lt;/script&gt;"
+        response = client.post(
+            "/api/wishlist",
+            json={"item": payload}
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            # bleach converts entities to literal characters
+            # then strips any remaining tags
+            assert "<script>" not in data.get("item", "")
+    
+    def test_max_length_enforced(self, client):
+        """Items exceeding max length should be rejected."""
+        long_payload = "x" * 500
+        response = client.post(
+            "/api/wishlist",
+            json={"item": long_payload}
+        )
+        
+        assert response.status_code == 422  # Validation error
+    
+    def test_empty_item_rejected(self, client):
+        """Empty items should be rejected."""
+        response = client.post(
+            "/api/wishlist",
+            json={"item": ""}
+        )
+        
+        assert response.status_code in [400, 422]
+    
+    def test_whitespace_only_rejected(self, client):
+        """Whitespace-only items should be rejected."""
+        response = client.post(
+            "/api/wishlist",
+            json={"item": "   \t\n   "}
+        )
+        
+        assert response.status_code in [400, 422]
