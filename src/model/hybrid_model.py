@@ -694,15 +694,31 @@ class HybridRecommender:
         gamma,
         raw_item,
     ):
-        weighted_components = {
-            'content': round(alpha * content_score, 4),
-            'collaborative': round(beta * collab_score, 4),
-            'sentiment': round(gamma * sentiment_score, 4),
-            'popularity': round(getattr(self, 'delta', 0.05) * popularity, 4),
-        }
-        strongest = max(weighted_components, key=weighted_components.get)
+        # Get the delta weight for popularity (may be passed or from self)
+        delta = getattr(self, 'delta', 0.05)
         
-        return f"Recommended primarily due to {strongest} match (score: {weighted_components[strongest]:.2f})."
+        weighted_components = {
+            'content': alpha * content_score,
+            'collaborative': beta * collab_score,
+            'sentiment': gamma * sentiment_score,
+            'popularity': delta * popularity,
+        }
+        
+        # Find the component that contributed most to the hybrid score
+        strongest = max(weighted_components, key=weighted_components.get)
+        strongest_score = weighted_components[strongest]
+        
+        # Calculate total hybrid score for percentage contribution
+        total = sum(weighted_components.values())
+        if total > 0:
+            contribution_pct = (strongest_score / total) * 100
+        else:
+            contribution_pct = 0
+        
+        return (
+            f"Recommended primarily due to {strongest} match "
+            f"(contribution: {strongest_score:.4f}, {contribution_pct:.1f}% of hybrid score)."
+        )
 
     @staticmethod
     def _sentiment_label(score):
