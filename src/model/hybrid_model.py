@@ -179,36 +179,6 @@ class HybridRecommender:
                             self._popularity_map[title] = rc / float(max_reviews)
 
     # ------------------------- weight API -------------------------
-    def set_weights(self, alpha: float, beta: float, gamma: float):
-        """Update the scoring weights. Normalized to sum to 1."""
-        for w in (alpha, beta, gamma):
-            if math.isnan(float(w)):
-                raise ValueError("Weights must be finite numbers")
-        if any(w < 0 for w in (alpha, beta, gamma)):
-            raise ValueError("Weights must be non-negative")
-        total = float(alpha + beta + gamma)
-        if total <= 0:
-            total = 1.0
-        self.alpha = float(alpha) / total
-        self.beta = float(beta) / total
-        self.gamma = float(gamma) / total
-
-    def get_weights(self):
-        return {
-            'alpha': self.alpha,
-            'beta': self.beta,
-            'gamma': self.gamma,
-            'delta': self.delta,
-        }
-
-
-    def select_bandit_arm(self):
-        import random
-
-        if random.random() < self.epsilon:
-            return random.randint(0, len(self.bandit_arms) - 1)
-
-
     def set_weights(self, alpha, beta, gamma, delta=0.05):
         """Update the scoring weights. Normalized to sum to 1.
 
@@ -233,7 +203,6 @@ class HybridRecommender:
 
     def get_weights(self):
         return {'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'delta': self.delta}
-
 
     def select_bandit_arm(self):
         import random
