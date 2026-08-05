@@ -29,8 +29,15 @@ FIRST_NAMES = [
 ]
 
 def generate_mock_password(length: int = 12) -> str:
-    """Generate a secure random password for mock users."""
-    alphabet = string.ascii_letters + string.digits
+    """Generate a secure random password for mock users.
+
+    The alphabet mirrors the special characters required by the app's
+    strong-password policy (frontend/js/auth.js `_validateStrongPassword`),
+    so mock users created by this script can sign in through the UI.
+    """
+    if length < 8:
+        raise ValueError("Password length must be at least 8 characters.")
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
