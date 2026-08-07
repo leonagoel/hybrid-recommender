@@ -8,7 +8,7 @@ from scripts.seed_mock_data import generate_mock_password
 def test_generate_mock_password_uses_strong_default_shape():
     password = generate_mock_password()
 
-    assert len(password) == 24
+    assert len(password) == 12
     assert re.search(r"[a-z]", password)
     assert re.search(r"[A-Z]", password)
     assert re.search(r"\d", password)
@@ -18,7 +18,17 @@ def test_generate_mock_password_uses_strong_default_shape():
 
 def test_generate_mock_password_rejects_short_lengths():
     with pytest.raises(ValueError):
-        generate_mock_password(12)
+        generate_mock_password(7)
+
+    with pytest.raises(ValueError):
+        generate_mock_password(0)
+
+
+def test_generate_mock_password_accepts_policy_minimum():
+    password = generate_mock_password(8)
+
+    assert len(password) == 8
+    assert re.search(r"[!@#$%^&*()\-_=+]", password)
 
 
 def test_generate_mock_password_is_not_deterministic():
