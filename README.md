@@ -239,6 +239,31 @@ Check the active backend version:
 curl "http://localhost:8000/api/version"
 ```
 
+### CLI workflows
+
+The repository now includes a local-first CLI for building models, evaluating them, generating recommendations, and running a lightweight demo workflow.
+
+```bash
+python -m src.cli --help
+
+python -m src.cli build --dataset datasets/sample_products.csv
+
+python -m src.cli evaluate \
+  --dataset datasets/sample_products.csv \
+  --k 10
+
+python -m src.cli recommend \
+  --title "ITEM_0001 Premium Journal Lite" \
+  --top-n 10
+
+python -m src.cli run-demo
+```
+
+Notes:
+- `DATA_PATH` can be used as a default dataset path when `--dataset` is omitted.
+- `build` and `recommend` persist local model artifacts under `models/` so repeated runs reuse cached models for the same dataset.
+- The CLI is local-only and does not introduce network dependencies for model downloads or dataset fetches.
+
 ### Async Recommendations — Celery Worker Setup
 
 Async recommendation tasks require Redis and a running Celery worker.

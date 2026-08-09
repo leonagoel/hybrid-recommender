@@ -57,6 +57,13 @@ jobs:
           SUPABASE_ANON_KEY: "placeholder"
           SUPABASE_SERVICE_KEY: "placeholder"
 
+      - name: Run CLI smoke tests
+        run: pytest tests/test_cli_smoke.py -q --tb=short
+        env:
+          SUPABASE_URL: "https://placeholder.supabase.co"
+          SUPABASE_ANON_KEY: "placeholder"
+          SUPABASE_SERVICE_KEY: "placeholder"
+
   # FIX FOR ISSUE #493: New automated job guarantees full test suite runs on every incoming PR
   e2e-tests:
     name: End-to-End API Test Suite
