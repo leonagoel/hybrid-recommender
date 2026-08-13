@@ -1,0 +1,43 @@
+item_id,title,description,category,user_id,rating,views,purchases
+prod_01,Aurora Wireless Headphones,"Over-ear Bluetooth headphones with deep bass, plush ear cushions, and 30-hour battery life.",Electronics,user_01,5,120,18
+prod_01,Aurora Wireless Headphones,"Over-ear Bluetooth headphones with deep bass, plush ear cushions, and 30-hour battery life.",Electronics,user_02,4,98,15
+prod_01,Aurora Wireless Headphones,"Over-ear Bluetooth headphones with deep bass, plush ear cushions, and 30-hour battery life.",Electronics,user_03,5,140,20
+prod_01,Aurora Wireless Headphones,"Over-ear Bluetooth headphones with deep bass, plush ear cushions, and 30-hour battery life.",Electronics,user_04,3,90,12
+prod_01,Aurora Wireless Headphones,"Over-ear Bluetooth headphones with deep bass, plush ear cushions, and 30-hour battery life.",Electronics,user_05,4,110,17
+prod_01,Aurora Wireless Headphones,"Over-ear Bluetooth headphones with deep bass, plush ear cushions, and 30-hour battery life.",Electronics,user_06,5,130,19
+prod_02,Pine Grove Desk Lamp,"Warm ambient desk lamp with touch dimming, USB-C charging, and a compact footprint.",Home & Kitchen,user_01,4,80,10
+prod_02,Pine Grove Desk Lamp,"Warm ambient desk lamp with touch dimming, USB-C charging, and a compact footprint.",Home & Kitchen,user_02,5,95,14
+prod_02,Pine Grove Desk Lamp,"Warm ambient desk lamp with touch dimming, USB-C charging, and a compact footprint.",Home & Kitchen,user_03,3,72,9
+prod_02,Pine Grove Desk Lamp,"Warm ambient desk lamp with touch dimming, USB-C charging, and a compact footprint.",Home & Kitchen,user_04,4,88,11
+prod_02,Pine Grove Desk Lamp,"Warm ambient desk lamp with touch dimming, USB-C charging, and a compact footprint.",Home & Kitchen,user_05,4,84,13
+prod_02,Pine Grove Desk Lamp,"Warm ambient desk lamp with touch dimming, USB-C charging, and a compact footprint.",Home & Kitchen,user_06,4,92,12
+prod_03,Harbor Running Jacket,"Lightweight running jacket with breathable fabric, reflective trim, and a water-resistant finish.",Clothing,user_01,3,75,8
+prod_03,Harbor Running Jacket,"Lightweight running jacket with breathable fabric, reflective trim, and a water-resistant finish.",Clothing,user_02,5,110,18
+prod_03,Harbor Running Jacket,"Lightweight running jacket with breathable fabric, reflective trim, and a water-resistant finish.",Clothing,user_03,4,86,13
+prod_03,Harbor Running Jacket,"Lightweight running jacket with breathable fabric, reflective trim, and a water-resistant finish.",Clothing,user_04,5,120,19
+prod_03,Harbor Running Jacket,"Lightweight running jacket with breathable fabric, reflective trim, and a water-resistant finish.",Clothing,user_05,4,91,14
+prod_03,Harbor Running Jacket,"Lightweight running jacket with breathable fabric, reflective trim, and a water-resistant finish.",Clothing,user_06,3,78,9
+prod_04,Northwind Cookbook,"A practical family cookbook with seasonal recipes, meal planning tips, and quick weeknight dishes.",Books,user_01,4,68,7
+prod_04,Northwind Cookbook,"A practical family cookbook with seasonal recipes, meal planning tips, and quick weeknight dishes.",Books,user_02,4,74,6
+prod_04,Northwind Cookbook,"A practical family cookbook with seasonal recipes, meal planning tips, and quick weeknight dishes.",Books,user_03,5,82,10
+prod_04,Northwind Cookbook,"A practical family cookbook with seasonal recipes, meal planning tips, and quick weeknight dishes.",Books,user_04,3,57,5
+prod_04,Northwind Cookbook,"A practical family cookbook with seasonal recipes, meal planning tips, and quick weeknight dishes.",Books,user_05,5,88,11
+prod_04,Northwind Cookbook,"A practical family cookbook with seasonal recipes, meal planning tips, and quick weeknight dishes.",Books,user_06,4,70,8
+prod_05,Evergreen Yoga Mat,"Eco-friendly yoga mat with extra cushioning, grip texture, and easy-clean material.",Sports,user_01,5,96,14
+prod_05,Evergreen Yoga Mat,"Eco-friendly yoga mat with extra cushioning, grip texture, and easy-clean material.",Sports,user_02,4,90,11
+prod_05,Evergreen Yoga Mat,"Eco-friendly yoga mat with extra cushioning, grip texture, and easy-clean material.",Sports,user_03,4,85,12
+prod_05,Evergreen Yoga Mat,"Eco-friendly yoga mat with extra cushioning, grip texture, and easy-clean material.",Sports,user_04,5,108,16
+prod_05,Evergreen Yoga Mat,"Eco-friendly yoga mat with extra cushioning, grip texture, and easy-clean material.",Sports,user_05,3,77,9
+prod_05,Evergreen Yoga Mat,"Eco-friendly yoga mat with extra cushioning, grip texture, and easy-clean material.",Sports,user_06,5,112,15
+prod_06,Beacon Smart Speaker,"Compact smart speaker with voice control, room-filling sound, and multi-room pairing.",Electronics,user_01,4,100,13
+prod_06,Beacon Smart Speaker,"Compact smart speaker with voice control, room-filling sound, and multi-room pairing.",Electronics,user_02,5,115,17
+prod_06,Beacon Smart Speaker,"Compact smart speaker with voice control, room-filling sound, and multi-room pairing.",Electronics,user_03,5,118,18
+prod_06,Beacon Smart Speaker,"Compact smart speaker with voice control, room-filling sound, and multi-room pairing.",Electronics,user_04,4,103,14
+prod_06,Beacon Smart Speaker,"Compact smart speaker with voice control, room-filling sound, and multi-room pairing.",Electronics,user_05,4,97,12
+prod_06,Beacon Smart Speaker,"Compact smart speaker with voice control, room-filling sound, and multi-room pairing.",Electronics,user_06,4,101,13
+prod_07,Bluebird City Guide,"A compact city guide with neighborhood tips, transit routes, and hidden local favorites.",Books,user_01,3,59,7
+prod_07,Bluebird City Guide,"A compact city guide with neighborhood tips, transit routes, and hidden local favorites.",Books,user_02,4,67,9
+prod_07,Bluebird City Guide,"A compact city guide with neighborhood tips, transit routes, and hidden local favorites.",Books,user_03,4,71,8
+prod_07,Bluebird City Guide,"A compact city guide with neighborhood tips, transit routes, and hidden local favorites.",Books,user_04,3,55,6
+prod_07,Bluebird City Guide,"A compact city guide with neighborhood tips, transit routes, and hidden local favorites.",Books,user_05,5,83,11
+prod_07,Bluebird City Guide,"A compact city guide with neighborhood tips, transit routes, and hidden local favorites.",Books,user_06,4,76,10
