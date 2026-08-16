@@ -328,19 +328,6 @@ def _get_cached_response(key: str):
         _cache_hits += 1
         return value
 # ── FIX #1292: HIGH PERFORMANCE RATE LIMITER PATH ──
-def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        with _cache_lock:
-            _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
-    except (RedisError, TypeError):
-        pass
-
-def _clear_response_cache() -> None:
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
 
 import asyncio
 
